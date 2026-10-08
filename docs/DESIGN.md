@@ -1,7 +1,9 @@
 # setl8-lev-trading — DESIGN
 
-Status: **DRAFT FOR REVIEW. Complete first pass (sections 1 to 15). No program code is written until Rovik approves this file.**
-Last updated: 2026-10-09. Companion files: `OPEN_QUESTIONS.md`, `BUILD_PLAN.md`, `../handover/design-decisions.md`.
+Status: **DRAFT v2 FOR REVIEW (architecture C). Complete (sections 1 to 16). No program code is written until Rovik approves this file.**
+Last updated: 2026-10-09. Companion files: `OPEN_QUESTIONS.md`, `BUILD_PLAN.md`, `../handover/design-decisions.md` (decisions 32 to 35 are the architecture change).
+
+v1 of this document (fully on-chain keeper design, "option B") is kept in git commit `29221e7`. It stays available as a later hardening path; this file replaces it.
 
 Sections marked CONFIRMED were restated to Rovik and confirmed. Sections marked ASSUMPTION
 are my reading of an unstated edge; each one is also tracked in OPEN_QUESTIONS.md.
@@ -12,32 +14,49 @@ are my reading of an unstated edge; each one is also tracked in OPEN_QUESTIONS.m
 
 ### 1.1 What this program is
 `setl8-lev-trading` is a Solana sector program (Anchor 0.32.1) for Setl8's leveraged-trading challenge product.
-A trader buys a challenge account (10 sizes, $2.5K to $200K), trades 82+ **synthetic markets** priced by an oracle,
-and passes phases for fixed payouts. There is **no matching engine, no order book and no token custody here**.
-Trades are simulated balance changes. The only real money moves through the core vault by CPI:
-purchase and reset fees in, queued payout claims out.
+A trader buys a challenge account (10 sizes, $2.5K to $200K), trades 82+ **synthetic markets** priced by Stork,
+and passes phases for fixed payouts. There is **no matching engine, no order book and no token custody on-chain**.
+**The trading itself runs on a Setl8 backend (the "evaluator").** Solana holds three things only:
+1. the **journal**: every fill, close and floor change of every account, with the signed Stork price that decided it, hash-chained;
+2. the **gate** to money: purchase and reset fees in, payout claims out, through the core vault by CPI, with a 2-day delay and a veto on payouts;
+3. the **limits**: a fixed payout formula, a daily payout cap, a fixed set of phases.
 
-### 1.2 Hub and spoke
+### 1.2 Components
 ```
- trader wallet ──signs──► setl8-lev-trading (this program) ──CPI, signed by sector_authority PDA──► core vault
-                               │  ▲                                                                (deposit_fee, deposit_reset,
-   anyone (keepers) ──crank───►│  │ reads                                                           record_activity, request_payout,
-                               │  └── Stork feed accounts (price, publish time)                     flag_trader_failed)
-                               └── emits journal events (emit_cpi!) + keeps a rolling hash in the account
+ trader ──signed orders──► EVALUATOR (Setl8 backend, hot key)           PUBLIC VERIFIER (anyone, open source)
+                             │  netting, floors, SL/TP, fees, orders        ▲ replays the journal with the same
+                             │  uses Stork prices, keeps all price samples  │ `engine` crate, checks every proof
+                             │                                              │
+                             ├─ post_journal / report_fail / touch_activity ▼
+ trader ─open/reset/request──►  setl8-lev-trading (Solana program)  ──CPI, signed by sector_authority PDA──► core vault
+ anyone ──finalize_pass────►    journal hash chain, PendingPass, daily cap     (deposit_fee, deposit_reset, record_activity,
+ both admins ──veto_pass───►                                                    request_payout, flag_trader_failed)
 ```
 - `sector_authority` = PDA `["setl8_sector_authority"]` under THIS program id; it signs every vault CPI with `invoke_signed`.
-- This program never holds trader or payout money. Token movement happens inside the vault, from the trader's own token account.
-  The one exception is the 0.4% swap-cost fee (section 9.2), a plain SPL transfer signed by the trader straight to the SL8 wallet.
+- This program never holds trader or payout money. Token movement happens inside the vault. The one exception is the 0.4% swap-cost fee
+  (section 9.2), a plain SPL transfer signed by the trader straight to the SL8 wallet.
+- The `engine` crate (Rust, section 16) is the single definition of the rules in sections 2, 7 and 9. The evaluator runs it, the public verifier runs it, and the
+  program links the small part of it that re-checks arithmetic (section 4.4).
 
-### 1.3 Trust model (who must be trusted for what)
+### 1.3 Trust model (who must be trusted for what) — READ THIS ONE
 | Party | Trusted for | Not trusted for |
 |---|---|---|
-| Oracle publishers (Stork) | The signed price and its timestamp | Nothing else |
-| Core vault | Holds money, caps total payout exposure (8% of size per pass, max 4 passes per record = 32%) | n/a |
+| Stork publishers | The signed price and its timestamp | Nothing else |
+| Core vault | Holds money; caps exposure (8% of size per pass, max 4 passes per record = 32%) | n/a |
+| **Evaluator (backend + its hot key)** | **The truth of every trading outcome**: fills, floors, breaches, the pass condition. The chain cannot recompute the price path. | Moving money directly (it has no payout power); changing config |
 | This program's code and its upgrade authority (2-of-2: SL8 admin + Rov admin) | Everything below | n/a |
-| Admins | Creating/disabling markets and re-pointing feeds (**EXCEPTION, decision 24**), publishing new rule sets for NEW accounts | Moving trader or payout money: no instruction does it |
-| Setl8's keeper bot | Liveness only (sampling density) | Correctness: any wallet can submit the same evidence |
-| Traders | Their own signatures | Choosing which prices count (the program decides, see section 4) |
+| Admins (both together) | Vetoing a pending pass (requested or confirmed); rule sets; limits; rotating the evaluator | Moving or approving money: no instruction does it |
+| Either admin alone | Markets and feeds (**EXCEPTION, decision 24**), pausing | Same |
+| Traders | Their own signed orders and their own wallet transactions | The evaluation of their trades |
+| Anyone | Nothing | Can call `finalize_pass` after the delay, and can replay the journal |
+
+**Plain statement of the risk (decision 32).** Under option C a wrong or hacked evaluator can write a false history. It can fail a clean account, miss a breach, or fabricate a pass.
+The program does not hide this. It bounds the damage and makes it visible:
+- every pass is a public, replayable record, and a payout cannot leave before **2 days** have passed and **both admins** have had the chance to veto;
+- total payouts are throttled by `max_payout_per_window`, and by the vault (32% of size per record chain);
+- the evaluator key has no payout power and no config power;
+- the journal carries the signed Stork price behind every decisive fill and trigger, and a commitment to the full sample file, so a third party can detect a lie.
+What C cannot do: prove a breach that the evaluator left out, or stop the evaluator from failing an honest trader (section 4.7, 13).
 
 ### 1.4 Facts this design is built on (verified in the read-only repos, 2026-10-09)
 - `setl8-shared-interfaces` is at **v0.4.0** (the earlier note of v0.3.2 was stale). `request_payout` queues a claim and needs
@@ -47,12 +66,28 @@ purchase and reset fees in, queued payout claims out.
 - Vault `deposit_reset` today prices a reset as a percent of account SIZE. The locked ladder (decision 17) is a percent of
   tier PRICE. **Vault change required** (prompt in `handover/vault-change-reset-price.md`). BUILD-BLOCKING for the reset module only.
 - Stork's Solana feed account stores only the latest value (`timestamp_ns: u64`, `quantized_value: i128`, 18 decimals). Neither
-  Stork nor Pyth provides verified high/low/OHLC. Both facts drive section 4.
+  Stork nor Pyth provides verified high/low/OHLC. The evaluator therefore must record its own sample stream (section 4.5).
+- The vault pays queued claims through a permissionless heartbeat (about every 5 days, pro rata). Total time from "button" to money is 2 days (ours) plus up to 5 days (vault).
 
 ### 1.5 Locked decisions this document implements
 Numbers refer to `handover/design-decisions.md`: rules 1 to 12; leverage 13; prices 15; 0.4% fee 16; reset ladder 17 and
-vault change 18; 12 h lock 19; margin 20; keepers 21; closed markets 22; holding fee 23 and 26; admin exception 24; vault pause 25;
-order types 27; 5 accounts per wallet 28; 2-of-2 upgrade authority 30.
+vault change 18; 12 h lock 19; margin 20; closed markets 22; holding fee 23 and 26; admin exception 24; vault pause 25;
+order types 27; 5 accounts per wallet 28; 2-of-2 upgrade authority 30; tight floor cap 31; **architecture C 32; delay and veto 33;
+daily cap 34; evaluator powers 35**. Decision 21 (keepers and bounty) is **superseded** and no longer part of the design.
+
+### 1.6 What the chain enforces versus what it only records
+| Rule | On-chain | Off-chain only (verifier can check) |
+|---|---|---|
+| Journal sequence, hash chain, time never goes backwards | ENFORCED | |
+| P&L formula of each closed slice, quick-trade half credit, fee debits, balance continuity | ENFORCED (integer re-computation) | |
+| Quick tally Q and the phase-fail threshold 0.028 S | ENFORCED | |
+| Static floor latch (B >= 1.04 S) and the static-floor fail rule when flat | ENFORCED | |
+| Tight-floor start and ratchet arithmetic (`l_start`, `l_level`) and "breach only when balance <= level" | ENFORCED (arithmetic on claimed values) | The claimed open profit and peak are not provable |
+| 12 h lock after a breach (no new opens in the journal) | ENFORCED | |
+| Payout amount (0.08 S), once per phase, phases 2 to 5, 2-day delay, daily cap, veto | ENFORCED | |
+| Phase pass condition: B >= 1.08 S, flat, no open pass | ENFORCED on the chain-tracked B; "flat" is the evaluator's assertion | Flatness against the real positions |
+| Prices used are the real Stork prices; samples were complete; no breach was omitted | not provable | Verifier replays proofs and sample file |
+| Fills match what the trader actually ordered | not provable | Trader-signed order intents (section 4.5) |
 
 ---
 
@@ -64,7 +99,7 @@ specified later). Examples below use dollars.
 ### 2.1 Balance and equity
 - **B (closed balance):** starts at S each phase. A closed slice with profit P adds P if it is a normal
   slice and P/2 if it is a quick slice (rounded DOWN, i.e. against the trader). A loss is always credited in full.
-- **P (open profit):** sum of unrealized PnL over all open net positions (one per market), marked at accepted oracle prices.
+- **P (open profit):** sum of unrealized PnL over all open net positions (one per market), marked at the signed Stork prices the evaluator samples (section 4.5).
 - **E (equity) = B + P.**
 
 ### 2.2 Floors
@@ -79,7 +114,7 @@ specified later). Examples below use dollars.
 
 ### 2.3 Tight mode
 - **Starts** at the first accepted sample where P > 0.01 S (strictly more than 1% of S, all markets combined).
-  At start we record R = B (closed balance at that instant) and L_start = F_s(at that moment) + 0.04 S.
+  At start we record R = B (closed balance at that instant) and **L_start = min(F_s(at that moment) + 0.04 S, R)** (decision 31: the tight floor is never set above the closed balance, so a trader close to the static floor is not breached by the very sample that made him a winner).
 - **While on**, G = E - R (profit since the mode began, realized and open; closing a winner does not reduce G).
   G_peak = highest G over accepted samples since the mode began.
   **L = L_start + max(0, G_peak - 0.01 S).** L only rises. It does not fall when P drops below 1% or goes negative.
@@ -87,8 +122,7 @@ specified later). Examples below use dollars.
 - ASSUMPTION A-RULE-1: L is a frozen ratchet level. If F_s latches to 0.96 S in the middle of a mode (by realizing
   profit), L is NOT recomputed from the new F_s (otherwise realizing profit could instantly breach). The effective
   floor is max(F_s, L). Confirm with Rovik.
-- ASSUMPTION A-RULE-3: the sample that starts tight mode is not checked against the new floor; the floor applies from the next sample (section 4.5).
-  Consequence of the confirmed rule: a trader within 3% of the static floor cannot hold more than about 1% of open profit. Confirm with Rovik.
+- **A-RULE-3 RESOLVED (decision 31, Rovik 2026-10-09):** L_start is capped at R. Example: B = $93K, F_s = $92K, P = +$1.1K: L_start = min($96K, $93K) = $93K, so L = $93K + max(0, 1.1K - 1K) = $93.1K, not $96K. With B >= F_s + 0.04 S the cap does nothing (all earlier examples).
 
 ### 2.4 Quick trades
 - A closing slice (partial or full) is **quick** if (close time - position timer start) <= 45 s.
@@ -107,9 +141,10 @@ specified later). Examples below use dollars.
 
 - **Pass condition (checked when the trader presses "request payout and move to next phase"):** B >= 1.08 S and no open positions
   and the phase is not failed. Until pressed, the trader may keep trading; all floors and the quick rule still apply.
-- **Pressing the button** moves to the next phase: fresh B = S, F_s = 0.92 S, latch cleared, tight mode off, Q = 0.
-  For phases 2 to 5 it also queues a vault payout claim of 0.08 S.
-- After the phase 5 payout the account is Graduated (vault `max_payout_count` = 4).
+- **Pressing the button** (`request_advance`) starts the move to the next phase. Phase 1 to 2 (no money) happens at once. For phases 2 to 5 it creates a **pending pass**:
+  the account is frozen for trading for the 2-day delay, either both admins veto it or anyone finalizes it, and only then (`finalize_pass`) the vault payout claim of 0.08 S is queued and
+  the next phase starts: fresh B = S, F_s = 0.92 S, latch cleared, tight mode off, Q = 0 (decisions 33, section 10).
+- After the phase 5 payout claim is queued the account is Graduated (vault `max_payout_count` = 4).
 - No daily drawdown rule.
 
 ### 2.6 Worked example R1 (S = $100,000)
@@ -130,7 +165,7 @@ Phase fails once Q > $2,800.
 
 ---
 
-## 3. Markets, oracle adapter, sessions
+## 3. Markets, price source, sessions
 
 ### 3.1 Market classes and leverage (CONFIRMED, decision 13)
 | Class id | Class | Max leverage |
@@ -148,49 +183,42 @@ Leverage means required margin = notional / leverage. It is a per-class value st
 change never touches an existing account. The market list itself (82+ markets, class of each) is supplied by Rovik later; the
 program takes it as data (`create_market`), nothing market-specific is hardcoded.
 
+
 ### 3.2 Accounts that describe the market (all admin-written, all read-only for traders)
-- **`SectorConfig`** (singleton, PDA `["config"]`): admin keys, vault program id, Stork program id, SL8 wallet, bounty parameters,
-  `paused` flag, `current_ruleset`, `market_count`.
+- **`SectorConfig`** (singleton, PDA `["config"]`): admin keys, **evaluator key**, vault program id, SL8 wallet, `current_ruleset`, `market_count`, `paused`,
+  `pass_delay_secs`, `max_payout_per_window`, `window_secs` and the running window counters (section 10.6).
 - **`RuleSet`** (PDA `["ruleset", version u16]`, **immutable once created**): leverage per class, half-spread per market,
   commission per class (pending numbers), holding-fee rate per class, tier price table, reset ladder, fee rate. A `TradingAccount`
   stores its `ruleset_version` at purchase. This is the "per-account parameter snapshot": publishing version N+1 never changes an
-  account created under version N.
+  account created under version N. The evaluator reads the rule set of each account's version; the chain does not use most of it (it uses the tier table, ladder, fee rate and the constants of section 2).
 - **`Market`** (PDA `["market", market_id u16]`): class, `status` (0 disabled, 1 enabled, 2 reduce-only), `feed_id [u8;32]`
-  (**admin can change it at any time, decision 24**), `max_age_secs`, quantity step and minimum, `max_notional_usd` (per-position
-  cap, see OPEN_QUESTIONS), up to 6 weekly session windows, optional `quote_conv_market` (see 3.5). Changing `feed_id` emits
-  `MarketFeedChanged{old,new,slot}`.
+  (**either admin can change it at any time, decision 24**), `max_age_secs`, quantity step and minimum, `max_notional_usd` (per-position
+  cap, see OPEN_QUESTIONS), up to 6 weekly session windows, optional `quote_conv_market` (see 3.5). The chain uses a market only to check that a journal event
+  names an existing market and that a price proof carries that market's current `feed_id`. Changing `feed_id` emits `MarketFeedChanged{old,new,slot}`.
 
 Rate units: all rates are fixed-point with 6 decimals ("e6") of the notional. Example: holding fee 0.10% per night = 1,000 e6.
 
-### 3.3 Oracle adapter interface
-The program never reads a vendor account directly. It calls one function:
+### 3.3 Price source and the `PriceProof`
+**Where prices come from.** The evaluator subscribes to Stork's signed price stream (Stork's own API/WebSocket; the Solana feed account holds only the latest value, so it is not the source).
+Each update it receives is a signed message: feed id, timestamp (ns), value (18 decimals), publisher signature(s). The evaluator:
+1. keeps **every update it uses** in an append-only sample file per market (`samples-<market>-<date>.bin`), and publishes the file hash in each journal batch (4.5);
+2. converts to `price_e12 = floor(quantized_value / 10^6)` and applies the half-spread (section 7.1);
+3. attaches to every **decisive** event the original signed update as a `PriceProof` (format in section 8.2).
 
-```rust
-/// Price in 1e-12 USD units per 1 unit of the base asset. 1.0800 -> 1_080_000_000_000.
-pub struct OraclePrice { pub price_e12: u64, pub publish_time: i64 /* unix seconds */ }
+**What the chain does with a `PriceProof` (v1):** checks that `feed_id` equals the market's current feed, that `price_e12` equals the proof's own value field, that the proof time is not in the future and not older than the market's `max_age_secs` before the event time,
+and stores the proof in the event log. **It does NOT verify the publisher signature on-chain in v1**, because Stork's exact signed-message format and a cheap on-chain verification path are
+not verified (UNVERIFIED, module M2). The signature is verified off-chain by the public verifier. Hardening paths, in order of cost: (a) `secp256k1_recover` check inside `post_journal` once the format is confirmed;
+(b) a CPI to Stork's own verification instruction if one exists.
 
-pub trait OracleAdapter {
-    /// `feed` is the vendor account passed in the transaction. Must verify owner, address derivation from `feed_id`,
-    /// positivity, `publish_time <= now + 2`, and `now - publish_time <= max_age_secs`. Never trusts caller-supplied fields.
-    fn read(feed: &AccountInfo, feed_id: &[u8; 32], now: i64, max_age_secs: u16) -> Result<OraclePrice>;
-}
-```
-- **Stork implementation (primary).** Check `feed.owner == config.stork_program`; check `feed.key == find_program_address(["stork_feed", feed_id], stork_program)`;
-  read `timestamp_ns` and `quantized_value` from the `TemporalNumericValueFeed`; `price_e12 = quantized_value / 10^6` (round DOWN for
-  bids, the program applies spread afterwards); `publish_time = timestamp_ns / 10^9`. Pull-based: the client puts the Stork update
-  instruction(s) **before** ours in the same transaction.
-  **UNVERIFIED, must be checked against the real SDK in module M2:** the exact account byte offsets, how many feed updates fit in one
-  1,232-byte transaction (I assume 3 to 4 with a signed-update blob of about 200 to 250 bytes each), Stork's per-update fee on Solana,
-  and whether non-enterprise keepers can get the signed stream at all (contact-sales, OPEN_QUESTIONS #1).
-- **Pyth implementation (fallback, only if verified free for non-index markets).** Same trait. Not built until verified.
-- **Optional hardening.** Self-verify a signed blob inside our program with the `secp256k1_recover` syscall behind the same trait. It would let
-  a keeper present an older signed price (see 4.9), but needs Stork's exact signed-message format, which is not verified.
+**Pyth fallback.** Only if a free, verified Pyth feed exists for a market that Stork lacks. Same `PriceProof` shape with a different `source` byte. Not built until verified.
+
+**UNVERIFIED, must be checked against the real Stork documentation in module M2:** the exact signed-message layout, the size of one update on the wire (assumed 200 to 250 bytes),
+whether non-enterprise customers can get the signed stream at all (contact-sales; OPEN_QUESTIONS #1), the price, and the per-market update frequency.
 
 ### 3.4 Sessions and closed markets (decision 22)
 - Each market has up to 6 weekly windows `(start_minute_of_week, end_minute_of_week)` in UTC. `market_open(now)` = now falls inside a window
   AND the feed's `publish_time` is within `max_age_secs` of `now`. Holidays need no admin action: the feed goes stale, so the market reads as closed.
-- **Closed market:** no new orders and no fills of pending orders; existing positions **may be held** with a frozen mark (the last accepted mark);
-  floors, SL, TP and pending orders do not trigger on a frozen mark. The holding fee keeps accruing every calendar night (section 9.3).
+- **Closed market:** no new orders and no fills of pending orders; existing positions **may be held** with a frozen mark (the last sample); the evaluator does not trigger floors, SL, TP or pending orders on a frozen mark. The holding fee keeps accruing every calendar night (section 9.3).
 - **Reopen:** the first fresh sample is the next price. If it is past an SL, a floor or a pending order, they trigger at that sample's price
   (a gap is a gap; the trader bears it, consistent with the confirmed rule "even through a gap").
 - **Reduce-only status (2):** admin sets it before a feed migration or delisting; opens are rejected, closes allowed.
@@ -198,261 +226,237 @@ pub trait OracleAdapter {
 
 ### 3.5 Quote currency
 P&L is in USD. A pair quoted in another currency (EURJPY quoted in JPY, DAX in EUR) needs a USD conversion. Design: `Market.quote_conv_market`
-points to another market whose price is USD per one unit of the quote currency; every sample of the first market must be accompanied by a fresh
-sample of the second, and the second's `publish_time` joins the snapshot coherence check (4.3). **Open question (OPEN_QUESTIONS):** simplest launch
+points to another market whose price is USD per one unit of the quote currency; every valuation of the first market uses a fresh sample of the second; both proofs are attached to the event. **Open question (OPEN_QUESTIONS):** simplest launch
 is USD-quoted markets only; cross pairs and non-USD indices are added when the conversion feed exists.
 
 ---
 
-## 4. Core problem: verifying the price path without trusting a backend
+## 4. How outcomes are checked when the backend trades
 
-### 4.1 The problem
-The rules in section 2 are about the **path**: "the first moment equity touched the floor", "SL hit at 03:00", "open profit passed 1% and the floor switched".
-A normal exchange sees every tick. Solana does not: the program runs only when someone sends a transaction, and then it sees one number per market.
-If a Setl8 server decided "the floor was hit" and told the chain, a hacked or dishonest server could fail traders or save them. We want the chain to
-decide, from evidence anyone can check.
+### 4.1 The problem, restated for option C
+The rules in section 2 are about the **path**: "the first moment equity touched the floor", "SL hit", "open profit passed 1% and the floor switched".
+Solana cannot watch ticks, so the path is evaluated off-chain by the evaluator. A dishonest or hacked evaluator could fail traders or save them.
+This section says exactly what protects against that, and what does not.
 
 ### 4.2 What the oracle can and cannot prove (checked, 2026-10-09)
 | Question | Answer | Consequence |
 |---|---|---|
-| Does Stork or Pyth give a verified high/low/OHLC for an interval? | **No.** Only point prices with timestamps. | The path is only observable through discrete samples. |
-| Does the Stork feed account keep history? | **No**, only the latest value. | A late reader cannot go back and fetch the old price from the chain. |
-| Is a point price verifiable? | Yes: publisher-signed (secp256k1/EIP-712), checked by Stork's program when the update is pushed. | We trust samples, not our backend. |
-| Can an old signed price be replayed later? | Not for Stork through the feed account. Only if our program verifies the signed blob itself (unverified format). | Section 4.9: we do NOT depend on replay. |
+| Does Stork or Pyth give a verified high/low/OHLC for an interval? | **No.** Only point prices with timestamps. | The path is only observable through discrete samples. The evaluator's sampling density defines "the path". |
+| Does the Stork Solana feed account keep history? | **No**, only the latest value. | Setl8 must keep its own sample archive; it is part of the product (4.5). |
+| Is a point price verifiable? | Yes: publisher-signed. Checked by Stork's program when pushed on-chain. Our v1 journal does NOT verify it on-chain (3.3). | A third party can verify each proof off-chain. |
 
-**Therefore:** the on-chain truth is "the rules applied to the sequence of accepted samples". Sampling density decides how close that is to the true path.
-No design can make the chain see a spike that no one sampled. The honest goal is: (1) nobody can profit by choosing which samples count,
-(2) sampling is dense and funded, (3) every settlement price is a real signed price, (4) the residual risk is bounded and written down.
-
-### 4.3 Definitions
-- **Sample**: `(market, price_e12, publish_time)` returned by the oracle adapter inside the current transaction (age at most `max_age_secs`, default 10 s, tunable per market).
-- **Mark**: bid for a long, ask for a short, where `bid = mid x (1 - half_spread)`, `ask = mid x (1 + half_spread)`. A position is valued at the price it could be closed at.
-- **Snapshot**: one sample for every market with an open position (plus the traded market, plus quote-conversion markets). Its time `T = min(publish_time)` over all samples used
-  (a snapshot is as old as its oldest component).
-- **Coherence**: all samples in a snapshot must have `publish_time` within `W = 30 s` of each other. Positions whose stored mark is within `W` of the newest sample may reuse the stored mark,
-  so a keeper with 8 open positions can spread the price updates over two or three consecutive transactions (`refresh_marks`) and finish with `crank`.
-- **Sample clock** `t_last`: per account, the `T` of the last accepted snapshot. **Every new snapshot must have `T > t_last`.** It only moves forward.
-- **Equity** `E = B + P`, with `P` from marks (spread already inside the mark) minus the estimated closing commission once commission numbers exist. `B` already includes holding fees applied in step 2.
-
-### 4.4 Monotonic state (what may only ever move one way)
-| Variable | Direction | Why this matters |
+### 4.3 Who does what
+| Step | Who | Where |
 |---|---|---|
-| `t_last` (sample clock) | only forward | Stops replay of an old, favourable price. Order of events is the order of publish times. |
-| `g_peak` (peak profit since tight mode began) | only up while the mode is on | The tight floor `L` is a function of it, so `L` can never fall. |
-| `l_level` (tight floor) | only up while on; reset only when the mode ends (flat) | Matches the confirmed rule. |
-| `f_static` (static floor) | 0.92 S, then 0.96 S forever in the phase once latched; reset only by a new phase | The latch is one-way. |
-| `q_tally` (credited quick profit) | only up within a phase | Quick losses never reduce it (confirmed). |
-| `seq` (journal sequence) and `journal_hash` | seq only up; hash chains | Any missing event shows up as a hash mismatch. |
-| `phase` | only up (1 to 5) | A reset creates a NEW account record, never rewinds an old one. |
-| `lock_until` | set only by a breach, never shortened | A second breach cannot happen while locked (no positions can open). |
+| Trader sends an order (market, limit, stop, SL/TP, close) with a wallet signature | Trader | to the evaluator API |
+| Fill, netting, margin check, marks, floors, tight-floor ratchet, quick rule, holding fees, SL/TP/pending triggers | Evaluator, using the `engine` crate | off-chain |
+| Keep every used price update in an append-only archive; keep every signed trader order | Evaluator | off-chain, published (4.5) |
+| Post the events with proofs, in order | Evaluator (`post_journal`) | on-chain |
+| Re-check arithmetic, balances, quick tally, fail thresholds, sequence, hash chain | Program | on-chain (4.4) |
+| Replay the whole journal and archive; flag any mismatch | Public verifier / Setl8 watchdog | off-chain (4.6) |
+| Press "request payout and move to next phase" | Trader (`request_advance`) | on-chain |
+| Freeze the account's trading, bring the journal up to date, check flat and balance against the engine, then `confirm_pass` or `reject_pass` | Evaluator | off-chain check, on-chain call |
+| Veto, within 2 days of the confirmation | Both admins together | on-chain |
+| Finalize after the delay | Anyone (`finalize_pass`) | on-chain, vault CPI |
 
-Everything else (equity, `P`, margin used) is **derived on demand** from stored marks, never trusted from a caller.
-
-### 4.5 One pipeline, not three instructions
-The brief suggested `checkpoint`, `trigger_sl_tp` and `trigger_breach` as separate keeper instructions. **Recommendation: one instruction, `crank`, with a fixed internal order**, because with
-three separate entry points a caller chooses the ORDER in which events are applied, and order changes outcomes (e.g. take the TP before the breach, or the SL before the floor).
-With one pipeline the caller chooses only which evidence to submit; the program decides everything else. Order inside `crank` (and inside every trader action, which runs steps 1 to 4 first):
-
-1. **Validate evidence**: adapter reads, freshness, session open, coherence, `T > t_last`. Failure aborts the transaction (`StaleSample`, `IncoherentSnapshot`, `MarketClosed`).
-2. **Accrue holding fees** for every 22:00 UTC rollover crossed since each position's `fee_day`.
-3. **Compute `P`, `E`** from the snapshot marks.
-4. **Static floor**: if `E <= f_static` then close all at the marks, status `Failed`, CPI `flag_trader_failed`. Stop.
-5. **Tight floor breach** (only if tight mode was already on before this sample): if `E <= l_level` (the level as of the PREVIOUS sample) then close all at the marks, `lock_until = T + 43,200`, end tight mode. Stop.
-6. **Per-position SL then TP** (only if the market is open): fill at the mark if the mark is at or through the level. SL and TP are closes, so they can be quick slices and update `B`, `q_tally`.
-7. **Pending orders** in markets covered by the snapshot: fill if the trigger condition holds, checking margin at fill time (reject silently if it fails, leaving the order pending, and emit `OrderRejected`).
-8. **Tight-mode bookkeeping**: if off and `P > 0.01 S` then start (record `R = B`, `l_level = f_static + 0.04 S`, `g_peak = E - R`). If on, update `g_peak = max(g_peak, E - R)` and `l_level = max(l_level, L_start + max(0, g_peak - 0.01 S))`.
-   If flat, tight mode ends.
-9. **Phase-fail rule**: if a quick slice in step 6 pushed `q_tally > 0.028 S` the phase fails (same effect as step 4).
-10. Store marks, set `t_last = T`, emit journal events, pay the keeper bounty only if step 4, 5 or 9 settled something.
-
-**A-RULE-3 (new edge case, needs Rovik's confirmation; default shown).** Step 5 uses the level as of the previous sample. So the sample that STARTS tight mode is not checked against the new floor.
-Reason: if an account is within 3% of its static floor (for example `B = 0.93 S`), `l_level = f_static + 0.04 S = 0.96 S` is above its own equity at the moment the mode starts, which would close a winning position on the
-same sample that made it a winner. With the default the breach is declared at the next sample (`E <= l_level`). Either way a trader sitting less than 3% above the static floor can hold at most about 1% of open profit. This is a
-consequence of the confirmed rule, not something I added; it is flagged so you can choose.
-
-### 4.6 Which price settles what
-| Event | Price used | Who bears slippage |
-|---|---|---|
-| Market order | Ask (buy) or bid (sell) of the sample in the trader's own transaction | Trader |
-| Limit order | The first accepted sample at or better than the limit, filled AT the sample (price improvement kept) | Neither (trader benefits) |
-| Stop (entry) order | The first accepted sample at or through the trigger, filled at the sample | Trader |
-| Stop-loss | Mark of the first accepted sample at or through the SL | Trader (gap) |
-| Take-profit | Mark of the first accepted sample at or through the TP (price improvement kept) | Trader benefits |
-| Tight-floor breach | Marks of the sample that showed `E <= L` (confirmed: "that sample price") | Trader |
-| Static-floor fail | Marks of the sample that showed `E <= F_s`, even through a gap | Trader |
-| Holding fee | Mark at the time the fee is applied (see 9.3 for the approximation) | Trader |
-
-### 4.7 What happens when no price arrives in time
-| Scenario | What the program does | Honest consequence |
-|---|---|---|
-| Keeper outage, price moves through a floor and partly back | Nothing is declared; no sample showed the breach | Trader benefits (a rare lucky path). Bounded by the real price move inside the gap. |
-| Keeper outage, price keeps going | First accepted sample after the gap decides; closes at that price | Trader bears the gap (could be far past the floor). Equity may be far below `F_s`: the account just fails. |
-| Weekend or holiday | Market closed, marks frozen, triggers off, holding fee accrues (3.4) | First fresh sample on reopen settles everything. |
-| Feed stops updating on an OPEN market (outage) | Samples fail `StaleSample`; cranks revert. Trader actions in that market revert. | Nothing can trigger. Admin can set `reduce-only`. Positions are held at the last mark. Residual risk R-3. |
-| Bad print (single wrong price) | A single price that breaches a floor closes the account | Risk R-4. Optional mitigation: require two consecutive samples at least 2 s apart for a FAIL or breach (config flag, default OFF, OPEN_QUESTIONS #9). |
-| Stale pending limit order | It fills at the first accepted sample that crosses it, price improvement kept | Standard. |
-
-### 4.8 Keeper economics (decision 21)
-- **Who:** Setl8's bot runs `crank` per account with open positions every 5 s (target) and every 60 s with pending orders only. Anyone else may submit the same instruction.
-- **Evidence supply:** the keeper builds the transaction `[Stork update ix(s), crank ix]`. The program checks the feed account, not who pushed it.
-- **Bounty:** `config.bounty_lamports` (default 1,000,000 lamports = 0.001 SOL) is moved from the program-owned `bounty_vault` PDA to the caller of any `crank` that performed step 4, 5 or 9
-  (a **floor settlement**: static fail, tight breach or quick-limit phase fail). SL, TP and pending-order fills pay NO bounty (Setl8's bot serves them; they only affect the trader's own result, never the vault), and plain mark refreshes pay nothing,
-  so spamming cranks or self-farming earns nothing (A-4, A-5). **Refinement of decision 21 for Rovik to confirm.** First valid transaction wins; later ones fail with `StaleSample` (their `T` is not greater than `t_last`)
-  and only cost their own fee.
-- **Funding:** `fund_bounty` accepts SOL from anyone. SL8 wallet tops it up. It is one-way: traders pay nothing, and the pool can only be spent through the bounty path or returned to the SL8 wallet by 2-of-2.
-- **Pool exhausted:** cranks still work, just unpaid. The pool balance is public. Alert threshold lives in the bot, not on-chain.
-- **Sizing example:** 1,000 settlements a month x 0.001 SOL = 1 SOL a month. Even at 100,000 settlements it is 100 SOL. Cheap compared with the vault's payout exposure.
-- **Griefing:** a griefer cannot keep an account "alive" or "dead": `crank` never calls `record_activity`, so only the trader's own actions refresh the 7-day inactivity clock.
-
-### 4.9 The race: a later favourable sample beats an earlier adverse one
-Scenario: at 10:00:00 the price touched the tight floor; a keeper holds that signed price. At 10:00:03 the trader sends a transaction with the price now back above the floor.
-If the trader lands first, `t_last = 10:00:03` and the keeper's 10:00:00 sample is rejected (`T <= t_last`). The breach is never recorded.
-- **Why not allow older evidence?** Because then every state would have to be re-wound when a late sample arrives (positions, balance, journal), and an attacker could race to reorder history. Forward-only is simple and auditable.
-- **What bounds the damage?** The trader can only choose WHEN to send, among real prices. The keeper's cadence (5 s) limits how long an adverse state can go unsampled. The attack gain is limited to price moves that
-  start and reverse inside one sampling gap. For FX majors that is a few hundredths of a percent; for crypto alts it can be several tenths.
-- **Optional hardening (not in v1, UNVERIFIED format):** self-verified signed blobs with a short dispute window would let a keeper submit a slightly older adverse price. Revisit after the audit if bounty data shows a real leak.
-- **Selective sampling in the other direction:** a trader running his own fast bot samples only favourable spikes for a TP. Same bound, same mitigation (keepers sample both ways; the TP fill still uses a real price). Residual risk R-1.
-
-### 4.10 The five questions from the brief
-| Question | Answer |
+### 4.4 What the program re-checks on every `post_journal` (invariants I-1 to I-12)
+Let `acct` be the stored account and `ev` an event of the batch, processed in order. Any failure reverts the whole batch.
+| Id | Invariant |
 |---|---|
-| (a) Permissionless keeper instructions with incentives? | Yes: one `crank` with a settlement bounty (4.8) plus Setl8's own bot. |
-| (b) Which events must be monotonic? | Table 4.4. |
-| (c) No price in time? | Table 4.7: first accepted sample settles; trader bears gaps; nothing triggers on stale or closed markets. |
-| (d) Does the oracle give verified high/low? | **No** (checked). Design does not assume it. |
-| (e) Honest failure and attack analysis? | Section 13. The unsolved items are written there, not hidden. |
+| I-1 | Signer is `config.evaluator`. Account status is `Active`. `pass_pending != 2` (a confirmed pass freezes the journal; `pass_pending == 1` still allows posting so the evaluator can bring the journal up to date before confirming). |
+| I-2 | `batch.first_seq == acct.seq + 1` and `batch.prev_hash == acct.journal_hash`; each event extends the hash (8.3). `acct.seq` and `acct.journal_hash` are updated at the end. |
+| I-3 | Time: `ev.time >= acct.last_batch_time` (never backwards) and `ev.time <= now + 2 s`. |
+| I-4 | Each referenced market exists, and every `PriceProof` carries that market's current `feed_id`, a value equal to the event price (3.3), and `ev.time - max_age_secs <= proof.time <= ev.time + 2 s` (a price older than the market's `max_age_secs` cannot justify an event). |
+| I-5 | `Close`: `pnl == floor(sign x qty x (exit - entry) / DEN)` computed by the program; `quick == (ev.time - timer_start <= 45)`; `credited` is `pnl` for a loss or a non-quick slice, `floor(pnl/2)` for a quick profit (7.4); `b += credited`; if `quick && pnl > 0` then `q_tally += floor(pnl/2)`. |
+| I-6 | `Fee`: `amount >= 0`; `b -= amount`. (Holding fee and commission, both rounded up by the engine.) |
+| I-7 | After `b` changes: if `b >= 1.04 S` then `latch = 1`. The static floor is `0.96 S` if latched, else `0.92 S`. |
+| I-8 | `q_tally > 0.028 S` after any event: the batch is rejected unless its last event is `Fail{PhaseQuick}`; use `report_fail`. |
+| I-9 | `TightStart`: `p_open > 0.01 S`, `r == b`, `l_start == min(static floor + 0.04 S, r)`, `l_level == l_start + max(0, g_peak - 0.01 S)` and `tight_on == 0` before. `FloorRaised`: `tight_on == 1`, new `g_peak > old`, `l_level` recomputed by the formula. `TightEnd`: `flat == true`. |
+| I-10 | `Breach`: `tight_on == 1`, `flat == true` after the batch, `b <= l_level` (position closed at the sample, so balance equals equity), `lock_until = ev.time + 12 h`, `tight_on = 0`. Any `Fill` that opens or adds has `ev.time >= acct.lock_until`. |
+| I-11 | `Fail` (only through `report_fail`): reasons `StaticFloor` (needs `flat == true` and `b <= static floor`) or `PhaseQuick` (needs I-8). Sets status Failed and calls the vault. |
+| I-12 | `flat` is stored as given. The chain cannot check it. |
+The program also re-derives, never trusts: the static floor, the quick limit, the pass target, the payout amount. None of these are fields the evaluator can set.
 
-### 4.11 Recommendation
-**"Sampled ratchet with a forward-only clock":** rules run on accepted samples only; the sample clock, tight-floor ratchet, static latch and quick tally are monotonic; one `crank` pipeline applies events in a fixed order;
-a funded permissionless keeper set provides density; every settlement uses a real signed price; no historical replay is needed. Residual risks R-1 to R-4 (section 13) are accepted and listed for your review.
+### 4.5 Decisive samples, the sample archive and signed order intents
+**Decisive samples** (each carries a `PriceProof` in the journal): every fill (open, add, reduce, close, flip), every SL/TP/limit/stop trigger, the tight-mode start sample,
+every sample that raised `g_peak`, the breach sample, the fail sample. Ordinary mark-to-market samples are not posted.
+**Sample archive.** The evaluator writes every price update it used, per market, to an append-only file and stores the SHA-256 of the file prefix used in each batch (`samples_hash`). Setl8 publishes the archive (object storage with a public URL, plus a copy
+the admins keep). A verifier can recompute the path: given the account's fills (known from the journal) and the sample file it must reproduce every floor, ratchet and trigger the evaluator claims, and find any breach that the evaluator did not claim.
+**Signed order intents.** Each trader order is signed by the trader wallet (ed25519, message `SL8LEV|account|nonce|order bytes`). The evaluator stores them and commits `intents_hash` per batch. A fill without a matching intent
+(or SL/TP/limit/stop already on file) is visible to the verifier as a forged trade. On-chain verification of these signatures (ed25519 precompile via the instructions sysvar) is an optional hardening, not in v1.
+**Honest limit.** If the evaluator drops a sample that would have caused a breach, nothing on-chain shows it; a verifier with its own copy of the Stork stream can. Setl8 should run an independent second recorder (watchdog) for this reason.
 
-### 4.12 Worked example: +1.2%, tight floor switches on, price reverses through it
-Setup: S = $100,000, phase 2, B = $100,000.000, `f_static` = $92,000, EURUSD (class 0, leverage 1:50), half-spread 0.003% (30 e6), no commission, no holding fee yet.
-Trader buys 1,000,000 EUR at market. Entry = ask = 1.08000 x 1.00003 = **1.0800324**. Notional = $1,080,032.40. Margin = notional / 50 = **$21,600.648**. `T0 = 14:00:00 UTC`.
-(All values below are produced by integer math with the rounding rules of section 7.4; the module M3 test vectors reproduce them exactly.)
+### 4.6 Public verifier and watchdog
+- `setl8-verify` (a CLI, module M9): reads the program's event log (via any RPC/archive/indexer), the sample archive and the intents file; replays with the `engine` crate; prints a verdict per account, per phase, and per pending pass. Open source so traders can check their own accounts.
+- Setl8 runs it as a **watchdog**: on every `PassRequested` event it replays that account and alerts both admins with `VALID` or `MISMATCH` inside the first hour, so the 2-day veto window has operational meaning (13.3, OPEN_QUESTIONS).
 
-| Time | Who | Mid | Bid (mark) | P | E | State change written on-chain |
-|---|---|---|---|---|---|---|
-| 14:00:00 | Trader, market buy | 1.08000 | 1.0799676 | -64.80 | 99,935.20 | Position slot 0 created: qty +1,000,000 EUR, avg_entry 1.0800324, margin 21,600.648, timer_start = T0, mark = 1.08000 @ T0, fee_day set. `t_last = T0`. Event `Fill` seq 1 (floor_before 92,000, mode Static), hash updated. CPI `record_activity` -> Recorded, `last_activity_pushed = T0`. |
-| 14:00:30 | Keeper | 1.08060 | 1.080567582 | +535.18 | 100,535.18 | Mark and `t_last` only. P is below 1% (1,000), so no mode change. No event. No bounty. |
-| 14:01:00 | Keeper | 1.08130 | 1.081267561 | +1,235.16 | 101,235.16 | **Tight mode ON** (P > 1,000): `tight_on = 1`, `R = 100,000.000`, `l_start = 96,000`, `g = 1,235.161`, `g_peak = 1,235.161`, `l_level = 96,000 + 235.161 = 96,235.161`. This sample is not checked against `l_level` (A-RULE-3). Event `ModeSwitch{TightStart, floor 92,000 -> 96,235.161, price 1.081267561}` seq 2. |
-| 14:01:30 | Keeper | 1.08310 | 1.083067507 | +3,035.11 | 103,035.11 | New high: `g_peak = 3,035.107`, `l_level = 96,000 + 2,035.107 = 98,035.107`. Event `FloorRaised{96,235.161 -> 98,035.107}` seq 3. |
-| 14:02:00 | Keeper | 1.08110 | 1.081067567 | +1,035.17 | 101,035.17 | E is above `l_level`; `g` fell below `g_peak`. **Nothing falls**: `g_peak` and `l_level` unchanged. Mark and `t_last` only. |
-| 14:02:30 | Keeper | 1.07800 | 1.07796766 | -2,064.74 | 97,935.26 | Step 5: `E = 97,935.26 <= l_level 98,035.107` -> **breach**. Close slot 0 at the mark: realized -2,064.74, slice age 150 s > 45 s so a normal slice, `B = 97,935.26`. Slot cleared, `open_count = 0`, margin freed, pending orders (none) deleted, `tight_on = 0`, `r = g_peak = l_level = 0`, `lock_until = 14:02:30 + 12 h = 02:02:30 next day`, closed trade written to the ring buffer, `trades_closed = 1`. Events `Close` seq 4 and `ModeSwitch{Breach, floor 98,035.107 -> 92,000, reason E<=L}` seq 5. Bounty 0.001 SOL to the keeper. No vault CPI (phase not failed). |
+### 4.7 What happens if the evaluator is offline, wrong, or hacked
+| Case | Effect | Protection |
+|---|---|---|
+| Evaluator offline | No new journal; traders cannot trade (the backend is the venue); passes cannot be requested if the last batch left the account non-flat; vault activity clocks may run (touch_activity stops) | `release_account` by the trader refreshes the vault clock; backend runbook. No on-chain recourse for a long outage (OPEN_QUESTIONS #10). |
+| Evaluator bug miscomputes a floor or pnl | Either a wrong fail/breach or a wrong pass | I-5..I-10 catch arithmetic classes of error; verifier catches the rest; veto catches a wrong pass; a wrong fail has no automatic remedy (OPEN_QUESTIONS #9). |
+| Key stolen: attacker fabricates a pass for his own accounts | He needs a `request_advance` from a trader wallet, then 2 days | Watchdog alerts, both admins veto, daily cap bounds the rest, vault caps at 32% of size per record chain. Rotation: both admins `set_evaluator`. |
+| Key stolen: attacker fails honest traders | Possible: `report_fail` is valid if the batch satisfies I-11 (needs fabricated losses that bring `b <= static floor`) | Visible in the journal; no automatic remedy. Reset price is paid again by the trader (OPEN_QUESTIONS #9). |
+| Key stolen: attacker stops journaling | Liveness only | Rotation. |
+| Evaluator omits a breach | Trader keeps a position he should have lost; the verifier with an independent recorder finds it | Not preventable on-chain. A pass built on it can be vetoed. |
 
-**If the keeper had been late** (no sample between 14:02:00 and a later one):
-- Next sample at mid 1.07700: `P = -3,064.71`, `E = 96,935.29 <= l_level` -> breach at THAT price, `B = 96,935.29`.
-- Next sample at mid 1.06000: `P = -20,064.20`, `E = 79,935.80 <= f_static 92,000` -> **FAIL**: close at that price, `B = 79,935.80`, status `Failed`, CPI `flag_trader_failed`, `WalletProfile.active_count - 1`, events `Close` and `Fail`. The trader bears the gap.
+### 4.8 Sampling cadence
+The evaluator values every account against the newest sample of each open market at least once per second of backend time and on every incoming Stork update for markets with open positions.
+Floors are tested on every valuation. "Touching counts" (E <= level). Gap handling is as in 3.4: the first sample past a trigger fills at that sample's price. The archive makes the cadence auditable;
+the cadence itself is a service setting, not a chain rule.
 
-**If the trader raced:** at 14:02:31 the trader submits his own transaction with mid 1.08110 (E back above the floor) before the keeper's 14:02:30 transaction lands. Then `t_last = 14:02:31` and the keeper's sample is rejected: no breach is recorded.
-This is risk R-1: it needs a favourable price within seconds of an adverse one, and the 5 s keeper cadence plus the bounty keep that gap small.
+### 4.9 Worked example: +1.2%, tight floor switches on, price reverses through it
+Setup: S = $100,000, phase 2, B = $100,000.000000, static floor $92,000, EURUSD (class 0, leverage 1:50), half-spread 0.003% (30 e6), no commission, no holding fee yet.
+Trader sends a signed market buy of 1,000,000 EUR at 14:00:00 UTC. The evaluator fills at `ask = ceil(1.08000 x 1.00003)` = **1.0800324**. Notional = $1,080,032.40. Margin = notional / 50 = **$21,600.648**.
+(All values were produced by integer math with the rules of section 7.4; module M3's test vectors must reproduce them exactly.)
+
+| Time | Mid | Bid (mark) | P (open) | E | What the evaluator does (off-chain) |
+|---|---|---|---|---|---|
+| 14:00:00 | 1.08000 | 1.0799676 | -64.80 | 99,935.20 | Fill: qty +1,000,000 EUR @ 1.0800324, timer starts. Intent signed by trader stored. |
+| 14:00:30 | 1.08060 | 1.080567582 | +535.18 | 100,535.18 | Mark only. P below 1% (1,000). |
+| 14:01:00 | 1.08130 | 1.081267561 | +1,235.16 | 101,235.16 | **Tight mode ON** (P > 1,000): R = 100,000.000, `l_start = min(96,000, R) = 96,000`, G = 1,235.161, `l_level = 96,000 + 235.161 = 96,235.161`. |
+| 14:01:30 | 1.08310 | 1.083067507 | +3,035.11 | 103,035.11 | New high: `g_peak = 3,035.107`, `l_level = 96,000 + 2,035.107 = 98,035.107`. |
+| 14:02:00 | 1.08110 | 1.081067567 | +1,035.17 | 101,035.17 | Nothing falls: `g_peak` and `l_level` unchanged. |
+| 14:02:30 | 1.07800 | 1.07796766 | -2,064.74 | 97,935.26 | `E = 97,935.26 <= l_level 98,035.107` -> **breach**. Close at the sample bid 1.07796766: pnl = -2,064.74, slice age 150 s so a normal slice, `B = 97,935.26`. Account flat, locked until 02:02:30 next day. |
+
+**What lands on Solana (posted by the evaluator about 14:03, as three transactions because a signed proof is about 300 bytes in the journal format of 8.2 and a 1,232-byte transaction carries about two; sizes are estimates until M2):**
+| Tx | Events (seq) | Proofs attached | What the program checks |
+|---|---|---|---|
+| A | `Fill`(1) buy 1,000,000 EUR @ 1.0800324; `TightStart`(2) `r=100,000`, `l_start=96,000`, `g_peak=1,235.161`, `l_level=96,235.161` | 2 (14:00:00, 14:01:00) | seq 1 and 2 continue the stored seq 0; I-9: `l_start = min(92,000 + 4,000, 100,000)`, `p_open 1,235.161 > 1,000`; hash chain. |
+| B | `FloorRaised`(3) `g_peak=3,035.107`, `l_level=98,035.107` | 1 (14:01:30) | I-9: `l_level = 96,000 + (3,035.107 - 1,000)`; raised. |
+| C | `Close`(4) qty 1,000,000 EUR, entry 1.0800324, exit 1.07796766, `pnl = -2,064.740000`, quick=false, credited = -2,064.74; `Breach`(5) `l_level=98,035.107`, `flat=true`, `lock_until = 14:02:30 + 12 h` | 1 (14:02:30) | I-5: `1e12 x (1.07796766e12 - 1.0800324e12) / 1e12 = -2.06474e9` micro-USD matches; `b = 97,935.26`; I-10: `b <= l_level`; lock set. No vault CPI (the phase is not failed). |
+
+**If the evaluator had been late** with the 14:02:30 sample (next sample at mid 1.06000 at 14:02:40): `P = -20,064.20`, `E = 79,935.80 <= static floor 92,000` -> **FAIL**: the evaluator closes at that sample, `B = 79,935.80`, and calls `report_fail(StaticFloor)`.
+The program checks `flat` and `b <= 92,000`, sets Failed, CPI `flag_trader_failed`, `active_count - 1`. The trader bears the gap, as the confirmed rule says.
+
+### 4.10 Worked example: a pass, the delay and a veto (phase 3, S = $100,000)
+| When | Event | Result |
+|---|---|---|
+| Day 0, 10:00 | Journal shows `b = 108,150.00`, `flat = true`, `tight_on = 0`, last batch 09:58. | |
+| Day 0, 10:01 | Trader presses the button: `request_advance` | Program checks Active, `flat`, `b >= 108,000`, no pass pending. Writes `pass_pending = 1`, `pass_requested_at = 10:01`; emits `PassRequested{amount 8,000, b 108,150, seq, hash}`. Vault `record_activity` CPI. **No money moved.** The evaluator freezes the account's trading at once. |
+| Day 0, 10:02 | Evaluator compares its engine state with the chain (flat, same `b`, no pending orders left) | If equal: `confirm_pass` -> `pass_pending = 2`, `pass_proposed_at = 10:02`, event `PassConfirmed`. If not (a position was open, or the journal lagged): `reject_pass(NotFlat)` -> `pass_pending = 0`, the trader is told and may press again after closing. If the evaluator stays silent for 1 hour the trader can `cancel_pass`. |
+| Day 0, 10:20 | Watchdog replays the account | Posts `VALID` to the admins' channel. |
+| Day 2, 10:02 | Delay over | Anyone calls `finalize_pass` (payer pays the `PayoutClaim` rent). Program checks the daily cap, then CPI `request_payout(8,000)`; on `Paid`: tally +1 / +8,000, `next_request_id + 1`, phase 4 starts fresh (`b = 100,000`, `q = 0`, latch 0, tight off). |
+| Day 2 to Day 7 | Vault heartbeat | The vault pays the claim pro rata. |
+| **Veto case:** Day 1, 16:00 | Watchdog posts `MISMATCH` | Both admins sign `veto_pass`. `pass_pending = 0`, `vetoes + 1`, event `PassVetoed`. The account unfreezes in the same phase with the same `b`. No money moved. The trader may request again. What happens next is policy, not code (OPEN_QUESTIONS #8). |
 
 ---
 
 ## 5. Accounts and byte sizes
 
 Sizes include the 8-byte Anchor discriminator. Rent = (128 + bytes) x 6,960 lamports (rent-exempt minimum; the formula is Solana's current default, to be re-checked on the target cluster).
-Large accounts use **zero-copy** (`#[account(zero_copy)]`, `#[repr(C)]`, no `Vec`, explicit padding, `AccountLoader`), so they are never copied onto the 4,096-byte BPF stack.
-All money is `i64` micro-USD (6 decimals); prices are `u64` in 1e-12 USD; quantities are `u64`/`i64` in 1e-6 base units.
+Under option C no account holds positions or orders, so every account is small and plain Borsh (no zero-copy needed; the stack budget in section 11 is still checked).
+All money is `i64` micro-USD (6 decimals); prices are `u64` in 1e-12 USD; quantities are `u64` in 1e-6 base units.
 
 | Account | PDA seeds (this program unless noted) | Bytes | Rent (SOL) | Written by |
 |---|---|---|---|---|
-| `SectorConfig` | `["config"]` | 248 | 0.00261696 | admins |
+| `SectorConfig` | `["config"]` | 270 | 0.00277008 | admins (the window counters by `finalize_pass`) |
 | `RuleSet` | `["ruleset", version u16]` | 904 | 0.00718272 | admins, immutable after creation |
 | `Market` | `["market", market_id u16]` | 128 | 0.00178176 | admins |
 | `WalletProfile` | `["wallet", trader]` | 56 | 0.00128064 | program |
-| `TradingAccount` (zero-copy) | `["acct", trader, challenge_id u64 le]` | 2,608 | 0.01904256 | program only |
-| `BountyVault` (SOL only, no data) | `["bounty"]` | 8 | 0.00094656 + balance | program, anyone may fund |
+| `TradingAccount` | `["acct", trader, challenge_id u64 le]` | 206 | 0.00232464 | program only (via evaluator or trader instructions) |
 | `PayoutTally` (no discriminator) | `["payout_tally"]` | 25 | 0.00106488 | program only (vault reads it) |
 | `sector_authority` (address only, holds no data) | `["setl8_sector_authority"]` | none | none | signs vault CPIs |
 
-`TradingAccount` seeds mirror the vault's `TraderState` (`["trader_state", product_program_id, trader_wallet, challenge_id]`), so the two records of one challenge are always found from the same three inputs.
-Rent for a new `TradingAccount` (about $2.9 at an assumed $150/SOL; SOL price is an assumption) is paid by the trader as `payer` and is **returned** by `close_account` once the account is terminal for 7 days.
+There is no bounty vault (decision 21 superseded). `TradingAccount` seeds mirror the vault's `TraderState` (`["trader_state", product_program_id, trader_wallet, challenge_id]`), so the two records of one challenge are always found from the same three inputs.
+Rent for a new `TradingAccount` (about $0.35 at an assumed $150/SOL; SOL price is an assumption) is paid by the trader as `payer` and is **returned** by `close_account` once the account is terminal for 7 days.
 
-### 5.1 `TradingAccount` layout (2,608 bytes)
-| Offset | Field | Type | Meaning |
+### 5.1 `TradingAccount` layout (206 bytes, Borsh, fields in this order)
+| Field | Type | Bytes | Meaning |
 |---|---|---|---|
-| 0 | discriminator | 8 | |
-| 8 | `trader` | Pubkey 32 | owner |
-| 40 | `challenge_id` | u64 | vault challenge id |
-| 48 | `size_s` | u64 | S in micro-USD |
-| 56 | `b` | i64 | closed balance B |
-| 64 | `r` | i64 | B recorded when tight mode began |
-| 72 | `g_peak` | i64 | highest `E - R` since tight mode began |
-| 80 | `l_level` | i64 | tight floor L (0 when off) |
-| 88 | `f_static` | i64 | current static floor level |
-| 96 | `q_tally` | i64 | credited quick profit this phase |
-| 104 | `lock_until` | i64 | unix seconds, 0 = none |
-| 112 | `t_last` | i64 | sample clock |
-| 120 | `last_activity_pushed` | i64 | last `record_activity` CPI time |
-| 128 | `next_request_id` | u64 | mirrors vault `payout_count + 1` |
-| 136 | `seq` | u64 | journal sequence |
-| 144 | `created_at` | i64 | |
-| 152 | `phase_started_at` | i64 | |
-| 160 | `journal_hash` | [u8;32] | rolling hash head |
-| 192 | `trades_closed` | u32 | |
-| 196 | `ruleset_version` | u16 | snapshot of the rule set |
-| 198 | `status` / `phase` | u8, u8 | status: 0 Active, 1 Failed, 2 Abandoned, 3 Graduated; phase 1 to 5 |
-| 200 | `tight_on`, `latch`, `open_count`, `pending_count`, `ring_head`, `bump`, `next_order_id` (u16) | 8 | `latch` = static floor shifted to 0.96 S |
-| 208 | `positions[8]` | 8 x 96 | see below |
-| 976 | `orders[10]` | 10 x 48 | pending orders |
-| 1456 | `ring[16]` | 16 x 72 | last 16 closed trades |
-| 2608 | end | | |
+| discriminator | | 8 | |
+| `trader` | Pubkey | 32 | owner |
+| `challenge_id` | u64 | 8 | vault challenge id |
+| `size_s` | u64 | 8 | S in micro-USD |
+| `created_at` | i64 | 8 | |
+| `b` | i64 | 8 | closed balance B, **maintained by the program from the journal** |
+| `q_tally` | i64 | 8 | credited quick profit this phase |
+| `lock_until` | i64 | 8 | unix seconds, 0 = none (set by `Breach`) |
+| `last_batch_time` | i64 | 8 | time of the last journal event |
+| `last_activity_pushed` | i64 | 8 | last `record_activity` CPI time |
+| `next_request_id` | u64 | 8 | mirrors vault `payout_count + 1` |
+| `seq` | u64 | 8 | journal sequence |
+| `journal_hash` | [u8;32] | 32 | rolling hash head (8.3) |
+| `trades_closed` | u32 | 4 | |
+| `ruleset_version` | u16 | 2 | snapshot of the rule set |
+| `status` | u8 | 1 | 0 Active, 1 Failed, 2 Abandoned, 3 Graduated |
+| `phase` | u8 | 1 | 1 to 5 |
+| `latch` | u8 | 1 | static floor shifted to 0.96 S |
+| `flat` | u8 | 1 | evaluator's assertion after the last batch (I-12) |
+| `pass_pending` | u8 | 1 | 0 none, 1 requested by the trader and awaiting the evaluator, 2 confirmed and waiting out the delay |
+| `vetoes` | u8 | 1 | count of vetoed passes (saturating) |
+| `bump` | u8 | 1 | |
+| `tight_on` | u8 | 1 | |
+| `r` | i64 | 8 | B recorded when tight mode began |
+| `g_peak` | i64 | 8 | highest `E - R` claimed since tight mode began |
+| `l_level` | i64 | 8 | tight floor L (0 when off) |
+| `pass_requested_at` | i64 | 8 | time of `request_advance` |
+| `pass_proposed_at` | i64 | 8 | time of `confirm_pass` (the delay counts from here) |
+| **Total** | | **206** | |
 
-`Position` (96): `market_id u16, flags u8 (side bit), pad`, `qty i64` (signed: long > 0), `avg_entry u64`, `sl u64`, `tp u64`, `timer_start i64`, `opened_at i64`, `mark_mid u64`, `mark_time i64`, `margin u64`, `fee_day i64`, `fees_acc i64`.
-`Order` (48): `id u32, market_id u16, kind u8 (0 limit, 1 stop), side u8`, `qty u64`, `trigger u64`, `sl u64`, `tp u64`, `created i64`.
-`ClosedTrade` (72): `market u16, side u8, flags u8 (bit0 quick), pad`, `qty u64`, `entry u64`, `exit u64`, `pnl i64`, `fees i64`, `opened i64`, `closed i64`, `seq u64`.
-
-Open positions are capped at **8 per account** (`MAX_OPEN_POSITIONS`). Reason: each open market needs a feed account in the transaction, and a 1,232-byte transaction cannot carry more than a handful of signed
-Stork updates. The cap is a constant and a decision for Rovik to revisit (OPEN_QUESTIONS #8).
+The static floor is not stored: it is `0.96 S` if `latch == 1`, else `0.92 S`. Positions, pending orders and the last trades live in the evaluator's database and in the journal; the chain never needs them.
 
 ### 5.2 `WalletProfile` (56 bytes)
 `trader Pubkey, next_challenge_id u64, active_count u8, bump u8, pad`. `active_count <= 5` is enforced at `open_account` and `reset_account` (decision 28). It is decremented when an account becomes Failed,
 Graduated or Abandoned. `next_challenge_id` hands out unused vault challenge ids (the vault rejects a reused id anyway).
 
+### 5.3 `SectorConfig` (270 bytes)
+`admin_a, admin_b, evaluator, vault_program, sl8_wallet` (5 x Pubkey), `current_ruleset u16`, `market_count u16`, `paused u8`, `bump u8`,
+`pass_delay_secs u32` (default 172,800), `max_payout_per_window u64` (micro-USD, value open), `window_secs u32` (default 86,400), `window_start i64`, `window_total u64`, `reserved [u8;64]`.
+
 ---
 
 ## 6. Instruction list
 
-Notation: `[S]` signer, `[W]` writable, `[R]` read-only. "Pipeline" = steps 1 to 4 of section 4.5 (validate evidence, accrue fees, compute equity, static-floor check) run before any trader action.
-Compute figures are **estimates** to be measured in the test workspace (module M10); see section 11.
+Notation: `[S]` signer, `[W]` writable, `[R]` read-only. Compute figures are **estimates** to be measured in the test workspace (module M11); see section 11.
 
 ### 6.1 Admin
 | Instruction | Signers | Effect |
 |---|---|---|
-| `init_config` | SL8 admin [S], Rov admin [S], payer | Creates `SectorConfig`, `BountyVault`, `PayoutTally` (0/0, magic `SL8TALLY`), rule set 1. |
+| `init_config` | SL8 admin [S], Rov admin [S], payer | Creates `SectorConfig` (evaluator, delay 172,800, window 86,400, cap) and `PayoutTally` (0/0, magic `SL8TALLY`), rule set 1. |
 | `create_ruleset` | both admins | Creates `RuleSet` version N+1 (immutable) and sets `current_ruleset`. Applies only to NEW accounts. |
 | `create_market` / `update_market` | either admin | Create or change a market: status, feed id, sessions, caps. **Free feed remap per decision 24.** Emits `MarketFeedChanged`. |
-| `set_bounty`, `withdraw_bounty` | both admins | Bounty size; return unspent SOL to the SL8 wallet only. |
-| `set_paused(bool)` | pause: either admin; unpause: both | Blocks `open_account`, `reset_account` and new opens. Closes, cranks and `flag_trader_failed` keep working. |
-| `fund_bounty(lamports)` | anyone | SOL into `BountyVault`. |
+| `set_evaluator(new_key)` | both admins | Rotates the evaluator key. Effective immediately. |
+| `set_limits(pass_delay_secs, max_payout_per_window, window_secs)` | both admins | Delay is clamped to `[1 day, 14 days]` so no admin pair can set a zero delay by accident; cap > 0. |
+| `set_paused(bool)` | pause: either admin; unpause: both | Blocks `open_account`, `reset_account`, `request_advance`, `finalize_pass`. `post_journal`, `report_fail`, `confirm_pass`, `reject_pass` keep working. |
+| `veto_pass` | both admins | Cancels a pending pass, state 1 or 2 (10.7). Cannot do anything else. |
 
 ### 6.2 Trader
 | Instruction | Signers | Accounts (R/W) | Effect |
 |---|---|---|---|
-| `open_account(tier_index, mint)` | trader [S], payer (= trader) [S] | trader; `WalletProfile` [W, init if needed]; `TradingAccount` [W, init]; config [R]; rule set [R]; `sector_authority` [R]; vault: program [R], `product_registry` [W], `trader_state` [W, created by vault], `vault_state` [R], `trader_token_account` [W], mint [R], pool token account [W], SL8 token account [W], token program [R], system program [R]; `payout_tally` not used | Checks cap 5 and not paused; transfers the 0.4% fee (trader -> SL8 token account, round UP); CPI `deposit_fee(amount = tier cost)` signed by `sector_authority`; initialises the account (B = S, phase 1, `f_static` = 0.92 S, ruleset snapshot); journal `Opened`. |
-| `reset_account(prev_challenge_id, mint)` | trader [S], payer [S] | as above plus the previous `TradingAccount` [W] and the previous vault `trader_state` [W] | Previous account must be locally `Failed`; CPI `deposit_reset(amount = ceil(tier cost x ladder[phase-1]), reset_phase = phase-1)`; new account starts at the SAME phase with fresh state; 0.4% fee on the reset price (assumption). Needs the vault change (decision 18). |
-| `place_order(kind, side, qty, trigger, sl, tp)` + remaining accounts `[market, feed]*` | trader [S] | `TradingAccount` [W]; config [R]; rule set [R]; markets and feeds [R]; vault `product_registry` [R], `trader_state` [W] (for `record_activity`); `sector_authority` [R]; vault program [R]; event accounts | Pipeline, then: market order fills now (netting, 7); limit or stop is stored. Margin check (free equity >= 0). Rejects while `now < lock_until`. CPI `record_activity` if `now - last_activity_pushed >= 86,000 s`; reads return data; `Abandoned` -> status Abandoned, positions voided, orders deleted. |
-| `close_position(market, qty or all)` | trader [S] | same as `place_order` | Market close of part or all; pipeline first. Allowed while locked and in reduce-only markets. |
-| `modify_position(market, sl, tp)` | trader [S] | as above | Sets SL/TP (validity rule: long SL < bid < TP, short mirrored). `record_activity`. |
-| `cancel_order(order_id)` | trader [S] | `TradingAccount` [W] | Deletes a pending order. `record_activity`. |
-| `advance_phase` (the "request payout and move to next phase" button) | trader [S], payer (= trader) [S] | `TradingAccount` [W]; config [R]; `payout_tally` [W]; `sector_authority` [R]; vault: program, `product_registry` [W], `trader_state` [W], `vault_state` [W], `payout_claim` [W, created by vault], system program; `WalletProfile` [W] | Requires: Active, flat, `B >= 1.08 S`, phase not failed. Deletes any pending orders (decision 27). Phase 1: `record_activity` only, then fresh phase 2. Phases 2 to 5: CPI `request_payout(amount = 0.08 S, proposed_request_id = next_request_id)`, **read return data**: `Paid` -> bump `payout_tally` (count + 1, total + amount, checked), `next_request_id += 1`; `Abandoned` -> status Abandoned, no tally change. Then fresh phase state. After phase 5: `Graduated`. |
-| `release_account` | trader [S] | `TradingAccount` [W], vault `trader_state` [W], registry [R] | Only calls `record_activity`; if the vault says `Abandoned` the local account is marked Abandoned and the wallet slot is freed. Otherwise it is a harmless activity refresh. |
+| `open_account(tier_index, mint)` | trader [S], payer (= trader) [S] | trader; `WalletProfile` [W, init if needed]; `TradingAccount` [W, init]; config [R]; rule set [R]; `sector_authority` [R]; vault: program [R], `product_registry` [W], `trader_state` [W, created by vault], `vault_state` [R], `trader_token_account` [W], mint [R], pool token account [W], SL8 token account [W], token program [R], system program [R] | Checks cap 5 and not paused; transfers the 0.4% fee (trader -> SL8 token account, round UP); CPI `deposit_fee(amount = tier cost)` signed by `sector_authority`; initialises the account (`b = S`, phase 1, rule set snapshot); emits `Opened` (not part of the hash chain; `seq = 0`, `journal_hash = h_0`, see 8.3). The evaluator learns of it from the event. |
+| `reset_account(prev_challenge_id, mint)` | trader [S], payer [S] | as above plus the previous `TradingAccount` [W] and the previous vault `trader_state` [W] | Previous account must be locally `Failed`; CPI `deposit_reset(amount = ceil(tier cost x ladder[phase-1]), reset_phase = phase-1)`; new account starts at the SAME phase with fresh state; 0.4% fee on the reset price (assumption A-FEE-1). Needs the vault change (decision 18). |
+| `request_advance` (the "request payout and move to next phase" button) | trader [S], payer (= trader) [S] | `TradingAccount` [W]; config [R]; `sector_authority` [R]; vault `product_registry` [R], `trader_state` [W] | Requires: Active, not paused, `flat == 1`, `tight_on == 0`, `pass_pending == 0`, `b >= 1.08 S` (program-maintained), phase not failed. Sets `pass_pending = 1`, `pass_requested_at = now`, CPI `record_activity`, emits `PassRequested{phase, amount 0.08 S (0 in phase 1), b, seq, journal_hash}`. No money moves and the phase does not change yet. |
+| `cancel_pass` | trader [S] | `TradingAccount` [W] | Only if `pass_pending == 1` and `now - pass_requested_at >= 3,600 s` (the evaluator never answered). Sets `pass_pending = 0`. |
+| `release_account` | trader [S] | `TradingAccount` [W], vault `trader_state` [W], registry [R] | Only calls `record_activity`; if the vault says `Abandoned` the local account is marked Abandoned and the wallet slot is freed. Otherwise it is a harmless activity refresh and the trader's own way to keep the vault clock alive if the evaluator stops touching it. |
 | `close_account` | trader [S] | `TradingAccount` [W, closed] | After 7 days in a terminal state: returns rent to the trader. The event stream remains the record. |
 
-### 6.3 Keepers (permissionless)
+Trading itself (orders, SL/TP, cancels, closes) is NOT an instruction. It is an API call to the evaluator, signed by the trader wallet (4.5).
+
+### 6.3 Evaluator
 | Instruction | Signers | Accounts | Effect |
 |---|---|---|---|
-| `refresh_marks` + `[market, feed]*` | anyone (pays fee) | `TradingAccount` [W], config, rule set, markets, feeds | Validates evidence, writes marks and `t_last` for the covered positions. No settlement, no bounty. |
-| `crank` + `[market, feed]*` | anyone [S, W] | `TradingAccount` [W]; config [R]; rule set [R]; markets and feeds [R]; `WalletProfile` [W]; `BountyVault` [W]; `sector_authority` [R]; vault program [R], `product_registry` [R], `trader_state` [W]; event accounts | Full pipeline of 4.5. Never calls `record_activity`. May CPI `flag_trader_failed`. Pays the bounty only if step 4, 5 or 9 (a floor settlement) happened. |
+| `post_journal(batch)` | evaluator [S] (also fee payer) | `TradingAccount` [W]; config [R]; markets referenced [R]; event accounts | Applies a `JournalBatch` (8.2) under invariants I-1 to I-12, updates `b`, `q`, `latch`, tight state, `lock_until`, `seq`, `journal_hash`, `flat`; emits each event via `emit_cpi!`. |
+| `report_fail(batch, reason)` | evaluator [S] | as `post_journal` plus `WalletProfile` [W], `sector_authority` [R], vault program [R], `product_registry` [R], `trader_state` [W] | Applies the final batch (must end with `Fail{reason}`), checks I-11, sets status Failed, CPI `flag_trader_failed`, `active_count - 1`. |
+| `confirm_pass` | evaluator [S] | `TradingAccount` [W]; config [R] | Requires `pass_pending == 1`, `flat == 1`, `b >= 1.08 S`. **Phase 1:** starts phase 2 at once (`b = S`, `q = 0`, latch 0, tight off) and emits `PhaseAdvanced`. **Phases 2 to 5:** `pass_pending = 2`, `pass_proposed_at = now`, emits `PassConfirmed`. The evaluator calls it only after its own engine agrees (4.10). |
+| `reject_pass(reason)` | evaluator [S] | `TradingAccount` [W] | Requires `pass_pending == 1`. Sets it to 0 and emits `PassRejected{reason}` (NotFlat, JournalBehind, TargetNotReached, Other). Cannot touch money. |
+| `touch_activity` | evaluator [S] | `TradingAccount` [W], `sector_authority` [R], vault `product_registry` [R], `trader_state` [W] | CPI `record_activity` (skipped if `now - last_activity_pushed < 86,000 s`), handles `Abandoned` as in 10.2. The backend calls it when the trader sent a signed order. |
 
-### 6.4 Signer rule for vault CPIs
+### 6.4 Anyone
+| Instruction | Signers | Accounts | Effect |
+|---|---|---|---|
+| `finalize_pass` | any payer [S] | `TradingAccount` [W]; config [W]; `payout_tally` [W]; `WalletProfile` [W]; `sector_authority` [R]; vault: program, `product_registry` [W], `trader_state` [W], `vault_state` [W], `payout_claim` [W, created by vault], system program | Requires `pass_pending == 2`, `now >= pass_proposed_at + pass_delay_secs`, not paused, daily cap not exceeded (10.6). CPI `request_payout(amount = 0.08 S, proposed_request_id = next_request_id)`, reads return data: `Paid` -> tally bump, `next_request_id + 1`, window counter, next phase starts fresh (or Graduated after phase 5); `Abandoned` -> status Abandoned. |
+
+### 6.5 Signer rule for vault CPIs
 Every vault CPI is signed by `sector_authority` through `invoke_signed` with seeds `["setl8_sector_authority", bump]`. Vault-side extra signers: `deposit_fee`/`deposit_reset` need the trader and a payer;
-`request_payout` needs a payer; `record_activity` and `flag_trader_failed` need only `sector_authority`. No admin key appears in any money path.
+`request_payout` needs a payer; `record_activity` and `flag_trader_failed` need only `sector_authority`. No admin key and no evaluator key appears in any money path.
 
 ---
 
 ## 7. Netting math
+
+**Where this runs.** This section is the specification of the `engine` crate's `apply_fill` (section 16). The evaluator and the public verifier run it in full. The program does NOT run netting; it re-checks only the
+closing slice (I-5: pnl formula, quick flag and credit) and the fees. Words like "slot" below mean the engine's per-market position record.
 
 Units: `qty` is a signed `i64` in 1e-6 base units (long > 0). Prices are `u64` in 1e-12 USD. Money is micro-USD. `DEN = 10^12 x 10^6 / 10^6 = 10^12` (notional micro-USD = `qty x price / 10^12`), all products in `i128`.
 Tradovate style: **one net position per (account, market)**.
@@ -469,7 +473,7 @@ Buy fills at `ask = ceil(mid x (1 + h))`, sell at `bid = floor(mid x (1 - h))`, 
    - `|dq| < |q|`: partial reduce; `q' = q + dq`, `A` and `timer_start` unchanged.
    - `|dq| == |q|`: flat, slot cleared.
    - `|dq| > |q|`: **flip**: slot closes fully, remainder `|dq| - |q|` opens the opposite way at price `p` with a fresh timer; SL/TP of the old position are dropped, the order's SL/TP (if any) attach to the new position.
-4. Every close appends one `ClosedTrade` to the ring buffer and emits `Close`. A flip emits two events (`Close`, then `Fill` for the remainder).
+4. Every closing slice becomes a `Close` journal event. A flip emits two events (`Close`, then `Fill` for the remainder). `Fill` always means exposure goes up (open or add).
 
 ### 7.3 Margin
 `margin(qty, price) = ceil( |qty| x price / DEN / leverage )`. An order is accepted if, after applying it, `E - sum(margin of all positions) >= 0`. For a flip only the remainder needs new margin. Reduce-only orders skip the check.
@@ -491,6 +495,7 @@ At a breach or a fail all margin is released.
 - **Quick:** the same flip 30 s after the long opened: slice is quick, credit = floor(1,967.60 / 2) = $983.80, `q_tally += 983.80`.
 
 ### 7.6 Edge cases (each needs a test, module M3)
+Error names in this table (`InvalidQuantity`, `InvalidStopLevel`) are the engine's rejection codes returned to the trader by the evaluator API. They are not program errors (section 12).
 | # | Case | Rule |
 |---|---|---|
 | N-1 | Zero quantity, quantity not a multiple of `qty_step`, or below `qty_min` | `InvalidQuantity` |
@@ -498,9 +503,9 @@ At a breach or a fail all margin is released.
 | N-3 | Flip when only the closing slice fits margin | Allowed; remainder is margin-checked |
 | N-4 | SL above bid for a long (or TP below) | `InvalidStopLevel` |
 | N-5 | SL and TP both satisfied by one gap sample | SL takes precedence (conservative) |
-| N-6 | A fill that makes `q_tally > 0.028 S` | Phase fails immediately (step 9) |
+| N-6 | A fill that makes `q_tally > 0.028 S` | Phase fails immediately (I-8; the evaluator reports it with `report_fail(PhaseQuick)`) |
 | N-7 | Add to a position 44 s after open, then close 20 s later | Timer restarted at the add: closing slice age 20 s -> quick |
-| N-8 | Same-tx multiple fills | Sequential, each with its own `seq`; one snapshot, one `T` |
+| N-8 | Same-tx multiple fills | Sequential, each with its own `seq`; one sample, one `T` |
 | N-9 | Pending order fills in a market where a position exists | Netting applies normally (merge, reduce or flip) |
 | N-10 | Fill price rounds to exactly the trigger | Counts as triggered (touching counts) |
 
@@ -508,24 +513,63 @@ At a breach or a fail all margin is released.
 
 ## 8. Journal and trade history
 
-### 8.1 What is recorded (decision 3)
-Every fill and close, plus every floor/mode change, with: market, side, size, leverage, margin, fill price, average entry after, SL, TP, `floor_before`/`floor_after`, mode before/after with a reason code,
-realized P&L, fees, `B` after, the sample `publish_time`, the slot, and the account `seq`.
+### 8.1 What is recorded (decision 3, restated for option C)
+Every fill and every closing slice, every floor or mode change, every fee, and the batch metadata, in order. The trader's full trade history is therefore the event stream of one account.
+Event kinds: `Opened`, `Fill`, `Close`, `Fee`, `TightStart`, `FloorRaised`, `TightEnd`, `Breach`, `Fail`, `Meta`, `PassRequested`, `PassConfirmed`, `PassRejected`, `PassCancelled`, `PassVetoed`, `PassFinalized`,
+`PhaseAdvanced`, `Graduated`, `Abandoned`, `MarketFeedChanged`. The first group (`Fill` to `Meta`) is posted by the evaluator inside a `JournalBatch` and extends the hash chain; the rest are emitted by the program itself with `emit_cpi!` and carry the account's current `seq` as a reference (`at_seq`) but are NOT part of the hash chain, so the evaluator's sequence numbers are never disturbed by lifecycle events. Reason codes are enums, not free text.
+`Fill` always means exposure goes up (open or add). Reductions, closes and the closing half of a flip are `Close` events.
 
-Event kinds: `Opened`, `Fill`, `Close`, `OrderPlaced`, `OrderCancelled`, `OrderRejected`, `OrderTriggered`, `SlTpSet`, `ModeSwitch{TightStart, TightEnd, Breach, Latch, Fail, PhaseFail}`, `FloorRaised`,
-`HoldingFee`, `PhaseAdvanced`, `PayoutQueued`, `Failed`, `Abandoned`, `Graduated`, `MarketFeedChanged`.
-Reason codes are an enum, not free text.
+### 8.2 Formats (Borsh, canonical)
+```text
+JournalBatch {
+  first_seq: u64,                  // must equal account.seq + 1
+  prev_hash: [u8;32],              // must equal account.journal_hash
+  events: Vec<JournalEvent>,       // 1..=8
+  proofs: Vec<PriceProof>,         // 0..=3, referenced by index
+}
+enum JournalEvent {
+  Fill      { market: u16, side: u8 /*0 long,1 short*/, order_kind: u8 /*market,limit,stop*/, qty: u64, price_e12: u64, time: i64,
+              avg_entry_after: u64, margin: u64, sl: u64, tp: u64, intent_id: u32, proof: u8 /*index or 255*/ },
+  Close     { market: u16, side: u8, qty: u64, entry_e12: u64, exit_e12: u64, time: i64, timer_start: i64,
+              pnl: i64, quick: u8, credited: i64, reason: u8 /*Manual,StopLoss,TakeProfit,Flip,Breach,Fail*/, intent_id: u32, proof: u8 },
+  Fee       { kind: u8 /*Holding,Commission*/, market: u16, amount: u64, time: i64 },
+  TightStart{ time: i64, p_open: i64, r: i64, l_start: i64, g_peak: i64, l_level: i64, proof: u8 },
+  FloorRaised{ time: i64, g_peak: i64, l_level: i64, proof: u8 },
+  TightEnd  { time: i64 },
+  Breach    { time: i64, l_level: i64, b_after: i64, proof: u8 },
+  Fail      { time: i64, reason: u8 /*StaticFloor,PhaseQuick*/, b_after: i64, proof: u8 },
+  Meta      { time: i64, flat: u8, samples_hash: [u8;32], intents_hash: [u8;32], engine_version: u16 },   // last event of every batch
+}
+PriceProof {
+  source: u8,            // 0 Stork, 1 Pyth (not built)
+  feed_id: [u8;32],
+  timestamp_ns: u64,
+  quantized_value: i128, // 18 decimals, as Stork publishes it
+  signed_update: Vec<u8> // Stork's signed update, opaque to the program (3.3); about 200 to 250 bytes assumed
+}
+```
+Size of one proof in a transaction is about 300 bytes (UNVERIFIED, M2); a `Close` or `Fill` event is about 90 to 110 bytes. Hence about two proofs per 1,232-byte transaction; larger batches use an address lookup table or several transactions.
+`MAX_EVENTS_PER_BATCH = 8` and `MAX_PROOFS_PER_BATCH = 3` bound compute and event size.
 
-### 8.2 Storage options compared
-| Option | How | Cost | Pros | Cons |
-|---|---|---|---|---|
-| A. Record account per closed trade | PDA `["trade", account, n]`, about 192 bytes | rent 0.0022272 SOL each (about $0.33 at $150/SOL); 1,000 trades = 2.23 SOL | Readable on-chain by programs and UIs forever | Costs more than a $30 account earns; someone pays rent for every trade; account explosion |
-| B. Events + rolling hash | `emit_cpi!` for each event, `journal_hash = sha256(prev_hash ‖ seq ‖ kind ‖ body)` stored in the account | No rent; about 1.5k CU per event | Cheap; **any missing or altered event is detectable** by re-hashing; carries full detail | Needs an indexer or archive node to read events; programs cannot read old events |
-| C. Both | A + B | A's cost | Strongest | A's cost |
-| D (recommended) | **B + an in-account ring buffer of the last 16 closed trades + a `PhaseSummary` per finished phase carried in the `PhaseAdvanced` event** | 0 extra rent (ring is inside the 2,608 bytes) | UI shows recent trades with no indexer; full history verifiable from events and the hash | Older trades are only in events |
+### 8.3 Hash chain
+Genesis `h_0 = sha256("SL8LEV" ‖ account pubkey)`, written at `open_account` together with `seq = 0`; the first evaluator batch has `first_seq = 1`.
+For each event with sequence number `n`: `h_n = sha256("SL8LEV1" ‖ h_(n-1) ‖ n as u64 LE ‖ borsh(event) ‖ proof_digest)`, where `proof_digest = sha256(borsh(proof))` if the event references a proof and 32 zero bytes otherwise.
+The program computes this with the `sol_sha256` syscall, stores only `h_n` and `n`, and emits `EventLog{account, seq, event, proof}` through `emit_cpi!` (an inner instruction, not a text log: logs truncate at 10 KB per transaction).
+Any missing, reordered or altered event breaks the chain from that point; the chain makes the order and completeness of the posted record checkable, nothing more.
 
-Genesis hash `h0 = sha256("SL8LEV" ‖ account pubkey)`. Hash input uses canonical Borsh bytes of the event body. `emit_cpi!` (self-CPI inner instruction) is used rather than `msg!` logs because logs truncate at 10 KB per transaction.
-Retention depends on RPC/archive providers; the hash makes loss detectable, and Setl8 should keep its own copy (indexer, off-chain, not trusted for correctness).
+### 8.4 Storage choices compared
+| Option | How | Cost | Verdict |
+|---|---|---|---|
+| A. One record account per closed trade | PDA per trade, about 192 bytes | rent about $0.33 per trade at $150/SOL | Rejected: costs more than a $30 account earns |
+| B. Events + rolling hash (chosen) | `emit_cpi!` per event, `journal_hash` in the account | no rent; transaction fee about 5,000 lamports (about $0.00075) per transaction | Cheap; full detail; tamper-evident |
+| C. In-account ring buffer of recent trades | inside the account | extra rent | Dropped: the UI reads the evaluator's API and verifies against the hash |
+Cost sketch: a trade that needs 3 transactions costs the evaluator about 15,000 lamports (about $0.002). A scalper with 500 trades per phase costs about 0.0075 SOL (about $1.1). **The evaluator pays; its wallet needs a SOL budget and a low-balance alert (OPEN_QUESTIONS).**
+Retention depends on RPC/archive providers. Setl8 keeps its own full copy of events, the sample archive and the intents file, and publishes them; the hash makes loss or tampering detectable.
+
+### 8.5 When the evaluator posts
+- Every `Fill` batch within `T_post` of the fill, so `flat` on the chain tracks reality closely (the chain value only changes with a `Meta` event). Target `T_post` = 60 s. It is a service level, not a chain rule in v1 (OPEN_QUESTIONS #10).
+- Closing details, fees and floor changes at the latest when the position closes.
+- A `Meta` event ends every batch and sets `flat`.
 
 ---
 
@@ -533,7 +577,7 @@ Retention depends on RPC/archive providers; the hash makes loss detectable, and 
 
 ### 9.1 Spread (decision 14, numbers PENDING from Rovik's friend)
 Oracles give one price. The program synthesises bid and ask: `ask = mid x (1 + h)`, `bid = mid x (1 - h)`, `h` = per-market half-spread in the rule set (e6 units). Longs are marked at bid, shorts at ask, so a position
-starts slightly negative (see the -$64.80 in 4.12, which is 0.003% half-spread each side on $1.08M). Spread and commission are simulated balance deductions; no tokens move. Until the friend's numbers arrive the
+starts slightly negative (see the -$64.80 in 4.9, which is 0.003% half-spread each side on $1.08M). Spread and commission are simulated balance deductions; no tokens move. Until the friend's numbers arrive the
 build uses placeholders marked `PENDING` in the test fixtures, never in production data.
 
 ### 9.2 Purchase price and the 0.4% fee (decisions 15, 16)
@@ -567,9 +611,9 @@ Charged for every calendar night a position is held through **22:00 UTC**, on no
 | Crypto majors | 0.10% | $500 (0.5%) |
 | Crypto alts | 0.16% | $320 (0.32%) |
 
-Mechanics: each position stores `fee_day` (index of the last 22:00 rollover already charged; a position opened after the day's rollover starts with today's index, so it is charged from the next rollover). Pipeline step 2 charges
+Mechanics (engine, section 16): each position stores `fee_day` (index of the last 22:00 rollover already charged; a position opened after the day's rollover starts with today's index, so it is charged from the next rollover). The engine charges
 `n = today_index - fee_day` nights at once: `fee = ceil(n x rate_e6 x notional_at_stored_mark / 10^6)`. **Approximation:** the notional uses the mark at the time the fee is applied, not at 22:00 exactly. This is documented, bounded by the
-price move in the gap, and tested. Each application emits `HoldingFee`. The rates are broker-derived (IG formulas) and doubled; benchmark rates for October 2026 were not verified.
+price move in the gap, and tested. Each application becomes a `Fee{HoldingFee}` journal event; the program only checks that `b` is debited by exactly that amount (I-6). The rates are broker-derived (IG formulas) and doubled; benchmark rates for October 2026 were not verified.
 
 ### 9.4 Commission
 Pending (decision 14). The rule set has a per-class `commission_e6` charged on notional at open and at close (ceil). The estimated closing commission is included in `E`, so a floor decision never ignores a cost the trader will pay on closing.
@@ -599,51 +643,76 @@ The vault copies `payout_count` from the failed record, so a phase-5 reset canno
 | Event | Our instruction | Vault CPI (signed by `sector_authority`) | Extra signers | Local state change |
 |---|---|---|---|---|
 | Purchase | `open_account` | `deposit_fee` | trader, payer | account created, `active_count + 1` |
-| First and every trader action | `place_order`, `close_position`, `modify_position`, `cancel_order`, `advance_phase`, `release_account` | `record_activity` (skipped if called within the last 86,000 s) | none | `last_activity_pushed` |
-| Static-floor or quick-limit fail | `crank` (anyone), or any trader action that runs the pipeline | `flag_trader_failed` | none | status Failed, all closed at marks, `active_count - 1` |
-| Tight-floor breach | `crank` / pipeline | none | none | all closed, 12 h lock |
+| Trader activity (a signed order reached the evaluator) | `touch_activity` (evaluator) or `release_account` (trader) | `record_activity` (skipped if called within the last 86,000 s) | none | `last_activity_pushed` |
+| Static-floor or quick-limit fail | `report_fail` | `flag_trader_failed` | evaluator | status Failed, `active_count - 1` |
+| Tight-floor breach | `post_journal` (`Breach`) | none | evaluator | lock 12 h, tight mode off |
 | Reset after fail | `reset_account` | `deposit_reset` | trader, payer | new account at the same phase |
-| Pass and move on (phase 2 to 5) | `advance_phase` | `request_payout` | trader, payer | tally bumped, fresh phase |
-| Pass phase 1 | `advance_phase` | `record_activity` only | trader | fresh phase 2 |
-| Graduation (after phase 5 payout) | `advance_phase` | `request_payout` (the vault also auto-graduates at `max_payout_count`) | trader, payer | status Graduated, `active_count - 1` |
-| Abandonment (7 days idle) | vault flips it on `record_activity`/`request_payout`/`mark_abandoned`; we learn via return data in `release_account` or the next trader action | `record_activity` | trader | status Abandoned, positions voided, slot freed |
+| Pass, phase 1 | `request_advance` then `confirm_pass` | `record_activity` (at the request) | trader, then evaluator | fresh phase 2 at the confirmation |
+| Pass, phases 2 to 5 | `request_advance`, `confirm_pass`, wait 2 days, `finalize_pass` | `record_activity` (request), `request_payout` (finalize) | trader, evaluator, any payer | tally bumped, next phase |
+| Graduation (after phase 5 finalize) | `finalize_pass` | `request_payout` (the vault also auto-graduates at `max_payout_count`) | any payer | status Graduated, `active_count - 1` |
+| Abandonment (7 days idle) | vault flips it on `record_activity`/`request_payout`/`mark_abandoned`; we learn via return data in `release_account`, `touch_activity` or `finalize_pass` | `record_activity` | | status Abandoned, wallet slot freed |
 
 ### 10.2 Return-data discipline
 After every `record_activity` and `request_payout` CPI the program reads `get_return_data()` and checks `program_id == vault_program`. `Abandoned` is handled as above; a missing or wrong-program return value aborts the transaction.
 `ActivityOutcome::Throttled` and `Recorded` are both fine. Nothing tells the trader a payout was queued unless the outcome was `Paid`.
 
-### 10.3 Payout flow against the queued-claim vault
-1. Trader presses the button (`advance_phase`); the program checks flat, `B >= 1.08 S`, not failed.
-2. CPI `request_payout(trader_wallet, amount = 0.08 S, product_program_id, challenge_id, proposed_request_id = next_request_id)`. The trader signs as `payer` for the `PayoutClaim` rent.
-3. On `Paid`: update `payout_tally` (checked add: `requested_count + 1`, `requested_total + amount`), `next_request_id += 1`, then reset the phase state. On any error the whole transaction reverts, including the tally.
-4. The vault's permissionless 5-day heartbeat pays queued claims pro rata; this program never learns when. Nothing in this program can move that money.
-5. Fixed formula: `amount = 0.08 S`, once per phase 2 to 5, at most 4 per record chain (vault cap). There is no instruction that takes an amount from the caller.
+### 10.3 The pass state machine (`pass_pending`)
+```
+          request_advance            confirm_pass (phase 2..5)             finalize_pass (after delay, cap ok)
+   0 ──────────────────────► 1 ─────────────────────────────► 2 ───────────────────────────────► 0 (next phase / Graduated)
+   ▲                         │ reject_pass (evaluator)          │ veto_pass (both admins)
+   │◄────────────────────────┤ cancel_pass (trader, after 1 h)  │
+   └─────────────────────────┴──────────────────────────────────┘
+   confirm_pass in phase 1 goes 1 ─► 0 and starts phase 2 at once (no money).
+```
+- State 1: the evaluator may still post journal batches (to catch the chain up); the trader cannot trade (the evaluator freezes the account; the chain cannot enforce this, only the rule that nothing can be confirmed unless `flat`).
+- State 2: `post_journal` and `report_fail` are rejected (`PassPending`), so the state that was checked cannot change. The account is frozen for trading for the whole delay (decision 33).
+- A reject, cancel or veto leaves phase, `b`, `q`, latch and tight state exactly as they were.
 
-### 10.4 Vault pause (decision 25)
-While the vault pauses this product: `open_account`, `reset_account` and `advance_phase` fail at the vault (their CPIs revert), so the trader retries later. Trading, closes, cranks and `flag_trader_failed` continue (the vault allows the flag while paused). The vault freezes
-inactivity clocks during a pause. The sector `set_paused` is a separate, additional switch.
+### 10.4 Payout flow against the queued-claim vault
+1. `request_advance` (trader), then `confirm_pass` (evaluator) as in 10.3.
+2. After `pass_delay_secs` (default 2 days, clamped to 1 to 14 days) anyone calls `finalize_pass`; the caller pays the `PayoutClaim` rent as `payer`.
+3. The program checks: pending is 2, delay elapsed, not paused, daily cap (10.6).
+4. CPI `request_payout(trader_wallet, amount = 0.08 S, product_program_id, challenge_id, proposed_request_id = next_request_id)`; the return data must be `Paid`.
+5. On `Paid`: tally checked-add (`requested_count + 1`, `requested_total + amount`), `next_request_id += 1`, window counter add, then the next phase starts fresh (or the account is Graduated after phase 5). On any error the whole transaction reverts, including the tally.
+6. The vault's permissionless 5-day heartbeat pays queued claims pro rata; this program never learns when. Nothing in this program can move that money.
+7. Fixed formula: `amount = 0.08 S`, once per phase 2 to 5, at most 4 per record chain (vault cap). No instruction takes an amount from any caller.
 
 ### 10.5 `PayoutTally`
 PDA `["payout_tally"]` under this program, 25 bytes, layout `b"SL8TALLY" | version 1 | requested_count u64 LE | requested_total u64 LE`, no Anchor discriminator, held as `UncheckedAccount`, parsed and written with `setl8_shared_interfaces::PayoutTally::{parse, write_into}`.
 Increases only on `Paid`, checked arithmetic (fail on overflow), never decreased, closed or re-initialised, including across upgrades. Initialised to 0/0 in `init_config`.
 
+### 10.6 Daily payout cap (decision 34)
+`finalize_pass` does, in this order: if `now >= window_start + window_secs` then `window_start = now`, `window_total = 0`. Then `window_total + amount <= max_payout_per_window` or the instruction fails with `DailyPayoutCapReached`
+(the trader or anyone retries after the window rolls). Then `window_total += amount`. Known property: fixed windows allow up to twice the cap across a window boundary. `max_payout_per_window` is a micro-USD value set by both admins (open question).
+For scale: the largest single payout is $16,000 (0.08 x $200K), so any cap below that would block that tier; the largest sum of the vault cap per account is $64,000.
+
+### 10.7 Veto (decision 33)
+`veto_pass` requires both admin signatures in one transaction and `pass_pending != 0`. It sets `pass_pending = 0`, increments `vetoes` (saturating), emits `PassVetoed{admin keys, slot}`. It never touches `b`, phase, payouts or the vault, and it cannot be used to confirm or finalize anything.
+The trader may press the button again. **What admins do after a veto (investigate, reset, ban) is policy, not code, and it is in tension with "no manual overrides"; see OPEN_QUESTIONS #8.** A veto can delay a trader indefinitely; the `vetoes` counter and event make that visible.
+
+### 10.8 Vault pause (decision 25)
+While the vault pauses this product: `open_account`, `reset_account` and `finalize_pass` fail at the vault (their CPIs revert), so the caller retries later. Journal posts, `report_fail`, `confirm_pass` and `reject_pass` continue (the vault allows `flag_trader_failed` while paused).
+The vault freezes inactivity clocks during a pause. The sector `set_paused` is a separate, additional switch.
+
 ---
 
 ## 11. Compute, transaction size and stack budget
 
-**ESTIMATES. Measured values replace them in module M10.**
+**ESTIMATES. Measured values replace them in module M11.**
 | Instruction | CU estimate | Notes |
 |---|---|---|
-| `crank` / `refresh_marks` (8 positions) | 90k to 140k | about 4k CU per position of u128 math, 3.5k per adapter read, 4k journal and hash, up to 15k for `flag_trader_failed` CPI. Stork update instructions are separate instructions in the same transaction and are NOT counted here. |
-| `place_order` market, 1 market | 60k to 90k | pipeline on open positions + fill + `record_activity` CPI (about 10k) |
-| `open_account` | 120k to 160k | `deposit_fee` CPI creates `TraderState` and moves tokens; account init 2,608 bytes |
-| `advance_phase` | 80k to 110k | `request_payout` CPI creates `PayoutClaim` |
-Request the compute budget explicitly (the default 200k suffices for most; `crank` requests 250k).
+| `post_journal` (8 events, 3 proofs) | 120k to 220k | per event about 12k to 25k CU: Borsh decode, i128 pnl re-check, `sol_sha256` over about 150 bytes, `emit_cpi!` self-CPI (about 5k). Requests 250k. |
+| `report_fail` | +20k over `post_journal` | `flag_trader_failed` CPI |
+| `open_account` | 90k to 130k | `deposit_fee` CPI creates `TraderState` and moves tokens; account init 206 bytes |
+| `request_advance` / `confirm_pass` / `reject_pass` / `cancel_pass` / `veto_pass` | 15k to 40k | `request_advance` includes one `record_activity` CPI |
+| `finalize_pass` | 70k to 100k | `request_payout` CPI creates `PayoutClaim` |
+Default 200k per instruction suffices except `post_journal`.
 
-**Transaction size.** 1,232 bytes. Each open market needs a market account and a feed account (via an address lookup table), and each Stork update carries a signed blob. Assumed 3 to 4 updates per transaction (UNVERIFIED, M2).
-So a snapshot of 8 positions is two to three transactions (`refresh_marks`, then `crank`), inside the 30 s coherence window `W`.
+**Transaction size.** 1,232 bytes. A signed proof is about 300 bytes (UNVERIFIED, M2), an event about 100: about two proofs per transaction, so a trade with entry, tight start, peak and exit is 2 to 3 transactions (section 4.9).
+This costs fees (8.4) but no safety: every transaction extends the same hash chain and a later transaction cannot be applied before an earlier one.
 
-**Stack (4,096 bytes per frame).** `TradingAccount` is zero-copy (`AccountLoader`), never materialised on the stack. All Anchor `Accounts` structs with more than a few large accounts wrap them in `Box<>`. `RuleSet` and `Market` are read with `AccountLoader` too.
+**Stack (4,096 bytes per frame).** Accounts are small Borsh structs; instruction account structs with more than a few accounts (`open_account`, `finalize_pass`, `report_fail`) wrap their big members in `Box<>`; `RuleSet` is read with `AccountLoader` (zero-copy, 904 bytes).
 **Build check:** `scripts/anchor-build-checked.sh` (same approach as the vault's script of that name) runs `anchor build`/`cargo build-sbf`, fails on any "Stack offset of ... exceeded max offset of 4096" message, and runs `const_assert!`s on every account size in section 5.
 
 ---
@@ -651,36 +720,41 @@ So a snapshot of 8 positions is two to three transactions (`refresh_marks`, then
 ## 12. Error list
 | Code | Name | Raised when |
 |---|---|---|
-| 6000 | `Unauthorized` | wrong signer for an admin instruction |
+| 6000 | `Unauthorized` | wrong signer for an admin or evaluator instruction |
 | 6001 | `Paused` | sector paused |
 | 6002 | `WalletCapReached` | 5 active accounts already |
 | 6003 | `InvalidTier` | tier index not in the rule set |
 | 6004 | `AccountNotActive` | status is not Active |
-| 6005 | `AccountLocked` | opening or adding while `now < lock_until` |
-| 6006 | `MarketDisabled` | status 0 |
-| 6007 | `MarketClosed` | outside session or feed stale for an OPEN action |
-| 6008 | `ReduceOnly` | open attempted in a reduce-only market |
-| 6009 | `StaleSample` | `T <= t_last` or age above `max_age_secs` |
-| 6010 | `IncoherentSnapshot` | sample times more than `W` apart, or an open position has neither a fresh sample nor a fresh stored mark |
-| 6011 | `BadFeedAccount` | wrong owner, wrong PDA, wrong feed id |
-| 6012 | `InvalidPrice` | zero or negative, or future-dated beyond 2 s |
-| 6013 | `InvalidQuantity` | zero, off-step, below minimum, above `max_notional` |
-| 6014 | `InsufficientMargin` | free equity would go negative |
-| 6015 | `InvalidStopLevel` | SL/TP on the wrong side of the mark |
-| 6016 | `TooManyPositions` | more than 8 open |
-| 6017 | `TooManyOrders` | more than 10 pending |
-| 6018 | `OrderNotFound` | cancel of an unknown id |
-| 6019 | `NotFlat` | `advance_phase` with open positions |
-| 6020 | `TargetNotReached` | `B < 1.08 S` |
-| 6021 | (reserved) | unused: pending orders are deleted on phase change, not rejected |
-| 6022 | `PayoutNotAccepted` | vault returned anything other than `Paid` where it was required |
-| 6023 | `ReturnDataInvalid` | return data missing or from the wrong program |
-| 6024 | `ResetNotAllowed` | previous account not locally Failed |
-| 6025 | `WrongPhase` | operation not valid in this phase |
-| 6026 | `MathOverflow` | checked arithmetic failed |
-| 6027 | `BountyPoolInsufficient` | internal only; cranks continue unpaid |
-| 6028 | `CloseTooEarly` | `close_account` before 7 days terminal |
-| 6029 | `RuleSetMissing` | version not found |
+| 6005 | `AccountLocked` | an exposure-increasing `Fill` with `time < lock_until` |
+| 6006 | `MarketUnknown` | market account missing or wrong |
+| 6007 | `BadSequence` | `first_seq` or `prev_hash` mismatch |
+| 6008 | `TimeBackwards` | event time before `last_batch_time` or before the previous event |
+| 6009 | `TimeInFuture` | event time beyond `now + 2 s` |
+| 6010 | `BadPriceProof` | feed id, value, or age check failed (I-4) |
+| 6011 | `PnlMismatch` | `Close.pnl` differs from the program's computation (I-5) |
+| 6012 | `QuickMismatch` | `quick` or `credited` wrong (I-5) |
+| 6013 | `FeeInvalid` | negative fee amount (I-6) |
+| 6014 | `TightStartInvalid` | I-9 failed |
+| 6015 | `FloorFormulaMismatch` | `l_level` does not follow the formula, or fell |
+| 6016 | `BreachInvalid` | I-10 failed |
+| 6017 | `FailInvalid` | I-11 failed |
+| 6018 | `QuickLimitExceeded` | Q above 0.028 S without a `Fail{PhaseQuick}` (use `report_fail`) |
+| 6019 | `PassPending` | `post_journal`/`report_fail` while `pass_pending == 2` |
+| 6020 | `NotFlat` | button or confirm with `flat == 0` |
+| 6021 | `TargetNotReached` | `b < 1.08 S` |
+| 6022 | `NoPendingPass` | `finalize`, `confirm`, `reject`, `cancel` or `veto` with nothing pending in the right state |
+| 6023 | `PassDelayNotElapsed` | `finalize_pass` too early |
+| 6024 | `DailyPayoutCapReached` | window total would exceed the cap |
+| 6025 | `PayoutNotAccepted` | vault returned anything other than `Paid` where it was required |
+| 6026 | `ReturnDataInvalid` | return data missing or from the wrong program |
+| 6027 | `ResetNotAllowed` | previous account not locally Failed |
+| 6028 | `WrongPhase` | operation not valid in this phase |
+| 6029 | `MathOverflow` | checked arithmetic failed |
+| 6030 | `CloseTooEarly` | `close_account` before 7 days terminal |
+| 6031 | `RuleSetMissing` | version not found |
+| 6032 | `BatchTooLarge` | more than 8 events or 3 proofs |
+| 6033 | `CancelTooEarly` | `cancel_pass` before 1 hour |
+| 6034 | `InvalidLimits` | delay outside 1 to 14 days, zero cap or zero window |
 
 ---
 
@@ -689,42 +763,56 @@ So a snapshot of 8 positions is two to three transactions (`refresh_marks`, then
 ### 13.1 Residual risks accepted by the design (not solved)
 | # | Risk | Size | Where discussed |
 |---|---|---|---|
-| R-1 | Sampling asymmetry and the race (a trader's later favourable sample beats a keeper's earlier adverse one; a trader samples only favourable spikes) | bounded by price moves inside one sampling gap | 4.9 |
-| R-2 | Oracle error or compromise pays out wrong prices | bounded by the vault: 32% of size per record chain | 1.3 |
-| R-3 | Feed outage on an open market freezes triggers | trader held at last mark; admin can set reduce-only | 4.7 |
-| R-4 | A single bad print can fail an account | one price decides; optional two-sample confirmation (off by default) | 4.7 |
-| R-5 | Admin free feed remap | **EXCEPTION (decision 24)**: a rigged feed can create payouts up to the vault cap | 14 |
+| R-1 | **Evaluator is wrong or compromised** and writes a false history (fabricated pass, wrongful fail, omitted breach) | Money out is bounded by the 2-day delay + veto, the daily cap and the vault (32% of size per record chain); trader harm from a wrongful fail has no on-chain remedy | 1.3, 4.7 |
+| R-2 | Omitted breach or dropped sample cannot be proven on-chain | Only a verifier with an independent price record can find it | 4.5 |
+| R-3 | Evaluator outage stops trading, journaling and activity refresh | Liveness only; vault clocks can run | 4.7 |
+| R-4 | Oracle error or compromise pays out wrong prices | bounded by the same limits as R-1 | 1.3 |
+| R-5 | Admin free feed remap | **EXCEPTION (decision 24)**: a rigged feed can make the evaluator produce passes; the delay, veto and cap apply | 14 |
+| R-6 | Both admins unreachable for 2 days: a bad pass is finalized | Bounded by the cap and vault | 13.3 |
+| R-7 | Signatures on price proofs and trader intents are not verified on-chain in v1 | The public verifier checks them; hardening paths in 3.3 and 4.5 | 3.3 |
 
 ### 13.2 Attacks considered
 | # | Attack | Status |
 |---|---|---|
-| A-1 | Replay an old favourable price | Blocked: feed account holds only the latest value; `T > t_last`; `max_age_secs`. Needs Stork to reject older timestamps (UNVERIFIED, M2). |
-| A-2 | Pass a fake feed account | Blocked: owner and PDA derivation checked for every feed. |
+| A-1 | Evaluator replays an old favourable price | Limited: `proof.time` must be within `max_age_secs` of the event time and event time never goes backwards. The verifier compares against the sample archive. |
+| A-2 | Wrong or fake feed id in a proof | Blocked: I-4 checks the market's current feed id. |
 | A-3 | Impersonate this program to the vault | Blocked by the vault: `sector_authority` must be a PDA signed by this program id. |
-| A-4 | Spam `crank` to farm bounties | Blocked: bounty paid only when a floor settlement (static fail, tight breach, phase fail) happens; a settlement closes or locks the account, so it is not repeatable. SL, TP and pending fills pay no bounty. |
-| A-5 | Self-farm bounties by deliberately breaching | Not profitable: each breach costs about 3% of the account's simulated balance and locks it 12 h; a fail ends the account (price $30+). |
-| A-6 | Cross-account hedging: wallet A long, wallet B short, one passes | **NOT solved by this design. HIGH severity economics.** The loser costs a reset of 100% to 130% of the tier price (about $859 to $1,117 on $100K); the winner collects $8,000 per phase. Roughly 7x to 9x return per pass before partner-matching friction. Max 5 accounts per wallet does not stop multiple wallets. See OPEN_QUESTIONS #2 for mitigations (consistency rule, minimum days per phase, minimum risk per trade). |
-| A-7 | Latency arbitrage: trade against a stale oracle using a faster real market | Partly mitigated: spread, tight `max_age_secs`, and the quick-trade rule (profit under 45 s credited at half). Not eliminated. |
-| A-8 | Keep an account alive or kill it from outside | Blocked: `crank` never calls `record_activity`; only the trader's own actions count. |
-| A-9 | Split a position to dodge the 45 s rule | Timer restarts on every add; partial closes do not reset; flip makes a new position. A trader may still hold 46 s to avoid halving, which is the intent. |
-| A-10 | Overflow or rounding drift | `i128` intermediates, checked arithmetic, rounding rules in 7.4, mutation tests on netting and ratchet. |
+| A-4 | Anyone but the evaluator posts journal | Blocked: I-1. |
+| A-5 | Trader fabricates his own pass | Blocked: only the evaluator posts the journal that gives him `b` and `flat`. |
+| A-6 | Cross-account hedging: wallet A long, wallet B short, one passes | **NOT solved by rules.** HIGH severity economics: the loser costs a reset of 100% to 130% of the tier price (about $859 to $1,117 on $100K); the winner collects $8,000 per phase. **Option C improves detection**: the backend sees every order of every account in real time and can flag opposite positions of the same size and time across wallets. Detection output feeds a veto (policy, OPEN_QUESTIONS #7). |
+| A-7 | Latency arbitrage against a stale oracle | Partly mitigated: spread, tight `max_age_secs`, the quick-trade rule; the backend can also rate-limit. Not eliminated. |
+| A-8 | Keep an account alive or kill it from outside | Evaluator-only `touch_activity` follows real signed orders; the trader's own `release_account` also refreshes. A silent evaluator can let an account lapse (R-3). |
+| A-9 | Split a position to dodge the 45 s rule | Timer restarts on every add; partial closes do not reset; flip makes a new position. |
+| A-10 | Overflow or rounding drift between engine and program | `i128` intermediates, checked arithmetic, the program re-computes pnl with the same `engine` function the evaluator uses, differential tests, mutation tests on netting and ratchet. |
 | A-11 | Upgrade key compromise | 2-of-2 multisig (decision 30); burn decision after the audit. |
-| A-12 | Compute or account-size DoS | Hard caps: 8 positions, 10 orders, 16 ring entries; zero-copy accounts. |
+| A-12 | Compute or account-size DoS | Hard caps: 8 events and 3 proofs per batch; accounts fixed-size. |
 | A-13 | Wallet cap evasion | Not blocked (new wallet). The cap limits convenience only. |
-| A-14 | Front-run a keeper's sample with a favourable one | R-1. |
+| A-14 | Trader presses the button while a position is open | Chain `flat` can be stale; blocked by `confirm_pass`/`reject_pass` (the evaluator compares with its engine) and by the replay of the watchdog. |
+| A-15 | Trader spams `request_advance` to burn evaluator transactions | Cost parity (both pay a base fee); `reject_pass` blocks nothing else. Accepted. |
+| A-16 | Admins veto without cause | They cannot move money, but can delay a trader without limit. Visible (`vetoes`, event). Policy item, OPEN_QUESTIONS #8. |
+| A-17 | Compromised evaluator fills the daily cap with fake passes to starve honest ones | Fake passes are vetoed (the cap counts only finalized passes, so vetoed ones do not consume it); honest passes finalize after the next window if needed. |
+| A-18 | Compromised evaluator mass-fails honest accounts | Possible and visible; rotation by both admins; no automatic remedy (OPEN_QUESTIONS #9). |
+
+### 13.3 Operational duties that make the safeguards real
+- A **watchdog** that replays every `PassRequested`/`PassConfirmed` within the hour and alerts both admins (4.6). Without it the veto is decorative.
+- Both admins must be able to sign a veto within 2 days (including weekends). A pair of mobile-ready signing setups is required (OPEN_QUESTIONS #12).
+- Evaluator key in a hardware-backed signer or a managed KMS, with a rotation runbook (OPEN_QUESTIONS #11).
+- A second, independent price recorder (4.5).
 
 ---
 
 ## 14. Admin powers, upgrade authority and the "no admin key on money" rule
 | Power | Held by | Money impact |
 |---|---|---|
-| Create or change markets, **re-point feeds, enable or disable** | either admin (EXCEPTION: no delay, decision 24) | Indirect: a rigged feed can create payouts, capped by the vault |
+| Create or change markets, **re-point feeds, enable or disable** | either admin (EXCEPTION: no delay, decision 24) | Indirect: a rigged feed can mislead the evaluator; passes still face delay, veto and cap |
 | Publish a new rule set | both admins | Only new accounts; existing accounts keep their snapshot |
-| Set bounty size, withdraw unspent bounty to the SL8 wallet | both admins | Bounty pool only; no trader or payout money |
-| Pause sector | either (unpause: both) | Stops new purchases/opens; never moves money |
+| Rotate the evaluator key | both admins | None directly; a new key can post journals |
+| Set pass delay (1 to 14 days), daily payout cap and window | both admins | Can slow or throttle payouts; cannot create one |
+| Veto a pending pass | both admins together | Can cancel a payout request; cannot approve, create or move anything |
+| Pause sector | either (unpause: both) | Stops new purchases and finalization; never moves money |
 | Upgrade program | 2-of-2 multisig (SL8 admin + Rov admin) | Code could request payouts up to the vault cap; this is the biggest lever; burn decision pending |
-No instruction in this program takes an admin-supplied amount into a vault payout or transfers trader or payout tokens. Payout amounts are the fixed formula in 10.3.
-
+The evaluator key can post journals, report fails, confirm or reject passes and refresh activity. It cannot request or finalize a payout, open accounts, change config, or pass the delay.
+No instruction in this program takes an admin-supplied or evaluator-supplied amount into a vault payout or transfers trader or payout tokens. Payout amounts are the fixed formula in 10.4.
 
 ---
 
@@ -733,13 +821,30 @@ No instruction in this program takes an admin-supplied amount into a vault payou
 |---|---|---|
 | A-RULE-1 | Tight floor L is a frozen ratchet; effective floor = max(F_s, L) | 2.3 |
 | A-RULE-2 | Quick tolerance: strictly greater than 0.028 S, checked when the quick slice closes | 2.4 |
-| A-RULE-3 | The tight-mode start sample is not checked against the new floor | 4.5 |
-| A-ORA-1 | Stork account layout, per-update size and fee, and that Stork rejects older timestamps (all UNVERIFIED) | 3.3, 4.7, 11 |
-| A-ORA-2 | Keepers can obtain Stork signed updates without enterprise contracts | 3.3 |
+| A-RULE-3 | RESOLVED (decision 31): `l_start = min(f_static + 0.04 S, R)` | 2.3, 4.4 |
+| A-ORA-1 | Stork signed-update format, size, fee and access for non-enterprise users (all UNVERIFIED) | 3.3, 11 |
+| A-ORA-2 | The backend can obtain Stork's signed stream without an enterprise contract | 3.3 |
 | A-FEE-1 | The 0.4% fee also applies on resets | 9.5 |
 | A-FEE-2 | Holding fee uses the mark at application time, not at 22:00 | 9.3 |
-| A-BNT-1 | Bounty only for floor settlements (refines decision 21) | 4.8 |
 | A-MKT-1 | Launch with USD-quoted markets; cross pairs and non-USD indices wait for conversion feeds | 3.5 |
-| A-CAP-1 | At most 8 open positions and 10 pending orders per account | 5.1 |
-| A-ADM-1 | Either admin may change markets and feeds (no delay); both admins for rule sets, bounty and upgrade | 14 |
+| A-CAP-1 | At most 10 pending orders per account and 8 open positions (engine limits, enforced off-chain; the open-position cap exists to bound valuation work and per-account proofs) | 16 |
+| A-ADM-1 | Either admin may change markets and feeds (no delay); both admins for rule sets, limits, veto, evaluator rotation and upgrade | 14 |
 | A-VLT-1 | Vault changes the reset price formula (decision 18) before module M8 is built | 1.4, 9.5 |
+| A-C-1 | A pass needs the evaluator's `confirm_pass`; the account is frozen during the 2-day delay | 10.3 |
+| A-C-2 | Price-proof and intent signatures are verified off-chain only in v1 | 3.3, 4.5 |
+| A-C-3 | Evaluator posts fills within about 60 s; not a chain rule in v1 | 8.5 |
+| A-C-4 | `max_payout_per_window` value set by Rovik | 10.6 |
+
+---
+
+## 16. Off-chain components and repository layout
+
+| Component | What it is | Notes |
+|---|---|---|
+| `crates/engine` | Pure Rust, integer-only (no floats), deterministic. Implements sections 2, 7 and 9: fill/netting, margin, spread, floors, ratchet, quick rule, holding fees, SL/TP/limit/stop triggers, pass check. Versioned (`engine_version`). | The ONE definition of the rules. Linked by the program (only the checking subset), the evaluator and the verifier. |
+| `crates/journal-types` | Event, batch and proof types; Borsh encoding; hashing. | Shared by program, evaluator and verifier. |
+| `programs/setl8-lev-trading` | The Anchor program. | Sections 5, 6, 10. |
+| `crates/verifier` (+ CLI `setl8-verify`) | Replays journal + sample archive + intents; checks proofs; reports a verdict and mismatches. | Module M9. Open source. |
+| `services/evaluator` | Reference harness that drives the engine with recorded samples and orders and posts batches through the program. | The production evaluator is Setl8's backend. **Language decision is open (OPEN_QUESTIONS #2):** recommended Rust (same engine, no port). If the backend is TypeScript, the engine is compiled to WASM and both are fuzzed against each other bit for bit. |
+| `tests/` (separate workspace, LiteSVM) | Isolated test workspace, same convention as the vault, loading the built program `.so`; no dependency on the program crate's dev-dependencies. | Section BUILD_PLAN. |
+Engine limits (off-chain): 8 open positions and 10 pending orders per account; margin check at order time and at fill time; orders deleted on fail, breach lock, phase change (decision 27).
