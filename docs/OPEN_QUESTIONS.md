@@ -28,9 +28,9 @@ Also: where it runs (your own server vs. a cloud host) and who operates it. *Def
 
 ## B. Blocks launch or changes a rule or policy
 
-**7. Cross-account hedge farming (HIGH).** Two wallets trade opposite sides; one passes a phase and collects $8,000 on $100K, the other resets for $859 to $1,117 (about 7x to 9x return). No KYC; the 5-account cap does not help.
-Under option C the backend sees every order and can detect it. *Options (combinable):* (a) backend flags opposite positions of equal size and time across wallets and the flag triggers a veto; (b) minimum trading days per phase; (c) consistency rule (no single day above X% of profit); (d) minimum risk per trade (stop-loss distance at least Y%); (e) accept and rely on the daily cap.
-*Default:* none; documented as A-6. Needs your decision before launch.
+**7. Define "coordinated hedging" (decision 36: banned, all accounts failed, wallets banned).** The program side is specified (`RuleViolation` fail, `ban_wallet`, `unban_wallet`). Still needed from you: the written definition for the terms (what counts as opposite positions: same market only, or correlated markets; how close in size and time) and the review step before the evaluator fails accounts (automatic, or you look first).
+Warning (said once): detection is heuristic, so false positives will fail honest traders with no on-chain remedy except `unban_wallet`, and a new wallet evades a ban. A stolen evaluator key can now fail and ban anyone without fabricated losses.
+*Default:* automatic detection flags, you confirm, then the evaluator executes.
 
 **8. Veto aftermath versus "no manual overrides" (policy).** A veto cancels the pending pass and leaves the account as it was. It does not fail the account, refund anything, or approve anything. What do the two admins do next (re-check, ask the trader, let him press again)? Repeated vetoes can stall a trader forever.
 *Options:* (a) written policy, each veto needs a public reason code in an off-chain note; (b) cap vetoes per account (after 2 the pass cannot be vetoed again without changing the code); (c) leave open. *Default:* (a), and the `vetoes` counter is public.
