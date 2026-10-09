@@ -164,9 +164,11 @@ Quick slice with +$1,000 raw profit: B += $500, Q += $500. Another quick slice w
 Phase fails once Q > $2,800.
 
 ### 2.9 Prohibited conduct: coordinated hedging (decision 36, Rovik 2026-10-09)
-Taking opposite positions across accounts or wallets controlled by one person or one group, so that one account passes and the others absorb the losses, is not allowed.
-When the evaluator detects it, it fails **all** accounts of that trader and group (`report_fail` with reason `RuleViolation`, section 4.4 I-11) and bans the wallets (`ban_wallet`, section 6.3). No refund, no reset, no payout on those accounts.
-The detection method (matching size, time, market and wallet links) is an off-chain evaluator policy and must be written in the public terms. ASSUMPTION A-RULE-4: the exact definition is still to be written (OPEN_QUESTIONS #7).
+**Rule:** holding opposite positions in the SAME market across accounts or wallets controlled by one person or one group is not allowed.
+**Process:** (1) the backend detects it and **holds** the flagged accounts (`hold_account`): no new exposure, no pass request, confirmation or payout finalization for them until review; (2) both admins review the evidence;
+(3a) confirmed: both admins sign `fail_for_violation` for each flagged account (account Failed, vault `flag_trader_failed`, wallet banned) and, if needed, `ban_wallet` for linked wallets; no refund, no reset, no payout;
+(3b) not confirmed: both admins `release_hold` and the account carries on exactly as it was.
+Correlated markets (EURUSD against GBPUSD) are NOT covered (Rovik's choice). The numeric thresholds (minimum size, time overlap, wallet-link evidence) are an evaluator policy to be written in the public terms. ASSUMPTION A-RULE-4 (OPEN_QUESTIONS #7).
 
 ---
 
@@ -268,7 +270,7 @@ This section says exactly what protects against that, and what does not.
 Let `acct` be the stored account and `ev` an event of the batch, processed in order. Any failure reverts the whole batch.
 | Id | Invariant |
 |---|---|
-| I-1 | Signer is `config.evaluator`. Account status is `Active`. `pass_pending != 2` (a confirmed pass freezes the journal; `pass_pending == 1` still allows posting so the evaluator can bring the journal up to date before confirming). |
+| I-1 | Signer is `config.evaluator`. Account status is `Active`. An exposure-increasing `Fill` also needs `held == 0` (`AccountHeld`). `pass_pending != 2` (a confirmed pass freezes the journal; `pass_pending == 1` still allows posting so the evaluator can bring the journal up to date before confirming). |
 | I-2 | `batch.first_seq == acct.seq + 1` and `batch.prev_hash == acct.journal_hash`; each event extends the hash (8.3). `acct.seq` and `acct.journal_hash` are updated at the end. |
 | I-3 | Time: `ev.time >= acct.last_batch_time` (never backwards) and `ev.time <= now + 2 s`. |
 | I-4 | Each referenced market exists, and every `PriceProof` carries that market's current `feed_id`, a value equal to the event price (3.3), and `ev.time - max_age_secs <= proof.time <= ev.time + 2 s` (a price older than the market's `max_age_secs` cannot justify an event). |
@@ -278,7 +280,7 @@ Let `acct` be the stored account and `ev` an event of the batch, processed in or
 | I-8 | `q_tally > 0.028 S` after any event: the batch is rejected unless its last event is `Fail{PhaseQuick}`; use `report_fail`. |
 | I-9 | `TightStart`: `p_open > 0.01 S`, `r == b`, `l_start == min(static floor + 0.04 S, r)`, `l_level == l_start + max(0, g_peak - 0.01 S)` and `tight_on == 0` before. `FloorRaised`: `tight_on == 1`, new `g_peak > old`, `l_level` recomputed by the formula. `TightEnd`: `flat == true`. |
 | I-10 | `Breach`: `tight_on == 1`, `flat == true` after the batch, `b <= l_level` (position closed at the sample, so balance equals equity), `lock_until = ev.time + 12 h`, `tight_on = 0`. Any `Fill` that opens or adds has `ev.time >= acct.lock_until`. |
-| I-11 | `Fail` (only through `report_fail`): reasons `StaticFloor` (needs `flat == true` and `b <= static floor`), `PhaseQuick` (needs I-8) or `RuleViolation` (needs a non-zero `evidence_hash`; no balance or flat condition; allowed in every `pass_pending` state and clears it). Sets status Failed and calls the vault. |
+| I-11 | `Fail` (only through `report_fail`): reasons `StaticFloor` (needs `flat == true` and `b <= static floor`) or `PhaseQuick` (needs I-8). Sets status Failed and calls the vault. Violation fails are NOT journal events: they go through `fail_for_violation` (6.1). |
 | I-12 | `flat` is stored as given. The chain cannot check it. |
 The program also re-derives, never trusts: the static floor, the quick limit, the pass target, the payout amount. None of these are fields the evaluator can set.
 
@@ -301,7 +303,7 @@ the admins keep). A verifier can recompute the path: given the account's fills (
 | Evaluator offline | No new journal; traders cannot trade (the backend is the venue); passes cannot be requested if the last batch left the account non-flat; vault activity clocks may run (touch_activity stops) | `release_account` by the trader refreshes the vault clock; backend runbook. No on-chain recourse for a long outage (OPEN_QUESTIONS #10). |
 | Evaluator bug miscomputes a floor or pnl | Either a wrong fail/breach or a wrong pass | I-5..I-10 catch arithmetic classes of error; verifier catches the rest; veto catches a wrong pass; a wrong fail has no automatic remedy (OPEN_QUESTIONS #9). |
 | Key stolen: attacker fabricates a pass for his own accounts | He needs a `request_advance` from a trader wallet, then 2 days | Watchdog alerts, both admins veto, daily cap bounds the rest, vault caps at 32% of size per record chain. Rotation: both admins `set_evaluator`. |
-| Key stolen: attacker fails honest traders | Possible. Floor fails need fabricated losses; since decision 36, `RuleViolation` fails and wallet bans need only a non-zero evidence hash, so a stolen key can fail and ban anyone. Admins can `unban_wallet` but cannot revive accounts. | Visible in the journal; no automatic remedy. Reset price is paid again by the trader (OPEN_QUESTIONS #9). |
+| Key stolen: attacker fails honest traders | Possible only through floor or quick-limit fails, which need fabricated losses (I-11). A stolen key can also `hold_account` anyone (a pause, not a loss); only both admins can fail-for-violation, ban, release or unban. | Visible in the journal; no automatic remedy. Reset price is paid again by the trader (OPEN_QUESTIONS #9). |
 | Key stolen: attacker stops journaling | Liveness only | Rotation. |
 | Evaluator omits a breach | Trader keeps a position he should have lost; the verifier with an independent recorder finds it | Not preventable on-chain. A pass built on it can be vetoed. |
 
@@ -359,14 +361,14 @@ All money is `i64` micro-USD (6 decimals); prices are `u64` in 1e-12 USD; quanti
 | `RuleSet` | `["ruleset", version u16]` | 904 | 0.00718272 | admins, immutable after creation |
 | `Market` | `["market", market_id u16]` | 128 | 0.00178176 | admins |
 | `WalletProfile` | `["wallet", trader]` | 56 | 0.00128064 | program |
-| `TradingAccount` | `["acct", trader, challenge_id u64 le]` | 206 | 0.00232464 | program only (via evaluator or trader instructions) |
+| `TradingAccount` | `["acct", trader, challenge_id u64 le]` | 207 | 0.0023316 | program only (via evaluator or trader instructions) |
 | `PayoutTally` (no discriminator) | `["payout_tally"]` | 25 | 0.00106488 | program only (vault reads it) |
 | `sector_authority` (address only, holds no data) | `["setl8_sector_authority"]` | none | none | signs vault CPIs |
 
 There is no bounty vault (decision 21 superseded). `TradingAccount` seeds mirror the vault's `TraderState` (`["trader_state", product_program_id, trader_wallet, challenge_id]`), so the two records of one challenge are always found from the same three inputs.
 Rent for a new `TradingAccount` (about $0.35 at an assumed $150/SOL; SOL price is an assumption) is paid by the trader as `payer` and is **returned** by `close_account` once the account is terminal for 7 days.
 
-### 5.1 `TradingAccount` layout (206 bytes, Borsh, fields in this order)
+### 5.1 `TradingAccount` layout (207 bytes, Borsh, fields in this order)
 | Field | Type | Bytes | Meaning |
 |---|---|---|---|
 | discriminator | | 8 | |
@@ -392,12 +394,13 @@ Rent for a new `TradingAccount` (about $0.35 at an assumed $150/SOL; SOL price i
 | `vetoes` | u8 | 1 | count of vetoed passes (saturating) |
 | `bump` | u8 | 1 | |
 | `tight_on` | u8 | 1 | |
+| `held` | u8 | 1 | 1 while paused for hedging review (2.9) |
 | `r` | i64 | 8 | B recorded when tight mode began |
 | `g_peak` | i64 | 8 | highest `E - R` claimed since tight mode began |
 | `l_level` | i64 | 8 | tight floor L (0 when off) |
 | `pass_requested_at` | i64 | 8 | time of `request_advance` |
 | `pass_proposed_at` | i64 | 8 | time of `confirm_pass` (the delay counts from here) |
-| **Total** | | **206** | |
+| **Total** | | **207** | |
 
 The static floor is not stored: it is `0.96 S` if `latch == 1`, else `0.92 S`. Positions, pending orders and the last trades live in the evaluator's database and in the journal; the chain never needs them.
 
@@ -424,6 +427,9 @@ Notation: `[S]` signer, `[W]` writable, `[R]` read-only. Compute figures are **e
 | `set_evaluator(new_key)` | both admins | Rotates the evaluator key. Effective immediately. |
 | `set_limits(pass_delay_secs, max_payout_per_window, window_secs)` | both admins | Delay is clamped to `[1 day, 14 days]` so no admin pair can set a zero delay by accident; cap > 0. |
 | `set_paused(bool)` | pause: either admin; unpause: both | Blocks `open_account`, `reset_account`, `request_advance`, `finalize_pass`. `post_journal`, `report_fail`, `confirm_pass`, `reject_pass` keep working. |
+| `release_hold` | both admins | Clears `held` after review (3b in 2.9). |
+| `fail_for_violation(evidence_hash)` | both admins | Requires `held == 1`. Sets status Failed, CPI `flag_trader_failed`, `active_count - 1`, sets the wallet's `banned = 1`, clears any pending pass, emits `ViolationFail{evidence_hash}`. Needs the same accounts as `report_fail`. |
+| `ban_wallet(evidence_hash)` | both admins | Sets `banned = 1` (creates the profile if missing) for a linked wallet with no held account; emits `WalletBanned`. |
 | `unban_wallet` | both admins | Clears `banned` (the way to correct a wrongful ban). Does not revive failed accounts. |
 | `veto_pass` | both admins | Cancels a pending pass, state 1 or 2 (10.7). Cannot do anything else. |
 
@@ -432,7 +438,7 @@ Notation: `[S]` signer, `[W]` writable, `[R]` read-only. Compute figures are **e
 |---|---|---|---|
 | `open_account(tier_index, mint)` | trader [S], payer (= trader) [S] | trader; `WalletProfile` [W, init if needed]; `TradingAccount` [W, init]; config [R]; rule set [R]; `sector_authority` [R]; vault: program [R], `product_registry` [W], `trader_state` [W, created by vault], `vault_state` [R], `trader_token_account` [W], mint [R], pool token account [W], SL8 token account [W], token program [R], system program [R] | Checks cap 5 and not paused; transfers the 0.4% fee (trader -> SL8 token account, round UP); CPI `deposit_fee(amount = tier cost)` signed by `sector_authority`; initialises the account (`b = S`, phase 1, rule set snapshot); emits `Opened` (not part of the hash chain; `seq = 0`, `journal_hash = h_0`, see 8.3). The evaluator learns of it from the event. |
 | `reset_account(prev_challenge_id, mint)` | trader [S], payer [S] | as above plus the previous `TradingAccount` [W] and the previous vault `trader_state` [W] | Previous account must be locally `Failed`; CPI `deposit_reset(amount = ceil(tier cost x ladder[phase-1]), reset_phase = phase-1)`; new account starts at the SAME phase with fresh state; 0.4% fee on the reset price (assumption A-FEE-1). Needs the vault change (decision 18). |
-| `request_advance` (the "request payout and move to next phase" button) | trader [S], payer (= trader) [S] | `TradingAccount` [W]; config [R]; `sector_authority` [R]; vault `product_registry` [R], `trader_state` [W] | Requires: Active, not paused, `flat == 1`, `tight_on == 0`, `pass_pending == 0`, `b >= 1.08 S` (program-maintained), phase not failed. Sets `pass_pending = 1`, `pass_requested_at = now`, CPI `record_activity`, emits `PassRequested{phase, amount 0.08 S (0 in phase 1), b, seq, journal_hash}`. No money moves and the phase does not change yet. |
+| `request_advance` (the "request payout and move to next phase" button) | trader [S], payer (= trader) [S] | `TradingAccount` [W]; config [R]; `sector_authority` [R]; vault `product_registry` [R], `trader_state` [W] | Requires: Active, not held, not paused, `flat == 1`, `tight_on == 0`, `pass_pending == 0`, `b >= 1.08 S` (program-maintained), phase not failed. Sets `pass_pending = 1`, `pass_requested_at = now`, CPI `record_activity`, emits `PassRequested{phase, amount 0.08 S (0 in phase 1), b, seq, journal_hash}`. No money moves and the phase does not change yet. |
 | `cancel_pass` | trader [S] | `TradingAccount` [W] | Only if `pass_pending == 1` and `now - pass_requested_at >= 3,600 s` (the evaluator never answered). Sets `pass_pending = 0`. |
 | `release_account` | trader [S] | `TradingAccount` [W], vault `trader_state` [W], registry [R] | Only calls `record_activity`; if the vault says `Abandoned` the local account is marked Abandoned and the wallet slot is freed. Otherwise it is a harmless activity refresh and the trader's own way to keep the vault clock alive if the evaluator stops touching it. |
 | `close_account` | trader [S] | `TradingAccount` [W, closed] | After 7 days in a terminal state: returns rent to the trader. The event stream remains the record. |
@@ -443,16 +449,16 @@ Trading itself (orders, SL/TP, cancels, closes) is NOT an instruction. It is an 
 | Instruction | Signers | Accounts | Effect |
 |---|---|---|---|
 | `post_journal(batch)` | evaluator [S] (also fee payer) | `TradingAccount` [W]; config [R]; markets referenced [R]; event accounts | Applies a `JournalBatch` (8.2) under invariants I-1 to I-12, updates `b`, `q`, `latch`, tight state, `lock_until`, `seq`, `journal_hash`, `flat`; emits each event via `emit_cpi!`. |
-| `ban_wallet(evidence_hash)` | evaluator [S] | `WalletProfile` [W] | Sets `banned = 1` for that wallet (creates the profile if missing) and emits `WalletBanned{wallet, evidence_hash}`. Does not touch existing accounts; each is failed with `report_fail(RuleViolation)`. |
+| `hold_account(evidence_hash)` | evaluator [S] | `TradingAccount` [W] | Requires Active and a non-zero `evidence_hash`. Sets `held = 1`, emits `AccountHeld{evidence_hash}`. Reversible, moves nothing. Blocks exposure-increasing `Fill`, `request_advance`, `confirm_pass` and `finalize_pass` (a pending pass stays pending but cannot finalize while held). |
 | `report_fail(batch, reason)` | evaluator [S] | as `post_journal` plus `WalletProfile` [W], `sector_authority` [R], vault program [R], `product_registry` [R], `trader_state` [W] | Applies the final batch (must end with `Fail{reason}`), checks I-11, sets status Failed, CPI `flag_trader_failed`, `active_count - 1`. |
-| `confirm_pass` | evaluator [S] | `TradingAccount` [W]; config [R] | Requires `pass_pending == 1`, `flat == 1`, `b >= 1.08 S`. **Phase 1:** starts phase 2 at once (`b = S`, `q = 0`, latch 0, tight off) and emits `PhaseAdvanced`. **Phases 2 to 5:** `pass_pending = 2`, `pass_proposed_at = now`, emits `PassConfirmed`. The evaluator calls it only after its own engine agrees (4.10). |
+| `confirm_pass` | evaluator [S] | `TradingAccount` [W]; config [R] | Requires `pass_pending == 1`, `held == 0`, `flat == 1`, `b >= 1.08 S`. **Phase 1:** starts phase 2 at once (`b = S`, `q = 0`, latch 0, tight off) and emits `PhaseAdvanced`. **Phases 2 to 5:** `pass_pending = 2`, `pass_proposed_at = now`, emits `PassConfirmed`. The evaluator calls it only after its own engine agrees (4.10). |
 | `reject_pass(reason)` | evaluator [S] | `TradingAccount` [W] | Requires `pass_pending == 1`. Sets it to 0 and emits `PassRejected{reason}` (NotFlat, JournalBehind, TargetNotReached, Other). Cannot touch money. |
 | `touch_activity` | evaluator [S] | `TradingAccount` [W], `sector_authority` [R], vault `product_registry` [R], `trader_state` [W] | CPI `record_activity` (skipped if `now - last_activity_pushed < 86,000 s`), handles `Abandoned` as in 10.2. The backend calls it when the trader sent a signed order. |
 
 ### 6.4 Anyone
 | Instruction | Signers | Accounts | Effect |
 |---|---|---|---|
-| `finalize_pass` | any payer [S] | `TradingAccount` [W]; config [W]; `payout_tally` [W]; `WalletProfile` [W]; `sector_authority` [R]; vault: program, `product_registry` [W], `trader_state` [W], `vault_state` [W], `payout_claim` [W, created by vault], system program | Requires `pass_pending == 2`, `now >= pass_proposed_at + pass_delay_secs`, not paused, daily cap not exceeded (10.6). CPI `request_payout(amount = 0.08 S, proposed_request_id = next_request_id)`, reads return data: `Paid` -> tally bump, `next_request_id + 1`, window counter, next phase starts fresh (or Graduated after phase 5); `Abandoned` -> status Abandoned. |
+| `finalize_pass` | any payer [S] | `TradingAccount` [W]; config [W]; `payout_tally` [W]; `WalletProfile` [W]; `sector_authority` [R]; vault: program, `product_registry` [W], `trader_state` [W], `vault_state` [W], `payout_claim` [W, created by vault], system program | Requires `pass_pending == 2`, `held == 0`, `now >= pass_proposed_at + pass_delay_secs`, not paused, daily cap not exceeded (10.6). CPI `request_payout(amount = 0.08 S, proposed_request_id = next_request_id)`, reads return data: `Paid` -> tally bump, `next_request_id + 1`, window counter, next phase starts fresh (or Graduated after phase 5); `Abandoned` -> status Abandoned. |
 
 ### 6.5 Signer rule for vault CPIs
 Every vault CPI is signed by `sector_authority` through `invoke_signed` with seeds `["setl8_sector_authority", bump]`. Vault-side extra signers: `deposit_fee`/`deposit_reset` need the trader and a payer;
@@ -523,7 +529,7 @@ Error names in this table (`InvalidQuantity`, `InvalidStopLevel`) are the engine
 ### 8.1 What is recorded (decision 3, restated for option C)
 Every fill and every closing slice, every floor or mode change, every fee, and the batch metadata, in order. The trader's full trade history is therefore the event stream of one account.
 Event kinds: `Opened`, `Fill`, `Close`, `Fee`, `TightStart`, `FloorRaised`, `TightEnd`, `Breach`, `Fail`, `Meta`, `PassRequested`, `PassConfirmed`, `PassRejected`, `PassCancelled`, `PassVetoed`, `PassFinalized`,
-`PhaseAdvanced`, `Graduated`, `Abandoned`, `MarketFeedChanged`. The first group (`Fill` to `Meta`) is posted by the evaluator inside a `JournalBatch` and extends the hash chain; the rest are emitted by the program itself with `emit_cpi!` and carry the account's current `seq` as a reference (`at_seq`) but are NOT part of the hash chain, so the evaluator's sequence numbers are never disturbed by lifecycle events. Reason codes are enums, not free text.
+`AccountHeld`, `HoldReleased`, `ViolationFail`, `WalletBanned`, `WalletUnbanned`, `PhaseAdvanced`, `Graduated`, `Abandoned`, `MarketFeedChanged`. The first group (`Fill` to `Meta`) is posted by the evaluator inside a `JournalBatch` and extends the hash chain; the rest are emitted by the program itself with `emit_cpi!` and carry the account's current `seq` as a reference (`at_seq`) but are NOT part of the hash chain, so the evaluator's sequence numbers are never disturbed by lifecycle events. Reason codes are enums, not free text.
 `Fill` always means exposure goes up (open or add). Reductions, closes and the closing half of a flip are `Close` events.
 
 ### 8.2 Formats (Borsh, canonical)
@@ -544,7 +550,7 @@ enum JournalEvent {
   FloorRaised{ time: i64, g_peak: i64, l_level: i64, proof: u8 },
   TightEnd  { time: i64 },
   Breach    { time: i64, l_level: i64, b_after: i64, proof: u8 },
-  Fail      { time: i64, reason: u8 /*StaticFloor,PhaseQuick,RuleViolation*/, b_after: i64, evidence_hash: [u8;32] /*zero unless RuleViolation*/, proof: u8 },
+  Fail      { time: i64, reason: u8 /*StaticFloor,PhaseQuick*/, b_after: i64, proof: u8 },
   Meta      { time: i64, flat: u8, samples_hash: [u8;32], intents_hash: [u8;32], engine_version: u16 },   // last event of every batch
 }
 PriceProof {
@@ -674,6 +680,7 @@ After every `record_activity` and `request_payout` CPI the program reads `get_re
 ```
 - State 1: the evaluator may still post journal batches (to catch the chain up); the trader cannot trade (the evaluator freezes the account; the chain cannot enforce this, only the rule that nothing can be confirmed unless `flat`).
 - State 2: `post_journal` and `report_fail` are rejected (`PassPending`), so the state that was checked cannot change. The account is frozen for trading for the whole delay (decision 33).
+- A held account (2.9) cannot be requested, confirmed or finalized; a pending pass stays pending until `release_hold` (the delay clock keeps running) or `fail_for_violation` (which clears it).
 - A reject, cancel or veto leaves phase, `b`, `q`, latch and tight state exactly as they were.
 
 ### 10.4 Payout flow against the queued-claim vault
@@ -711,7 +718,7 @@ The vault freezes inactivity clocks during a pause. The sector `set_paused` is a
 |---|---|---|
 | `post_journal` (8 events, 3 proofs) | 120k to 220k | per event about 12k to 25k CU: Borsh decode, i128 pnl re-check, `sol_sha256` over about 150 bytes, `emit_cpi!` self-CPI (about 5k). Requests 250k. |
 | `report_fail` | +20k over `post_journal` | `flag_trader_failed` CPI |
-| `open_account` | 90k to 130k | `deposit_fee` CPI creates `TraderState` and moves tokens; account init 206 bytes |
+| `open_account` | 90k to 130k | `deposit_fee` CPI creates `TraderState` and moves tokens; account init 207 bytes |
 | `request_advance` / `confirm_pass` / `reject_pass` / `cancel_pass` / `veto_pass` | 15k to 40k | `request_advance` includes one `record_activity` CPI |
 | `finalize_pass` | 70k to 100k | `request_payout` CPI creates `PayoutClaim` |
 Default 200k per instruction suffices except `post_journal`.
@@ -746,7 +753,7 @@ This costs fees (8.4) but no safety: every transaction extends the same hash cha
 | 6016 | `BreachInvalid` | I-10 failed |
 | 6017 | `FailInvalid` | I-11 failed |
 | 6018 | `QuickLimitExceeded` | Q above 0.028 S without a `Fail{PhaseQuick}` (use `report_fail`) |
-| 6019 | `PassPending` | `post_journal` or a floor/quick `report_fail` while `pass_pending == 2` (`RuleViolation` is allowed) |
+| 6019 | `PassPending` | `post_journal` or `report_fail` while `pass_pending == 2` |
 | 6020 | `NotFlat` | button or confirm with `flat == 0` |
 | 6021 | `TargetNotReached` | `b < 1.08 S` |
 | 6022 | `NoPendingPass` | `finalize`, `confirm`, `reject`, `cancel` or `veto` with nothing pending in the right state |
@@ -754,7 +761,7 @@ This costs fees (8.4) but no safety: every transaction extends the same hash cha
 | 6024 | `DailyPayoutCapReached` | window total would exceed the cap |
 | 6025 | `PayoutNotAccepted` | vault returned anything other than `Paid` where it was required |
 | 6026 | `ReturnDataInvalid` | return data missing or from the wrong program |
-| 6027 | `ResetNotAllowed` | previous account not locally Failed, or failed for `RuleViolation` |
+| 6027 | `ResetNotAllowed` | previous account not locally Failed |
 | 6028 | `WrongPhase` | operation not valid in this phase |
 | 6029 | `MathOverflow` | checked arithmetic failed |
 | 6030 | `CloseTooEarly` | `close_account` before 7 days terminal |
@@ -763,7 +770,9 @@ This costs fees (8.4) but no safety: every transaction extends the same hash cha
 | 6033 | `CancelTooEarly` | `cancel_pass` before 1 hour |
 | 6034 | `InvalidLimits` | delay outside 1 to 14 days, zero cap or zero window |
 | 6035 | `WalletBanned` | `open_account` or `reset_account` by a banned wallet |
-| 6036 | `EvidenceMissing` | `RuleViolation` fail or ban without a non-zero `evidence_hash` |
+| 6036 | `EvidenceMissing` | hold, violation fail or ban without a non-zero `evidence_hash` |
+| 6037 | `AccountHeld` | exposure-increasing `Fill`, `request_advance`, `confirm_pass` or `finalize_pass` on a held account |
+| 6038 | `NotHeld` | `fail_for_violation` or `release_hold` on an account that is not held |
 
 ---
 
@@ -788,7 +797,7 @@ This costs fees (8.4) but no safety: every transaction extends the same hash cha
 | A-3 | Impersonate this program to the vault | Blocked by the vault: `sector_authority` must be a PDA signed by this program id. |
 | A-4 | Anyone but the evaluator posts journal | Blocked: I-1. |
 | A-5 | Trader fabricates his own pass | Blocked: only the evaluator posts the journal that gives him `b` and `flat`. |
-| A-6 | Cross-account hedging: wallet A long, wallet B short, one passes | **Prohibited (decision 36, 2.9): detected by the backend, all accounts failed, wallets banned.** Residual: detection is heuristic (different sizes, delays, correlated markets, fresh wallets can slip through; false positives hurt honest traders); a ban is per wallet and a new wallet evades it. Old note follows. **Not solved by rules.** HIGH severity economics: the loser costs a reset of 100% to 130% of the tier price (about $859 to $1,117 on $100K); the winner collects $8,000 per phase. **Option C improves detection**: the backend sees every order of every account in real time and can flag opposite positions of the same size and time across wallets. Detection output feeds a veto (policy, OPEN_QUESTIONS #7). |
+| A-6 | Cross-account hedging: wallet A long, wallet B short, one passes | **Prohibited (decision 36, 2.9): backend detects and holds, both admins review, then fail and ban.** Residual: detection is heuristic (different sizes, delays, correlated markets such as EURUSD vs GBPUSD, and fresh wallets can slip through; a false match holds an honest trader until review); a ban is per wallet and a new wallet evades it. Original economics follow. HIGH severity economics: the loser costs a reset of 100% to 130% of the tier price (about $859 to $1,117 on $100K); the winner collects $8,000 per phase. **Option C improves detection**: the backend sees every order of every account in real time and can flag opposite positions of the same size and time across wallets. Detection output feeds a veto (policy, OPEN_QUESTIONS #7). |
 | A-7 | Latency arbitrage against a stale oracle | Partly mitigated: spread, tight `max_age_secs`, the quick-trade rule; the backend can also rate-limit. Not eliminated. |
 | A-8 | Keep an account alive or kill it from outside | Evaluator-only `touch_activity` follows real signed orders; the trader's own `release_account` also refreshes. A silent evaluator can let an account lapse (R-3). |
 | A-9 | Split a position to dodge the 45 s rule | Timer restarts on every add; partial closes do not reset; flip makes a new position. |
@@ -815,13 +824,13 @@ This costs fees (8.4) but no safety: every transaction extends the same hash cha
 |---|---|---|
 | Create or change markets, **re-point feeds, enable or disable** | either admin (EXCEPTION: no delay, decision 24) | Indirect: a rigged feed can mislead the evaluator; passes still face delay, veto and cap |
 | Publish a new rule set | both admins | Only new accounts; existing accounts keep their snapshot |
-| Unban a wallet | both admins | None directly |
+| Release a hold, fail an account for violation, ban or unban a wallet | both admins | Can fail an account (no refund) but cannot approve or move a payout |
 | Rotate the evaluator key | both admins | None directly; a new key can post journals |
 | Set pass delay (1 to 14 days), daily payout cap and window | both admins | Can slow or throttle payouts; cannot create one |
 | Veto a pending pass | both admins together | Can cancel a payout request; cannot approve, create or move anything |
 | Pause sector | either (unpause: both) | Stops new purchases and finalization; never moves money |
 | Upgrade program | 2-of-2 multisig (SL8 admin + Rov admin) | Code could request payouts up to the vault cap; this is the biggest lever; burn decision pending |
-The evaluator key can post journals, report fails (including `RuleViolation`), ban wallets, confirm or reject passes and refresh activity. It cannot request or finalize a payout, open accounts, change config, or pass the delay.
+The evaluator key can post journals, report floor/quick-limit fails, hold accounts for review, confirm or reject passes and refresh activity. Failing for violation, banning, releasing a hold and unbanning need both admins. It cannot request or finalize a payout, open accounts, change config, or pass the delay.
 No instruction in this program takes an admin-supplied or evaluator-supplied amount into a vault payout or transfers trader or payout tokens. Payout amounts are the fixed formula in 10.4.
 
 ---
@@ -831,7 +840,7 @@ No instruction in this program takes an admin-supplied or evaluator-supplied amo
 |---|---|---|
 | A-RULE-1 | Tight floor L is a frozen ratchet; effective floor = max(F_s, L) | 2.3 |
 | A-RULE-2 | Quick tolerance: strictly greater than 0.028 S, checked when the quick slice closes | 2.4 |
-| A-RULE-4 | Hedging definition and detection method to be written; evaluator-discretion fails and bans (decision 36) | 2.9 |
+| A-RULE-4 | Hedging = opposite positions in the same market, detected off-chain, held until both admins review (decision 36); thresholds to be written | 2.9 |
 | A-RULE-3 | RESOLVED (decision 31): `l_start = min(f_static + 0.04 S, R)` | 2.3, 4.4 |
 | A-ORA-1 | Stork signed-update format, size, fee and access for non-enterprise users (all UNVERIFIED) | 3.3, 11 |
 | A-ORA-2 | The backend can obtain Stork's signed stream without an enterprise contract | 3.3 |

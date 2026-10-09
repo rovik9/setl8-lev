@@ -28,9 +28,10 @@ Also: where it runs (your own server vs. a cloud host) and who operates it. *Def
 
 ## B. Blocks launch or changes a rule or policy
 
-**7. Define "coordinated hedging" (decision 36: banned, all accounts failed, wallets banned).** The program side is specified (`RuleViolation` fail, `ban_wallet`, `unban_wallet`). Still needed from you: the written definition for the terms (what counts as opposite positions: same market only, or correlated markets; how close in size and time) and the review step before the evaluator fails accounts (automatic, or you look first).
-Warning (said once): detection is heuristic, so false positives will fail honest traders with no on-chain remedy except `unban_wallet`, and a new wallet evades a ban. A stolen evaluator key can now fail and ban anyone without fabricated losses.
-*Default:* automatic detection flags, you confirm, then the evaluator executes.
+**7. Hedging thresholds (decision 36: same market, opposite sides, hold until both admins review).** The program side is specified (`hold_account` by the backend, then both admins `release_hold` or `fail_for_violation`, plus `ban_wallet`/`unban_wallet`). Still needed for the public terms: the numbers the backend uses to flag a pair.
+*Questions:* how close must the sizes be (for example within 20%)? how much time overlap counts (for example both open at the same time for 5+ minutes)? what links wallets (same funding source, same IP is not visible on-chain, same timing pattern)?
+Warning (said once): detection is heuristic. Different sizes, staggered timing, correlated markets (EURUSD against GBPUSD) and fresh wallets slip through; a false match holds an honest trader until you review, so review speed matters (OPEN #12).
+*Default:* size within 25%, overlap 5 minutes, flagged pairs only (no wallet-graph guessing); you set the final numbers.
 
 **8. Veto aftermath versus "no manual overrides" (policy).** A veto cancels the pending pass and leaves the account as it was. It does not fail the account, refund anything, or approve anything. What do the two admins do next (re-check, ask the trader, let him press again)? Repeated vetoes can stall a trader forever.
 *Options:* (a) written policy, each veto needs a public reason code in an off-chain note; (b) cap vetoes per account (after 2 the pass cannot be vetoed again without changing the code); (c) leave open. *Default:* (a), and the `vetoes` counter is public.
