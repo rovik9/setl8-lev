@@ -1,7 +1,7 @@
-//! UNVERIFIED (M0): written without a compiler for litesvm. Loads the built program
-//! .so and the vault .so fixture and checks both are present. Fixtures:
+//! M0 smoke test (verified: cargo test passes). Checks that the built program
+//! .so and the vault .so fixture are both present (it does not load them into LiteSVM yet). Fixtures:
 //!   ../target/deploy/setl8_lev_trading.so   (anchor build)
-//!   fixtures/core_vault.so                  (copied from the vault repo at a pinned commit)
+//!   fixtures/core_vault.so                  (copied from the vault repo, see handover/module-0.md)
 use std::path::Path;
 
 #[test]

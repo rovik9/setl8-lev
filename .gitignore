@@ -4,3 +4,4 @@ node_modules/
 .env
 *.json.keypair
 **/id.json
+tests-rs/fixtures/*.so

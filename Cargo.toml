@@ -1,11 +1,8 @@
 [workspace]
-# M0 status: only the dependency-free crates are workspace members, because the
-# build sandbox could not download crates. Add "programs/*" back to `members`
-# (and remove it from `exclude`) as soon as anchor-lang can be fetched.
-members = ["crates/engine", "crates/journal-types"]
+members = ["crates/engine", "crates/journal-types", "programs/*"]
 # tests-rs is its own workspace (own Cargo.lock/target), same pattern as the vault,
 # so litesvm's dependency tree never touches this lockfile.
-exclude = ["tests-rs", "programs/setl8-lev-trading"]
+exclude = ["tests-rs"]
 resolver = "2"
 
 [profile.release]
