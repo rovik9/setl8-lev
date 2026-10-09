@@ -358,7 +358,7 @@ All money is `i64` micro-USD (6 decimals); prices are `u64` in 1e-12 USD; quanti
 | Account | PDA seeds (this program unless noted) | Bytes | Rent (SOL) | Written by |
 |---|---|---|---|---|
 | `SectorConfig` | `["config"]` | 270 | 0.00277008 | admins (the window counters by `finalize_pass`) |
-| `RuleSet` | `["ruleset", version u16]` | 904 | 0.00718272 | admins, immutable after creation |
+| `RuleSet` | `["ruleset", version u16]` | 552 | 0.0047328 | admins, immutable after creation |
 | `Market` | `["market", market_id u16]` | 128 | 0.00178176 | admins |
 | `WalletProfile` | `["wallet", trader]` | 56 | 0.00128064 | program |
 | `TradingAccount` | `["acct", trader, challenge_id u64 le]` | 207 | 0.0023316 | program only (via evaluator or trader instructions) |
@@ -412,6 +412,12 @@ Graduated or Abandoned. `next_challenge_id` hands out unused vault challenge ids
 `admin_a, admin_b, evaluator, vault_program, sl8_wallet` (5 x Pubkey), `current_ruleset u16`, `market_count u16`, `paused u8`, `bump u8`,
 `pass_delay_secs u32` (default 172,800), `max_payout_per_window u64` (micro-USD, value open), `window_secs u32` (default 86,400), `window_start i64`, `window_total u64`, `reserved [u8;64]`.
 
+### 5.4 `RuleSet` (552 bytes, Borsh, immutable after creation)
+`version u16`, `fee_bps u16` (swap-cost fee, 40), `tier_count u8` (10), `ladder_len u8` (5), `leverage_x [u16;8]` (per class), `holding_fee_e6 [u32;8]` (per class), `commission_e6 [u32;8]` (per class, PENDING),
+`tier_size [u64;10]` (micro-USD), `tier_cost [u64;10]` (micro-USD), `reset_ladder_bps [u16;5]`, `spread_e6 [u16;128]` (half-spread per market id, up to 128 markets; PENDING), `bump u8`, `reserved [u8;31]`.
+8 + 2+2+1+1 + 16 + 32 + 32 + 80 + 80 + 10 + 256 + 1 + 31 = 552. (The 904 in the first draft was an estimate before the layout existed.)
+Launch values (decisions 13, 15, 17, 26): `leverage_x` = 50, 20, 20, 20, 10, 5, 5, 2; `holding_fee_e6` = 100, 200, 400, 200, 400, 400, 1000, 1600; `tier_size` $2.5K, 5K, 10K, 15K, 20K, 25K, 50K, 75K, 100K, 200K; `tier_cost` $30, 55, 99, 145, 189, 235, 489, 689, 859, 1,599; `reset_ladder_bps` = 10000, 11500, 12000, 12750, 13000.
+
 ---
 
 ## 6. Instruction list
@@ -421,7 +427,7 @@ Notation: `[S]` signer, `[W]` writable, `[R]` read-only. Compute figures are **e
 ### 6.1 Admin
 | Instruction | Signers | Effect |
 |---|---|---|
-| `init_config` | SL8 admin [S], Rov admin [S], payer | Creates `SectorConfig` (evaluator, delay 172,800, window 86,400, cap) and `PayoutTally` (0/0, magic `SL8TALLY`), rule set 1. |
+| `init_config` | SL8 admin [S], Rov admin [S], payer | Creates `SectorConfig` (evaluator, delay, window, cap) with `current_ruleset = 0` and `PayoutTally` (0/0, magic `SL8TALLY`). Only the two compiled-in admin keys may call it (no one else can front-run the singleton). Rule set 1 is a separate `create_ruleset` call (its arguments are too big to share a transaction). |
 | `create_ruleset` | both admins | Creates `RuleSet` version N+1 (immutable) and sets `current_ruleset`. Applies only to NEW accounts. |
 | `create_market` / `update_market` | either admin | Create or change a market: status, feed id, sessions, caps. **Free feed remap per decision 24.** Emits `MarketFeedChanged`. |
 | `set_evaluator(new_key)` | both admins | Rotates the evaluator key. Effective immediately. |
@@ -726,7 +732,7 @@ Default 200k per instruction suffices except `post_journal`.
 **Transaction size.** 1,232 bytes. A signed proof is about 300 bytes (UNVERIFIED, M2), an event about 100: about two proofs per transaction, so a trade with entry, tight start, peak and exit is 2 to 3 transactions (section 4.9).
 This costs fees (8.4) but no safety: every transaction extends the same hash chain and a later transaction cannot be applied before an earlier one.
 
-**Stack (4,096 bytes per frame).** Accounts are small Borsh structs; instruction account structs with more than a few accounts (`open_account`, `finalize_pass`, `report_fail`) wrap their big members in `Box<>`; `RuleSet` is read with `AccountLoader` (zero-copy, 904 bytes).
+**Stack (4,096 bytes per frame).** Accounts are small Borsh structs; instruction account structs with more than a few accounts (`open_account`, `finalize_pass`, `report_fail`) wrap their big members in `Box<>`; `RuleSet` is read with `AccountLoader` (zero-copy, 552 bytes).
 **Build check:** `scripts/anchor-build-checked.sh` (same approach as the vault's script of that name) runs `anchor build`/`cargo build-sbf`, fails on any "Stack offset of ... exceeded max offset of 4096" message, and runs `const_assert!`s on every account size in section 5.
 
 ---
