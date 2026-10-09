@@ -1,0 +1,11 @@
+[package]
+name = "setl8-lev-journal-types"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Journal event, batch and price-proof types shared by the program, the evaluator and the verifier (DESIGN 8)."
+
+[lib]
+name = "journal_types"
+
+[dependencies]

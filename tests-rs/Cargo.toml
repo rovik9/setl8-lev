@@ -1,0 +1,21 @@
+[package]
+name = "tests-rs"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Dev-only LiteSVM integration tests for setl8-lev-trading. Not an Anchor program."
+
+# Standalone workspace: keeps litesvm out of the program's Cargo.lock (same pattern as the vault).
+[workspace]
+
+[dev-dependencies]
+setl8-lev-engine = { path = "../crates/engine" }
+setl8-lev-journal-types = { path = "../crates/journal-types" }
+litesvm = "=0.7.0"
+solana-keypair = "2"
+solana-signer = "2"
+solana-transaction = "2"
+solana-message = "2"
+solana-transaction-error = "2"
+solana-account = "2"
+solana-pubkey = "2"

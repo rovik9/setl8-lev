@@ -1,0 +1,6 @@
+target/
+tests-rs/target/
+node_modules/
+.env
+*.json.keypair
+**/id.json

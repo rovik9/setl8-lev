@@ -1,0 +1,13 @@
+[package]
+name = "setl8-lev-engine"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Pure integer rules engine for setl8-lev-trading (netting, floors, fees). No Solana, no floats, no dependencies."
+
+[lib]
+name = "engine"
+
+# No dependencies on purpose: the program, the evaluator and the verifier must all
+# link the exact same arithmetic, and it must build for SBF, native and WASM.
+[dependencies]
