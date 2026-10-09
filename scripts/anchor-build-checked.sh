@@ -2,7 +2,12 @@
 # `anchor build` exits 0 even when the SBF toolchain reports a stack frame over
 # the 4,096-byte limit. This wrapper fails the build if such a warning appears
 # (same approach as the vault's script of the same name), then prints the .so sha256.
-# Usage: scripts/anchor-build-checked.sh [extra `anchor build` args]
+#
+# It checks the DEFAULT build (real admin keys, target/deploy/) and then also
+# builds-and-checks the LOCALNET build (public test keys, target/test-deploy/,
+# via scripts/build-test-so.sh). Set DEFAULT_ONLY=1 to skip the localnet build.
+#
+# Usage: [DEFAULT_ONLY=1] scripts/anchor-build-checked.sh [extra `anchor build` args]
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -25,5 +30,9 @@ if grep -qE 'overflows the maximum allowed frame|Stack offset' "$log"; then
 fi
 
 so="target/deploy/setl8_lev_trading.so"
-echo "$so sha256: $(shasum -a 256 "$so" | cut -d' ' -f1)"
-echo "OK: no stack-frame overflow reported."
+echo "default (REAL keys) $so sha256: $(shasum -a 256 "$so" | cut -d' ' -f1)"
+echo "OK: no stack-frame overflow reported (default build)."
+
+if [ "${DEFAULT_ONLY:-0}" != 1 ]; then
+  scripts/build-test-so.sh
+fi

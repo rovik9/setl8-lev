@@ -5,7 +5,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-setl8_lev_trading = "11111111111111111111111111111111"
+setl8_lev_trading = "9NAdnJ7ySQqPYuPKu6d6wCbcaHHMnzwFT6xEcRfXX2a7"
 
 [provider]
 cluster = "localnet"

@@ -15,7 +15,7 @@ Note: `anchor-lang`/`anchor-spl` resolve to **0.32.2** in `Cargo.lock` (the `"0.
 
 ## Layout
 - Cargo workspace: `crates/engine`, `crates/journal-types`, `programs/*` (members); `tests-rs` is its own workspace (own Cargo.lock/target).
-- `programs/setl8-lev-trading`: placeholder program id (System Program id), one `ping` instruction. `Anchor.toml` keeps the same placeholder.
+- `programs/setl8-lev-trading`: placeholder program id, one `ping` instruction (both replaced in M1a; the System Program id used here as placeholder in M0 was changed in M1a, see handover/module-1a.md).
 - `scripts/test-engine.sh`, `scripts/secret-scan-staged.sh`, `scripts/anchor-build-checked.sh`.
 
 ## Vault fixture (not committed)

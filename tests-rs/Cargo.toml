@@ -9,6 +9,11 @@ description = "Dev-only LiteSVM integration tests for setl8-lev-trading. Not an 
 [workspace]
 
 [dev-dependencies]
+# The program crate is used only to build instructions and decode accounts; the program under test
+# is the built localnet .so (target/test-deploy/), loaded into LiteSVM.
+setl8-lev-trading = { path = "../programs/setl8-lev-trading", features = ["no-entrypoint", "localnet"] }
+setl8-shared-interfaces = { git = "https://github.com/rovik9/setl8-turbo", tag = "v0.4.0" }
+anchor-lang = "0.32.1"
 setl8-lev-engine = { path = "../crates/engine" }
 setl8-lev-journal-types = { path = "../crates/journal-types" }
 litesvm = "=0.7.0"
