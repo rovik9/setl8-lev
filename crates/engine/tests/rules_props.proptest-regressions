@@ -1,0 +1,13 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 094118886b3503e338e953ff3987345d18bdc5e8107e24b13ae16bc2a887d478 # shrinks to rules = Rules { frozen_ratchet: false, quick_strict: false }, steps = [Sample(1231501459, 0), Sample(0, 0)]
+cc 0ea7b8dad86aed65793610a6c929cdf66c1efd8411d980ae7125611dfd8d392e # shrinks to rules = Rules { frozen_ratchet: false, quick_strict: false }, steps = [Credit(-1909603057, 0), Credit(0, 0), Credit(-1575744059, 0), Credit(0, 0), Credit(1172451211, 0), Credit(1325034348, 0), Credit(2890227918, 0), Credit(2097633639, 0), Credit(-1, 0)]
+cc ecdf570113027a88872cdb3e8c6386e866875d75ab9449c914a1f9fb270a83d9 # shrinks to rules = Rules { frozen_ratchet: false, quick_strict: false }, steps = [Credit(-1580898903, 0), Credit(-988640877, 0), Credit(-1430460221, 0), Sample(1000000001, 0)]
+cc ab5828a344e1a04f0edf9a9470a45df2982c7c39ef8383508e84f6aac5aff3f2 # shrinks to rules = Rules { frozen_ratchet: false, quick_strict: false }, steps = [Sample(1000000001, 2)]
+cc 828fed4bb584c97d81b42ea4f291698f12ac6d3f5100516d96c60733896a7202 # shrinks to rules = Rules { frozen_ratchet: false, quick_strict: false }, steps = [Sample(1000000001, 0), Sample(-7903943991, 96056009)]
+cc fd885a68b57be89fd0e77886363ccca13ede49a12b05b62bd6ec58bc9485e76d # shrinks to b = 108000000000, flat = false, failed = false
+cc 396f012d5035f37b6c659e848d023be1729c8189bfe361bb260f8623db7259c3 # shrinks to b = 108000000000, flat = true, failed = true

@@ -191,3 +191,13 @@ pub fn apply_fill(
     };
     Ok(FillOutcome { position, closed: Some(closed), opened, balance_delta: credit, quick_tally_delta })
 }
+
+/// Open profit of all positions: the sum of `unrealized_micro` (floored; longs at bid, shorts at ask) with checked
+/// arithmetic. Each entry is `(position, bid, ask)` of its market at the sample.
+pub fn open_profit_micro(positions: &[(Position, u64, u64)]) -> Result<i64> {
+    let mut total: i64 = 0;
+    for (pos, bid, ask) in positions {
+        total = total.checked_add(unrealized_micro(pos, *bid, *ask)?).ok_or(EngineError::Overflow)?;
+    }
+    Ok(total)
+}

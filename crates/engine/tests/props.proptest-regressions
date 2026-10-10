@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc b08b1ba51af4bd605af2640a1c7347b7914a1a212e6812b9d98fe1602b9b03b5 # shrinks to dq = 1, p = 1, d = 1, up = false
+cc 2207ca344f8db7f1ee4f8c4bbe12c42506102bdc660d31c5df2c8f45d2f5689a # shrinks to fills = [F { buy: false, dq: 1, price: 1, dt: 0 }, F { buy: false, dq: 1, price: 1, dt: 0 }, F { buy: true, dq: 1, price: 2, dt: 0 }]
