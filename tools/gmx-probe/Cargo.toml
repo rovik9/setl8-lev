@@ -1,0 +1,21 @@
+[package]
+name = "gmx-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Standalone measurement tool for the GMX Oracle API (handover/prompts/P5-gmx-probe.md). Not part of the program or the engine."
+
+# Standalone workspace (own Cargo.lock and target dir), same pattern as tests-rs.
+[workspace]
+
+[lib]
+name = "gmx_probe"
+
+[[bin]]
+name = "gmx-probe"
+path = "src/main.rs"
+
+[dependencies]
+ureq = "2"
+serde_json = "1"
+sha2 = "0.10"
