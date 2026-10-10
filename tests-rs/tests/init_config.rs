@@ -212,3 +212,17 @@ fn init_config_rejects_default_evaluator() {
     assert_err(&r, Setl8Error::Unauthorized);
     assert!(e.svm.get_account(&config_pda()).is_none());
 }
+
+#[test]
+fn init_config_rejects_default_vault_program() {
+    let (e, r) = init_with(|a| a.vault_program = Pubkey::default());
+    assert_err(&r, Setl8Error::Unauthorized);
+    assert!(e.svm.get_account(&config_pda()).is_none());
+}
+
+#[test]
+fn init_config_rejects_default_sl8_wallet() {
+    let (e, r) = init_with(|a| a.sl8_wallet = Pubkey::default());
+    assert_err(&r, Setl8Error::Unauthorized);
+    assert!(e.svm.get_account(&config_pda()).is_none());
+}

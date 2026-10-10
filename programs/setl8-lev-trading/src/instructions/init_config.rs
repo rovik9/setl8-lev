@@ -45,6 +45,8 @@ pub struct InitConfig<'info> {
 pub fn handle_init_config(ctx: Context<InitConfig>, args: InitConfigArgs) -> Result<()> {
     check_limits(args.pass_delay_secs, args.max_payout_per_window, args.window_secs)?;
     require!(args.evaluator != Pubkey::default(), Setl8Error::Unauthorized);
+    require!(args.vault_program != Pubkey::default(), Setl8Error::Unauthorized);
+    require!(args.sl8_wallet != Pubkey::default(), Setl8Error::Unauthorized);
 
     create_payout_tally(&ctx)?;
 

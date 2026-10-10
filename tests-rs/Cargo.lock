@@ -4626,6 +4626,7 @@ name = "tests-rs"
 version = "0.0.0"
 dependencies = [
  "anchor-lang",
+ "base64 0.21.7",
  "litesvm",
  "setl8-lev-engine",
  "setl8-lev-journal-types",

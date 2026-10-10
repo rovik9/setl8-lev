@@ -20,7 +20,7 @@ idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "anchor-spl/token_
 default = []
 
 [dependencies]
-anchor-lang = "0.32.1"
+anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
 anchor-spl = { version = "0.32.1", default-features = false, features = ["token"] }
 setl8-shared-interfaces = { git = "https://github.com/rovik9/setl8-turbo", tag = "v0.4.0" }
 setl8-lev-engine = { path = "../../crates/engine" }

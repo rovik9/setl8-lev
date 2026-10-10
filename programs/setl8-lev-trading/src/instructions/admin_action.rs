@@ -18,25 +18,36 @@ pub struct AdminAction<'info> {
 }
 
 impl<'info> AdminAction<'info> {
-    fn a_signed(&self) -> bool {
-        self.admin_a.is_signer && self.admin_a.key() == self.config.admin_a
-    }
-
-    fn b_signed(&self) -> bool {
-        self.admin_b.is_signer && self.admin_b.key() == self.config.admin_b
-    }
-
     /// Both stored admins signed.
     pub fn both_admins(&self) -> Result<()> {
-        require!(self.a_signed() && self.b_signed(), Setl8Error::Unauthorized);
-        Ok(())
+        require_both_admins(&self.config, &self.admin_a, &self.admin_b)
     }
 
     /// At least one stored admin signed.
     pub fn either_admin(&self) -> Result<()> {
-        require!(self.a_signed() || self.b_signed(), Setl8Error::Unauthorized);
-        Ok(())
+        require_either_admin(&self.config, &self.admin_a, &self.admin_b)
     }
+}
+
+fn a_signed(config: &SectorConfig, admin_a: &AccountInfo) -> bool {
+    admin_a.is_signer && admin_a.key() == config.admin_a
+}
+
+fn b_signed(config: &SectorConfig, admin_b: &AccountInfo) -> bool {
+    admin_b.is_signer && admin_b.key() == config.admin_b
+}
+
+/// Both stored admins signed (positional: `admin_a` slot = `config.admin_a`, `admin_b` slot = `config.admin_b`).
+/// Used by every instruction whose accounts struct carries the admin pair next to other accounts.
+pub fn require_both_admins(config: &SectorConfig, admin_a: &AccountInfo, admin_b: &AccountInfo) -> Result<()> {
+    require!(a_signed(config, admin_a) && b_signed(config, admin_b), Setl8Error::Unauthorized);
+    Ok(())
+}
+
+/// At least one stored admin signed.
+pub fn require_either_admin(config: &SectorConfig, admin_a: &AccountInfo, admin_b: &AccountInfo) -> Result<()> {
+    require!(a_signed(config, admin_a) || b_signed(config, admin_b), Setl8Error::Unauthorized);
+    Ok(())
 }
 
 /// Shared by `init_config` and `set_limits`: delay in 1 to 14 days, cap > 0, window > 0.

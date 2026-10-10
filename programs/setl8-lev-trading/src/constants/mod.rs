@@ -8,6 +8,12 @@ pub const PAYOUT_TALLY_SEED: &[u8] = b"payout_tally";
 /// PDA seed of `sector_authority`, the signer of every vault CPI.
 pub const SECTOR_AUTHORITY_SEED: &[u8] = b"setl8_sector_authority";
 
+/// PDA seeds of `RuleSet` (`["ruleset", version u16 LE]`), `Market` (`["market", id u16 LE]`) and
+/// `WalletProfile` (`["wallet", trader]`).
+pub const RULESET_SEED: &[u8] = b"ruleset";
+pub const MARKET_SEED: &[u8] = b"market";
+pub const WALLET_SEED: &[u8] = b"wallet";
+
 /// Maximum number of markets (DESIGN 6.1, `create_market`).
 pub const MAX_MARKETS: u16 = 128;
 
@@ -17,6 +23,18 @@ pub const MAX_PASS_DELAY_SECS: u32 = 1_209_600;
 /// Defaults: 2 days, and a 24 h payout window (DESIGN 5.3).
 pub const DEFAULT_PASS_DELAY_SECS: u32 = 172_800;
 pub const DEFAULT_WINDOW_SECS: u32 = 86_400;
+
+/// Rule set limits (DESIGN 5.4): up to 10 tiers, 5 reset-ladder steps, 8 market classes, fee at most 10%.
+pub const MAX_TIERS: usize = 10;
+pub const MAX_LADDER: usize = 5;
+pub const CLASS_COUNT: usize = 8;
+pub const MAX_FEE_BPS: u16 = 1000;
+
+/// Market limits (DESIGN 3.2, 3.4): 6 weekly session windows, minutes in a week, "no quote conversion" marker.
+pub const MAX_SESSIONS: usize = 6;
+pub const MINUTES_PER_WEEK: u16 = 10_080;
+pub const NO_QUOTE_CONV: u16 = 0xFFFF;
+pub const MARKET_STATUS_REDUCE_ONLY: u8 = 2;
 
 #[cfg(test)]
 mod tests {

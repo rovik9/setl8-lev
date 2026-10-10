@@ -20,3 +20,40 @@ pub struct LimitsChanged {
 pub struct PausedChanged {
     pub paused: bool,
 }
+
+#[event]
+pub struct RuleSetCreated {
+    pub version: u16,
+}
+
+#[event]
+pub struct MarketCreated {
+    pub market_id: u16,
+    pub class: u8,
+    pub feed_id: [u8; 32],
+}
+
+#[event]
+pub struct MarketUpdated {
+    pub market_id: u16,
+}
+
+/// Emitted whenever an admin changes a market's price feed (decision 24: no delay, no lock).
+#[event]
+pub struct MarketFeedChanged {
+    pub market_id: u16,
+    pub old_feed: [u8; 32],
+    pub new_feed: [u8; 32],
+    pub slot: u64,
+}
+
+#[event]
+pub struct WalletBanned {
+    pub trader: Pubkey,
+    pub evidence_hash: [u8; 32],
+}
+
+#[event]
+pub struct WalletUnbanned {
+    pub trader: Pubkey,
+}

@@ -15,8 +15,11 @@ use anchor_lang::solana_program::{
 use anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas};
 use litesvm::{types::TransactionResult, LiteSVM};
 use setl8_lev_trading::{
-    accounts, constants as c, errors::Setl8Error, instruction, instructions::InitConfigArgs,
-    state::SectorConfig,
+    accounts, constants as c,
+    errors::Setl8Error,
+    instruction,
+    instructions::{CreateMarketArgs, InitConfigArgs, MarketParams, RuleSetArgs, UpdateMarketArgs},
+    state::{Market, RuleSet, SectorConfig, Session, WalletProfile},
 };
 use solana_keypair::Keypair;
 use solana_message::Message;
@@ -217,3 +220,236 @@ pub fn assert_ok(r: TransactionResult) {
         panic!("expected success, got {:?}\nlogs:\n{}", f.err, f.meta.logs.join("\n"));
     }
 }
+
+
+// ------------------------------------------------------------------ M1b helpers
+
+pub fn ruleset_pda(version: u16) -> Pubkey {
+    Pubkey::find_program_address(&[c::RULESET_SEED, &version.to_le_bytes()], &PROGRAM_ID).0
+}
+pub fn market_pda(id: u16) -> Pubkey {
+    Pubkey::find_program_address(&[c::MARKET_SEED, &id.to_le_bytes()], &PROGRAM_ID).0
+}
+pub fn wallet_pda(trader: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[c::WALLET_SEED, trader.as_ref()], &PROGRAM_ID).0
+}
+
+/// Who is named in the admin slots of an admin instruction and who really signs.
+#[derive(Clone, Copy)]
+pub struct Admins {
+    pub a: Pubkey,
+    pub b: Pubkey,
+    pub a_signs: bool,
+    pub b_signs: bool,
+}
+
+impl Admins {
+    pub fn both(e: &Env) -> Self {
+        Self { a: e.sl8.pubkey(), b: e.rov.pubkey(), a_signs: true, b_signs: true }
+    }
+    pub fn only_sl8(e: &Env) -> Self {
+        Self { b_signs: false, ..Self::both(e) }
+    }
+    pub fn only_rov(e: &Env) -> Self {
+        Self { a_signs: false, ..Self::both(e) }
+    }
+    pub fn neither(e: &Env) -> Self {
+        Self { a_signs: false, b_signs: false, ..Self::both(e) }
+    }
+    pub fn strangers(x: &Keypair, y: &Keypair) -> Self {
+        Self { a: x.pubkey(), b: y.pubkey(), a_signs: true, b_signs: true }
+    }
+    fn patch(&self, mut ix: Instruction) -> Instruction {
+        for m in ix.accounts.iter_mut() {
+            if m.pubkey == self.a {
+                m.is_signer = self.a_signs;
+            } else if m.pubkey == self.b {
+                m.is_signer = self.b_signs;
+            }
+        }
+        ix
+    }
+}
+
+pub fn create_ruleset_ix(payer: Pubkey, admins: Admins, args: &RuleSetArgs) -> Instruction {
+    admins.patch(Instruction {
+        program_id: PROGRAM_ID,
+        accounts: accounts::CreateRuleset {
+            payer,
+            config: config_pda(),
+            admin_a: admins.a,
+            admin_b: admins.b,
+            ruleset: ruleset_pda(args.version),
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: instruction::CreateRuleset { args: args.clone() }.data(),
+    })
+}
+
+pub fn create_market_ix(payer: Pubkey, admins: Admins, args: &CreateMarketArgs) -> Instruction {
+    admins.patch(Instruction {
+        program_id: PROGRAM_ID,
+        accounts: accounts::CreateMarket {
+            payer,
+            config: config_pda(),
+            admin_a: admins.a,
+            admin_b: admins.b,
+            market: market_pda(args.market_id),
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: instruction::CreateMarket { args: args.clone() }.data(),
+    })
+}
+
+pub fn update_market_ix(admins: Admins, args: &UpdateMarketArgs) -> Instruction {
+    admins.patch(Instruction {
+        program_id: PROGRAM_ID,
+        accounts: accounts::UpdateMarket {
+            config: config_pda(),
+            admin_a: admins.a,
+            admin_b: admins.b,
+            market: market_pda(args.market_id),
+        }
+        .to_account_metas(None),
+        data: instruction::UpdateMarket { args: args.clone() }.data(),
+    })
+}
+
+pub fn ban_wallet_ix(payer: Pubkey, admins: Admins, trader: Pubkey, evidence_hash: [u8; 32]) -> Instruction {
+    admins.patch(Instruction {
+        program_id: PROGRAM_ID,
+        accounts: accounts::BanWallet {
+            payer,
+            config: config_pda(),
+            admin_a: admins.a,
+            admin_b: admins.b,
+            wallet: wallet_pda(&trader),
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: instruction::BanWallet { trader, evidence_hash }.data(),
+    })
+}
+
+pub fn unban_wallet_ix(admins: Admins, trader: Pubkey) -> Instruction {
+    admins.patch(Instruction {
+        program_id: PROGRAM_ID,
+        accounts: accounts::UnbanWallet {
+            config: config_pda(),
+            admin_a: admins.a,
+            admin_b: admins.b,
+            wallet: wallet_pda(&trader),
+        }
+        .to_account_metas(None),
+        data: instruction::UnbanWallet { trader }.data(),
+    })
+}
+
+/// DESIGN 5.4 launch values (decisions 13, 15, 17, 26). Commission and spread are PENDING numbers: zeros.
+pub fn launch_ruleset_args() -> RuleSetArgs {
+    const USD: u64 = 1_000_000;
+    let mut tier_size = [0u64; 10];
+    let mut tier_cost = [0u64; 10];
+    let sizes = [2_500u64, 5_000, 10_000, 15_000, 20_000, 25_000, 50_000, 75_000, 100_000, 200_000];
+    let costs = [30u64, 55, 99, 145, 189, 235, 489, 689, 859, 1_599];
+    for i in 0..10 {
+        tier_size[i] = sizes[i] * USD;
+        tier_cost[i] = costs[i] * USD;
+    }
+    RuleSetArgs {
+        version: 1,
+        fee_bps: 40,
+        tier_count: 10,
+        ladder_len: 5,
+        leverage_x: [50, 20, 20, 20, 10, 5, 5, 2],
+        holding_fee_e6: [100, 200, 400, 200, 400, 400, 1000, 1600],
+        commission_e6: [0; 8],
+        tier_size,
+        tier_cost,
+        reset_ladder_bps: [10_000, 11_500, 12_000, 12_750, 13_000],
+        spread_e6: [0; 128],
+    }
+}
+
+/// A valid market parameter set; `feed` makes the feed id distinguishable.
+pub fn market_params(feed: u8) -> MarketParams {
+    let mut sessions = [Session::default(); 6];
+    sessions[0] = Session { start_min: 0, end_min: 7_200 };
+    sessions[1] = Session { start_min: 7_500, end_min: 10_080 };
+    MarketParams {
+        status: 1,
+        feed_id: [feed; 32],
+        max_age_secs: 60,
+        qty_step: 1_000,
+        qty_min: 10_000,
+        max_notional_usd: 500_000_000_000,
+        session_count: 2,
+        sessions,
+        quote_conv_market: c::NO_QUOTE_CONV,
+    }
+}
+
+pub fn create_market_args(id: u16, class: u8, feed: u8) -> CreateMarketArgs {
+    CreateMarketArgs { market_id: id, class, params: market_params(feed) }
+}
+
+impl Env {
+    pub fn ruleset(&self, version: u16) -> RuleSet {
+        let acc = self.svm.get_account(&ruleset_pda(version)).expect("rule set exists");
+        RuleSet::try_deserialize(&mut acc.data.as_slice()).unwrap()
+    }
+    pub fn market(&self, id: u16) -> Market {
+        let acc = self.svm.get_account(&market_pda(id)).expect("market exists");
+        Market::try_deserialize(&mut acc.data.as_slice()).unwrap()
+    }
+    pub fn wallet(&self, trader: &Pubkey) -> WalletProfile {
+        let acc = self.svm.get_account(&wallet_pda(trader)).expect("wallet profile exists");
+        WalletProfile::try_deserialize(&mut acc.data.as_slice()).unwrap()
+    }
+
+    /// Sends with the signers `admins` asks for (plus the payer).
+    pub fn send_admins(&mut self, ix: Instruction, admins: Admins) -> TransactionResult {
+        let (sl8, rov) = (dup(&self.sl8), dup(&self.rov));
+        let mut signers: Vec<&Keypair> = Vec::new();
+        if admins.a_signs && admins.a == sl8.pubkey() {
+            signers.push(&sl8);
+        }
+        if admins.b_signs && admins.b == rov.pubkey() {
+            signers.push(&rov);
+        }
+        self.send(&[ix], &signers)
+    }
+
+    pub fn create_ruleset_ok(&mut self, args: &RuleSetArgs) {
+        let ix = create_ruleset_ix(self.payer.pubkey(), Admins::both(self), args);
+        let a = Admins::both(self);
+        assert_ok(self.send_admins(ix, a));
+    }
+
+    pub fn create_market_ok(&mut self, args: &CreateMarketArgs) {
+        let ix = create_market_ix(self.payer.pubkey(), Admins::both(self), args);
+        let a = Admins::both(self);
+        assert_ok(self.send_admins(ix, a));
+    }
+}
+
+/// All events of type `T` found in a successful transaction's logs, in order.
+pub fn events_of<T: anchor_lang::Event + anchor_lang::AnchorDeserialize>(logs: &[String]) -> Vec<T> {
+    use base64::Engine;
+    let mut out = Vec::new();
+    for line in logs {
+        if let Some(b64) = line.strip_prefix("Program data: ") {
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64.trim()) {
+                if bytes.len() >= 8 && bytes[..8] == *T::DISCRIMINATOR {
+                    out.push(T::deserialize(&mut &bytes[8..]).expect("event decodes"));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Anchor error 3012: account not initialized (e.g. `unban_wallet` on a wallet without a profile).
+pub const ACCOUNT_NOT_INITIALIZED: u32 = 3012;
