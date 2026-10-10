@@ -11,3 +11,7 @@ name = "engine"
 # No dependencies on purpose: the program, the evaluator and the verifier must all
 # link the exact same arithmetic, and it must build for SBF, native and WASM.
 [dependencies]
+
+# `proptest` is a dev-dependency ONLY; the library keeps zero dependencies.
+[dev-dependencies]
+proptest = "1"

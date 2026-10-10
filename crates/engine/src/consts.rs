@@ -29,6 +29,8 @@ pub const QUICK_SECS: i64 = 45;
 pub const LOCK_SECS: i64 = 12 * 60 * 60;
 
 /// `size * bps / 10_000`, exact for sizes that are whole dollars.
+/// (Plain arithmetic: sizes are at most $200,000 in micro-USD; M4 revisits these helpers.)
+#[allow(clippy::arithmetic_side_effects)]
 pub const fn frac(size_micro: i64, bps: i64) -> i64 {
     size_micro * bps / BPS
 }
@@ -60,6 +62,14 @@ mod tests {
     #[test]
     fn quick_limit_is_35_percent_of_payout() {
         assert_eq!(PAYOUT_BPS * 35 / 100, QUICK_LIMIT_BPS);
+    }
+
+    /// The two time constants of DESIGN 2.4 and 2.3.
+    #[test]
+    fn time_constants_match_design() {
+        assert_eq!(QUICK_SECS, 45);
+        assert_eq!(LOCK_SECS, 43_200);
+        assert_eq!(LOCK_SECS, 12 * 3600);
     }
 
     #[test]

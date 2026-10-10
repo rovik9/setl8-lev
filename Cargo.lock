@@ -1552,6 +1552,9 @@ dependencies = [
 [[package]]
 name = "setl8-lev-engine"
 version = "0.1.0"
+dependencies = [
+ "proptest",
+]
 
 [[package]]
 name = "setl8-lev-journal-types"
