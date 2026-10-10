@@ -5,3 +5,7 @@ node_modules/
 *.json.keypair
 **/id.json
 tests-rs/fixtures/*.so
+
+# GMX probe raw samples
+tools/gmx-probe/data/
+tools/gmx-probe/target/
