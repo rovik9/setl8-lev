@@ -19,3 +19,12 @@
 - Chainlink Data Streams direct access terms and KYC (mainnet access is by request, unverified).
 - Pyth: docs say "Hermes now requires an API Key"; terms unverified.
 - Switchboard On-Demand: unchecked.
+
+## FX and indices, cheap first (checked 2026-10-10; Rovik chose "cheap first, signed proofs optional")
+- Pyth (app.pyth.com/plans): Free $0 = view only, no API. Starter $500/mo = API, all crypto only, 1 s. Pro from $2,500/mo = all symbols, 1 ms, limited redistribution. Blog bundles: FX $5,000, FX G10 $2,500, FX+Metals $6,500. Pyth Indices: contact team. Payment methods and KYC not stated.
+- Chainlink Data Streams: subscription, no prices listed (contact form), LINK payment mentioned. RWA covers equities, FX, precious metals, commodities. Indices not mentioned. KYC not stated.
+- RedStone Live (docs.redstone.finance/docs/stage1-market-data/live/overview): WebSocket, "cryptographically verifiable", forex majors and EM, major equity indices, commodities, metals, equities, top-20 crypto. API key by contacting RedStone. Price, Solana verification and KYC not stated. Best coverage match, price unknown.
+- Twelve Data: Basic $0 (real-time FX, 8 credits/min, 800/day), Grow $79, Pro $229 (about 500+ websocket credits), Ultra $999. Cards and PayPal. Indices not mentioned on the page. Not signed.
+- TraderMade: FX and crypto GBP 599/mo, 40 CFD symbols GBP 599/mo, websocket. Index coverage unconfirmed. Not signed.
+- Massive (ex Polygon): only Stocks plans visible ($29 to $199, "individual use / non-pros only"). FX and Indices pages not read.
+- LICENSING RISK for every vendor: posting a price proof on chain republishes the vendor's data. Cheap plans are usually "internal / individual use". Ask each vendor for redistribution terms in writing before relying on it.
