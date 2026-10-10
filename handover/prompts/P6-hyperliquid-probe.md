@@ -15,6 +15,7 @@ WHAT THE TOOL DOES
 5. Cadence via WebSocket: subscribe `allMids` with `dex:"xyz"` for 15 minutes on one connection, plus `bbo` for AAPL, NVDA, SP500, EUR, GOLD, CL on a second. For each tracked coin report: distinct price changes per minute, median/p95/max gap between changes, messages per minute, reconnects, out-of-order or stale prices. Compare the wall clock with message times.
 6. Closed-market behaviour (today is a weekend: US stocks, indices, gold, oil and FX are closed on traditional venues; record the UTC wall time): during step 5 record whether xyz stock, index, FX and commodity prices keep moving, by how much per hour, and the spread in step 4. Compare GOLD, SILVER, WTI (CL) and SPY-like levels with handover/gmx-probe-report.md's values (if that report exists) or with GMX's `/prices/tickers` fetched live (same politeness rules as before: one fetch), and report the difference in basis points. State plainly that closed-market prices here are the venue's own, not a tradfi quote.
 7. Candles: `candleSnapshot` 1m for AAPL, SP500, EUR, GOLD, BTC over the last 24 h and for the maximum window allowed. Report candles returned, element cap, gaps, and ordering. Report the earliest and latest timestamp.
+7b. FX quote direction: for EUR, GBP, JPY, KRW report the level seen (for example EUR near 1.1 means USD per EUR; JPY near 0.0065 means USD per yen; JPY near 150 means yen per USD) and say plainly which direction each coin uses. Our P&L is in USD and DESIGN 3.5 needs to know whether a conversion market is required.
 8. Storage: write every WebSocket sample from step 5 to an append-only file with a sha256 at the end, in the DESIGN 4.5 shape (market, timestamp, bid, ask, mid); report bytes per 10 minutes and the projected monthly size for 100 markets.
 
 TESTS
@@ -31,6 +32,7 @@ REPORT BACK (paste this block, nothing longer):
 - spread and depth table, bids/asks proof
 - cadence numbers (updates per minute, gaps, reconnects)
 - closed-market behaviour and the GMX comparison in bps
+- FX quote direction for EUR, GBP, JPY, KRW
 - candle counts and caps
 - storage per 10 minutes and per month for 100 markets
 - any 429/403/disconnects
