@@ -560,11 +560,11 @@ enum JournalEvent {
   Meta      { time: i64, flat: u8, samples_hash: [u8;32], intents_hash: [u8;32], engine_version: u16 },   // last event of every batch
 }
 PriceProof {
-  source: u8,            // 0 Stork, 1 Pyth (not built)
-  feed_id: [u8;32],
+  source: u8,            // 0 Stork (not built), 1 Pyth (not built), 2 GMX tickers (unsigned), 3 GMX signed report (Chainlink blob), 4 Hyperliquid (unsigned), 255 mock (tests only). Decisions 43, 44, 46.
+  feed_id: [u8;32],      // = sha256("SL8FEED" || source || utf8 symbol), e.g. symbol "BTC" for GMX, "xyz:AAPL" for Hyperliquid (decision 46)
   timestamp_ns: u64,
-  quantized_value: i128, // 18 decimals, as Stork publishes it
-  signed_update: Vec<u8> // Stork's signed update, opaque to the program (3.3); about 200 to 250 bytes assumed
+  quantized_value: i128, // 18 decimals, converted from the source's own units by the evaluator
+  signed_update: Vec<u8> // the source's raw signed report if it has one (source 3), EMPTY for unsigned sources; opaque to the program, at most 512 bytes
 }
 ```
 Size of one proof in a transaction is about 300 bytes (UNVERIFIED, M2); a `Close` or `Fill` event is about 90 to 110 bytes. Hence about two proofs per 1,232-byte transaction; larger batches use an address lookup table or several transactions.
