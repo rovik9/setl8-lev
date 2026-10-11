@@ -1,0 +1,22 @@
+[package]
+name = "hl-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Standalone measurement tool for the Hyperliquid HIP-3 info API and WebSocket (handover/prompts/P6-hyperliquid-probe.md). Not part of the program or the engine."
+
+# Standalone workspace (own Cargo.lock and target dir), same pattern as tools/gmx-probe.
+[workspace]
+
+[lib]
+name = "hl_probe"
+
+[[bin]]
+name = "hl-probe"
+path = "src/main.rs"
+
+[dependencies]
+ureq = "2"
+serde_json = "1"
+sha2 = "0.10"
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
