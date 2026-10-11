@@ -4,11 +4,11 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::instruction::AccountMeta;
 use anchor_lang::solana_program::program::{get_return_data, invoke_signed, set_return_data};
 use engine::{AccountState, Rules};
-use setl8_shared_interfaces::{record_activity, ActivityOutcome, RecordActivityArgs};
+use setl8_shared_interfaces::{flag_trader_failed, record_activity, ActivityOutcome, FlagTraderFailedArgs, RecordActivityArgs};
 
 use crate::constants::*;
 use crate::errors::Setl8Error;
-use crate::state::{TradingAccount, WalletProfile};
+use crate::state::{flag, TradingAccount, WalletProfile};
 
 /// The single byte a vault instruction answered with, or `ReturnDataInvalid` when there is no return data, it comes from
 /// another program than `vault`, or it is not exactly one byte. Pure, so it is unit-tested without a cluster.
@@ -69,13 +69,73 @@ pub fn free_wallet_slot(wallet: &mut WalletProfile) -> Result<()> {
     Ok(())
 }
 
-/// The local account becomes Abandoned (the vault flipped it): status 2, nothing pending, the slot is freed.
-pub fn mark_abandoned(acct: &mut TradingAccount, wallet: &mut WalletProfile) -> Result<()> {
-    acct.status = STATUS_ABANDONED;
+/// Ends an account for good (RESOLVE (b) of M7): `status` Failed, Abandoned or Graduated, `pass_pending` 0, and
+/// `terminal_at` (stored in `pass_proposed_at`, which is meaningless once nothing can be pending) set to `now`. A hold on
+/// the account is cleared with the wallet's `held_count` (checked), and the wallet slot is freed (checked).
+pub fn end_account(acct: &mut TradingAccount, wallet: &mut WalletProfile, status: u8, now: i64) -> Result<()> {
+    acct.status = status;
     acct.pass_pending = PASS_NONE;
     acct.pass_requested_at = 0;
-    acct.pass_proposed_at = 0;
+    acct.pass_proposed_at = now;
+    if flag(acct.held)? {
+        acct.held = 0;
+        wallet.held_count = wallet.held_count.checked_sub(1).ok_or(Setl8Error::MathOverflow)?;
+    }
     free_wallet_slot(wallet)
+}
+
+/// The local account becomes Abandoned (the vault flipped it).
+pub fn mark_abandoned(acct: &mut TradingAccount, wallet: &mut WalletProfile, now: i64) -> Result<()> {
+    end_account(acct, wallet, STATUS_ABANDONED, now)
+}
+
+/// `flag_trader_failed` through `sector_authority` (the vault allows it while the product is paused). The vault sets no
+/// return data for it.
+#[allow(clippy::too_many_arguments)]
+pub fn flag_failed_cpi<'info>(
+    vault_program: &AccountInfo<'info>,
+    sector_authority: &AccountInfo<'info>,
+    authority_bump: u8,
+    product_registry: &AccountInfo<'info>,
+    vault_trader_state: &AccountInfo<'info>,
+    trader: Pubkey,
+    program_id: Pubkey,
+    challenge_id: u64,
+) -> Result<()> {
+    let ix = flag_trader_failed(
+        vault_program.key(),
+        sector_authority.key(),
+        product_registry.key(),
+        &[AccountMeta::new(vault_trader_state.key(), false)],
+        FlagTraderFailedArgs { trader_wallet: trader, product_program_id: program_id, challenge_id },
+    );
+    invoke_signed(
+        &ix,
+        &[sector_authority.clone(), product_registry.clone(), vault_trader_state.clone(), vault_program.clone()],
+        &[&[SECTOR_AUTHORITY_SEED, &[authority_bump]]],
+    )?;
+    Ok(())
+}
+
+/// The vault's `TraderState` status byte (Borsh enum: Active 0, Graduated 1, Failed 2, Abandoned 3) read from the account
+/// itself: the account must be owned by the vault and be the PDA the vault derives for this challenge. Used only to learn
+/// that the permissionless `mark_abandoned` already flipped a challenge (then `record_activity` would just error).
+pub fn vault_status(vault_program: &Pubkey, program_id: &Pubkey, trader: &Pubkey, challenge_id: u64, info: &AccountInfo) -> Result<u8> {
+    let (expected, _) = Pubkey::find_program_address(&[VAULT_TRADER_STATE_SEED, program_id.as_ref(), trader.as_ref(), &challenge_id.to_le_bytes()], vault_program);
+    require_keys_eq!(expected, info.key(), Setl8Error::InvalidVaultAccount);
+    require_keys_eq!(*info.owner, *vault_program, Setl8Error::InvalidVaultAccount);
+    let data = info.try_borrow_data()?;
+    // 8 discriminator + 32 + 32 + 8 + 8 + 8, then the status byte
+    match data.get(VAULT_STATUS_OFFSET) {
+        Some(b) => Ok(*b),
+        None => err!(Setl8Error::InvalidVaultAccount),
+    }
+}
+
+/// Whether the quick tally is above the limit (strict, A-RULE-2): the engine's own `apply_closed_slice`.
+pub fn quick_over(st: &AccountState) -> Result<bool> {
+    let d = engine::apply_closed_slice(st, &Rules::default(), 0, 0).map_err(|_| error!(Setl8Error::MathOverflow))?;
+    Ok(d.fail.is_some())
 }
 
 /// Whether the current phase is failed: closed balance at or below the static floor, or quick tally above the limit
@@ -86,8 +146,7 @@ pub fn phase_failed(st: &AccountState) -> Result<bool> {
     if st.b <= floor {
         return Ok(true);
     }
-    let d = engine::apply_closed_slice(st, &Rules::default(), 0, 0).map_err(|_| error!(Setl8Error::MathOverflow))?;
-    Ok(d.fail.is_some())
+    quick_over(st)
 }
 
 /// The pass condition of DESIGN 2.5 on the stored account: not failed, flat, `b >= 1.08 S`. Maps the engine's reasons to
@@ -220,7 +279,7 @@ mod tests {
 
     #[test]
     fn wallet_slot_cannot_underflow() {
-        let mut w = WalletProfile { trader: Pubkey::default(), next_challenge_id: 0, active_count: 1, bump: 0, banned: 0, pad: [0; 5] };
+        let mut w = WalletProfile { trader: Pubkey::default(), next_challenge_id: 0, active_count: 1, bump: 0, banned: 0, held_count: 0, pad: [0; 4] };
         free_wallet_slot(&mut w).unwrap();
         assert_eq!(w.active_count, 0);
         assert!(free_wallet_slot(&mut w).is_err());

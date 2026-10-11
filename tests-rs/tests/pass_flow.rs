@@ -378,6 +378,7 @@ fn request_abandoned_by_the_vault_marks_the_account_and_frees_the_slot() {
     let m = w.ok(|w| w.request(limit + 1));
     let a = w.account();
     assert_eq!((a.status, a.pass_pending), (c::STATUS_ABANDONED, 0));
+    assert_eq!(a.terminal_at(), limit + 1, "terminal_at is set when the vault abandons the account (M7)");
     assert_eq!(w.wallet_profile().active_count, 0);
     assert_eq!(w.vault_status().status, 3, "vault: Abandoned");
     assert_eq!(w.tally_bytes(), tally0);
@@ -996,6 +997,7 @@ fn finalize_abandoned_by_the_vault_changes_neither_tally_nor_window() {
     let m = w.ok(|w| w.finalize(t + 691_200, &payer));
     let a = w.account();
     assert_eq!((a.status, a.pass_pending, a.phase, a.next_request_id), (c::STATUS_ABANDONED, 0, 2, 1));
+    assert_eq!(a.terminal_at(), t + 691_200);
     assert_eq!(w.wallet_profile().active_count, 0);
     assert_eq!(w.vault_status().status, 3);
     assert_eq!(w.tally_bytes(), tally0);
@@ -1132,6 +1134,7 @@ fn full_journey_phases_1_to_5_then_graduation_and_a_new_account() {
         } else {
             // graduation: local and vault agree
             assert_eq!((a.status, a.pass_pending), (c::STATUS_GRADUATED, 0));
+            assert_eq!(a.terminal_at(), fin_at, "terminal_at is set when the account graduates (M7)");
             assert_eq!(a.phase, 5);
             assert_eq!(w.wallet_profile().active_count, 0);
             assert_eq!(w.vault_status().status, 1, "vault: Graduated");

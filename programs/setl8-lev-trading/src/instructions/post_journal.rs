@@ -1,11 +1,12 @@
 use anchor_lang::prelude::*;
 use engine::{AccountState, ClaimError, CloseClaim, Rules};
 use journal_types::{
-    apply_batch, check_proof_without_price, check_signed_update_shape, in_session, price_e12_from_quantized, ChainError,
+    apply_batch, FailReason, check_proof_without_price, check_signed_update_shape, in_session, price_e12_from_quantized, ChainError,
     DecodeError, JournalBatch, JournalEvent, PriceProof, ProofError, Side, NO_PROOF,
 };
 use solana_sha256_hasher::hashv;
 
+use super::pass_common::quick_over;
 use crate::constants::*;
 use crate::errors::Setl8Error;
 use crate::events::EventLog;
@@ -82,7 +83,7 @@ fn claim_err(e: ClaimError) -> Setl8Error {
     }
 }
 
-fn decode_err(bytes: &[u8], e: DecodeError) -> Setl8Error {
+pub fn decode_err(bytes: &[u8], e: DecodeError) -> Setl8Error {
     match e {
         DecodeError::BadEventCount => {
             // the event count sits after first_seq (8) and prev_hash (32)
@@ -116,12 +117,21 @@ fn load_markets(program_id: &Pubkey, accounts: &[AccountInfo]) -> Result<Vec<Mar
     Ok(out)
 }
 
+/// How the batch is applied: `post_journal` or `report_fail(reason)`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Post,
+    /// The argument is the wire reason (0 StaticFloor, 1 PhaseQuick).
+    ReportFail(u8),
+}
+
 /// Read-only inputs shared by every event of the batch.
 struct Env<'a> {
     batch: &'a JournalBatch,
     markets: &'a [Market],
     ruleset: &'a RuleSet,
     rules: Rules,
+    mode: Mode,
 }
 
 /// The evolving state while a batch is applied.
@@ -131,6 +141,19 @@ struct Run {
     trades_closed: u32,
     /// `flat` as the batch's Meta will set it.
     final_flat: bool,
+    /// The reason of the applied `Fail` event (`report_fail` only).
+    fail: Option<FailReason>,
+}
+
+/// What a verified batch leaves behind; the caller stores it and emits `logs`.
+pub struct Outcome {
+    pub st: AccountState,
+    pub last_time: i64,
+    pub trades_closed: u32,
+    pub seq: u64,
+    pub hash: [u8; 32],
+    pub logs: Vec<EventLog>,
+    pub fail: Option<FailReason>,
 }
 
 impl<'a> Env<'a> {
@@ -191,16 +214,48 @@ impl<'a> Env<'a> {
     }
 }
 
-fn apply_slice(run: &mut Run, rules: &Rules, credit: i64, tally_delta: i64) -> Result<()> {
-    let d = engine::apply_closed_slice(&run.st, rules, credit, tally_delta).map_err(|_| error!(Setl8Error::MathOverflow))?;
-    // I-8: Q above the limit rejects the whole batch (the fail path is report_fail)
-    require!(d.fail.is_none(), Setl8Error::QuickLimitExceeded);
+fn apply_slice(env: &Env, run: &mut Run, credit: i64, tally_delta: i64) -> Result<()> {
+    let d = engine::apply_closed_slice(&run.st, &env.rules, credit, tally_delta).map_err(|_| error!(Setl8Error::MathOverflow))?;
+    // I-8: Q above the limit rejects the whole batch (the fail path is report_fail, which applies the slice and
+    // then demands the Fail event right after it)
+    if env.mode == Mode::Post {
+        require!(d.fail.is_none(), Setl8Error::QuickLimitExceeded);
+    }
     run.st = d.state;
+    Ok(())
+}
+
+/// I-11 for `report_fail`: the `Fail` event right before `Meta`. Its proof is checked like the other floating events.
+/// The batch ends flat, `b_after` is the closed balance, and the reason is justified by the state at that point.
+fn apply_fail(env: &Env, run: &mut Run, ev: &JournalEvent, arg: u8) -> Result<()> {
+    let JournalEvent::Fail { time, reason, b_after, .. } = ev else {
+        return err(Setl8Error::FailMissing);
+    };
+    env.check_floating_proof(env.required_proof(ev)?, *time)?;
+    require!(reason.as_u8() == arg, Setl8Error::FailReasonMismatch);
+    require!(run.final_flat, Setl8Error::FailNotFlat);
+    require!(*b_after == run.st.b, Setl8Error::FailBalanceMismatch);
+    let over = quick_over(&run.st)?;
+    match reason {
+        FailReason::StaticFloor => {
+            require!(!over, Setl8Error::QuickLimitNeedsPhaseQuick);
+            let floor = engine::static_floor_micro(&run.st).map_err(|_| error!(Setl8Error::MathOverflow))?;
+            require!(run.st.b <= floor, Setl8Error::FailStaticFloorNotReached);
+        }
+        FailReason::PhaseQuick => require!(over, Setl8Error::FailQuickNotExceeded),
+    }
+    run.fail = Some(*reason);
     Ok(())
 }
 
 /// One event. Time (I-3) is checked by the caller.
 fn apply_event(env: &Env, run: &mut Run, acct: &TradingAccount, ev: &JournalEvent) -> Result<()> {
+    // a quick tally over the limit allows nothing but the Fail event (and then the Meta)
+    if let Mode::ReportFail(_) = env.mode {
+        if !matches!(ev, JournalEvent::Fail { .. } | JournalEvent::Meta { .. }) {
+            require!(!quick_over(&run.st)?, Setl8Error::QuickLimitExceeded);
+        }
+    }
     match ev {
         JournalEvent::Fill { market, side, qty, price_e12, time, .. } => {
             // every Fill increases exposure (DESIGN 8.1): not held, not locked, market open for opening
@@ -235,14 +290,14 @@ fn apply_event(env: &Env, run: &mut Run, acct: &TradingAccount, ev: &JournalEven
                 credited: *credited,
             })
             .map_err(|e| error!(claim_err(e)))?;
-            apply_slice(run, &env.rules, credit.credit, credit.tally_delta)?;
+            apply_slice(env, run, credit.credit, credit.tally_delta)?;
             run.trades_closed = run.trades_closed.checked_add(1).ok_or(Setl8Error::MathOverflow)?;
         }
         JournalEvent::Fee { market, amount, .. } => {
             env.market(*market)?;
             let amount = i64::try_from(*amount).map_err(|_| error!(Setl8Error::FeeInvalid))?;
             let debit = amount.checked_neg().ok_or(Setl8Error::MathOverflow)?;
-            apply_slice(run, &env.rules, debit, 0)?;
+            apply_slice(env, run, debit, 0)?;
         }
         JournalEvent::TightStart { time, p_open, r, l_start, g_peak, l_level, .. } => {
             env.check_floating_proof(env.required_proof(ev)?, *time)?;
@@ -261,7 +316,10 @@ fn apply_event(env: &Env, run: &mut Run, acct: &TradingAccount, ev: &JournalEven
             require!(run.final_flat, Setl8Error::BreachNotFlat);
             run.st = engine::check_breach(&run.st, *time, *l_level, *b_after).map_err(|e| error!(claim_err(e)))?;
         }
-        JournalEvent::Fail { .. } => return err(Setl8Error::FailEventNotAllowed),
+        JournalEvent::Fail { .. } => match env.mode {
+            Mode::Post => return err(Setl8Error::FailEventNotAllowed),
+            Mode::ReportFail(arg) => apply_fail(env, run, ev, arg)?,
+        },
         JournalEvent::Meta { flat, engine_version, .. } => {
             require!(*engine_version == engine::ENGINE_VERSION, Setl8Error::EngineVersionMismatch);
             run.st.flat = *flat;
@@ -281,38 +339,54 @@ fn meta_flat(batch: &JournalBatch) -> Result<bool> {
     }
 }
 
-pub fn handle_post_journal<'info>(ctx: Context<'_, '_, 'info, 'info, PostJournal<'info>>, batch_bytes: Vec<u8>) -> Result<()> {
-    let now = Clock::get()?.unix_timestamp;
+/// `report_fail` shape: exactly one `Fail`, and it is the event right before the final `Meta`.
+fn check_fail_shape(batch: &JournalBatch) -> Result<()> {
+    let fails = batch.events.iter().filter(|e| matches!(e, JournalEvent::Fail { .. })).count();
+    require!(fails != 0, Setl8Error::FailMissing);
+    require!(fails == 1, Setl8Error::FailTwice);
+    let n = batch.events.len();
+    let before_meta = n.checked_sub(2).and_then(|i| batch.events.get(i));
+    require!(matches!(before_meta, Some(JournalEvent::Fail { .. })), Setl8Error::FailNotBeforeMeta);
+    Ok(())
+}
 
-    // I-1
-    require_keys_eq!(ctx.accounts.evaluator.key(), ctx.accounts.config.evaluator, Setl8Error::Unauthorized);
-    let acct = &ctx.accounts.trading_account;
-    require!(acct.status == STATUS_ACTIVE, Setl8Error::AccountNotActive);
-    require!(acct.pass_pending != PASS_CONFIRMED, Setl8Error::PassPending);
-
-    let batch = JournalBatch::decode(&batch_bytes).map_err(|e| error!(decode_err(&batch_bytes, e)))?;
-
+/// Applies a decoded batch to `acct` under I-2 to I-12 (and I-11 for `Mode::ReportFail`) without writing anything:
+/// the caller stores the `Outcome` and emits its `logs`. Shared by `post_journal` and `report_fail`.
+#[allow(clippy::too_many_arguments)]
+pub fn run_batch(
+    program_id: &Pubkey,
+    account_key: Pubkey,
+    acct: &TradingAccount,
+    ruleset: &RuleSet,
+    remaining: &[AccountInfo],
+    batch: &JournalBatch,
+    now: i64,
+    mode: Mode,
+) -> Result<Outcome> {
     // I-2: sequence and previous hash (apply_batch does not compare prev_hash)
     let expected_seq = acct.seq.checked_add(1).ok_or(Setl8Error::MathOverflow)?;
     require!(batch.first_seq == expected_seq, Setl8Error::BadSequence);
     require!(batch.prev_hash == acct.journal_hash, Setl8Error::BadPrevHash);
 
-    let final_flat = meta_flat(&batch)?;
-    let markets = load_markets(ctx.program_id, ctx.remaining_accounts)?;
+    let final_flat = meta_flat(batch)?;
+    if mode != Mode::Post {
+        check_fail_shape(batch)?;
+    }
+    let markets = load_markets(program_id, remaining)?;
     let st = acct.to_engine_state()?;
-    let env = Env { batch: &batch, markets: &markets, ruleset: &ctx.accounts.ruleset, rules: Rules::default() };
-    let mut run = Run { st, last_time: acct.last_batch_time, trades_closed: acct.trades_closed, final_flat };
+    let env = Env { batch, markets: &markets, ruleset, rules: Rules::default(), mode };
+    let mut run = Run { st, last_time: acct.last_batch_time, trades_closed: acct.trades_closed, final_flat, fail: None };
 
-    let (new_hash, last_seq) = apply_batch(&|parts: &[&[u8]]| hashv(parts).to_bytes(), &acct.journal_hash, batch.first_seq, &batch).map_err(|e| match e {
+    let (hash, last_seq) = apply_batch(&|parts: &[&[u8]]| hashv(parts).to_bytes(), &acct.journal_hash, batch.first_seq, batch).map_err(|e| match e {
         ChainError::ZeroFirstSeq => error!(Setl8Error::BadSequence),
         ChainError::SeqOverflow => error!(Setl8Error::MathOverflow),
         ChainError::ProofMismatch => error!(Setl8Error::ProofMissing),
         ChainError::Encode(_) => error!(Setl8Error::BatchMalformed),
     })?;
 
-    let account_key = acct.key();
     let latest_allowed = now.checked_add(EVENT_FUTURE_SKEW_SECS).ok_or(Setl8Error::MathOverflow)?;
     let mut seq = batch.first_seq;
+    let mut logs = Vec::new();
     for (i, ev) in batch.events.iter().enumerate() {
         if i > 0 {
             seq = seq.checked_add(1).ok_or(Setl8Error::MathOverflow)?;
@@ -329,21 +403,45 @@ pub fn handle_post_journal<'info>(ctx: Context<'_, '_, 'info, 'info, PostJournal
             Some(p) => p.to_bytes().map_err(|_| error!(Setl8Error::BatchMalformed))?,
             None => Vec::new(),
         };
-        emit_cpi!(EventLog { account: account_key, seq, event_bytes: ev.to_bytes(), proof_bytes });
+        logs.push(EventLog { account: account_key, seq, event_bytes: ev.to_bytes(), proof_bytes });
     }
-    // a batch that ends flat cannot leave tight mode on
-    require!(!(run.st.tight_on && run.st.flat), Setl8Error::TightNotEnded);
     debug_assert_eq!(seq, last_seq);
-
-    let acct = &mut ctx.accounts.trading_account;
-    acct.apply_engine_state(&run.st)?;
-    acct.trades_closed = run.trades_closed;
-    acct.last_batch_time = run.last_time;
-    acct.seq = last_seq;
-    acct.journal_hash = new_hash;
-    Ok(())
+    if mode == Mode::Post {
+        // a batch that ends flat cannot leave tight mode on
+        require!(!(run.st.tight_on && run.st.flat), Setl8Error::TightNotEnded);
+        // a batch that ends flat at or below the static floor is a certain fail: report_fail only (not when open positions
+        // could still keep equity above the floor)
+        if run.st.flat {
+            let floor = engine::static_floor_micro(&run.st).map_err(|_| error!(Setl8Error::MathOverflow))?;
+            require!(run.st.b > floor, Setl8Error::MustReportFail);
+        }
+    }
+    Ok(Outcome { st: run.st, last_time: run.last_time, trades_closed: run.trades_closed, seq: last_seq, hash, logs, fail: run.fail })
 }
 
+pub fn handle_post_journal<'info>(ctx: Context<'_, '_, 'info, 'info, PostJournal<'info>>, batch_bytes: Vec<u8>) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+
+    // I-1
+    require_keys_eq!(ctx.accounts.evaluator.key(), ctx.accounts.config.evaluator, Setl8Error::Unauthorized);
+    let acct = &ctx.accounts.trading_account;
+    require!(acct.status == STATUS_ACTIVE, Setl8Error::AccountNotActive);
+    require!(acct.pass_pending != PASS_CONFIRMED, Setl8Error::PassPending);
+
+    let batch = JournalBatch::decode(&batch_bytes).map_err(|e| error!(decode_err(&batch_bytes, e)))?;
+    let out = run_batch(ctx.program_id, acct.key(), acct, &ctx.accounts.ruleset, ctx.remaining_accounts, &batch, now, Mode::Post)?;
+    for log in out.logs {
+        emit_cpi!(log);
+    }
+
+    let acct = &mut ctx.accounts.trading_account;
+    acct.apply_engine_state(&out.st)?;
+    acct.trades_closed = out.trades_closed;
+    acct.last_batch_time = out.last_time;
+    acct.seq = out.seq;
+    acct.journal_hash = out.hash;
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

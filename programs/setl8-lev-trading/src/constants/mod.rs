@@ -35,6 +35,16 @@ pub const PASS_CONFIRMED: u8 = 2;
 /// `cancel_pass` is allowed this many seconds after the request (the evaluator never answered), DESIGN 6.2.
 pub const CANCEL_PASS_AFTER_SECS: i64 = 3_600;
 
+/// Seconds a Failed, Abandoned or Graduated account stays before `close_account` (7 days, DESIGN 6.2).
+pub const TERMINAL_RETENTION_SECS: i64 = 604_800;
+/// `touch_activity` and `release_account` skip the vault call if the last push is younger than this (DESIGN 6.3).
+pub const ACTIVITY_THROTTLE_SECS: i64 = 86_000;
+/// Seed and status byte offset of the vault's `TraderState` (vault `constants` and account layout).
+pub const VAULT_TRADER_STATE_SEED: &[u8] = b"trader_state";
+pub const VAULT_STATUS_OFFSET: usize = 96;
+/// Vault `TraderStatus::Abandoned` as stored.
+pub const VAULT_STATUS_ABANDONED: u8 = 3;
+
 /// `reject_pass` reasons (DESIGN 6.3).
 pub const REJECT_NOT_FLAT: u8 = 0;
 pub const REJECT_JOURNAL_BEHIND: u8 = 1;

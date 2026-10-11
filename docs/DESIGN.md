@@ -282,7 +282,7 @@ Let `acct` be the stored account and `ev` an event of the batch, processed in or
 | I-8 | `q_tally > 0.028 S` after any event: the batch is rejected unless its last event is `Fail{PhaseQuick}`; use `report_fail`. |
 | I-9 | `TightStart`: `p_open > 0.01 S`, `r == b`, `l_start == min(static floor + 0.04 S, r)`, `l_level == l_start + max(0, g_peak - 0.01 S)` and `tight_on == 0` before. `FloorRaised`: `tight_on == 1`, new `g_peak > old`, `l_level` recomputed by the formula. `TightEnd`: `flat == true`. |
 | I-10 | `Breach`: `tight_on == 1`, `flat == true` after the batch, `b <= l_level` (position closed at the sample, so balance equals equity), `lock_until = ev.time + 12 h`, `tight_on = 0`. Any `Fill` that opens or adds has `ev.time >= acct.lock_until`. |
-| I-11 | `Fail` (only through `report_fail`): reasons `StaticFloor` (needs `flat == true` and `b <= static floor`) or `PhaseQuick` (needs I-8). Sets status Failed and calls the vault. Violation fails are NOT journal events: they go through `fail_for_violation` (6.1). |
+| I-11 | `Fail` (only through `report_fail`; M7: the batch is `events..., Fail, Meta` with `Meta.flat == 1`, the `Fail` right before `Meta`, `Fail.b_after == b`, and `post_journal` rejects a batch that ends flat at or below the static floor with `MustReportFail`): reasons `StaticFloor` (needs `flat == true` and `b <= static floor`) or `PhaseQuick` (needs I-8). Sets status Failed and calls the vault. Violation fails are NOT journal events: they go through `fail_for_violation` (6.1). |
 | I-12 | `flat` is stored as given. The chain cannot check it. |
 The program also re-derives, never trusts: the static floor, the quick limit, the pass target, the payout amount. None of these are fields the evaluator can set.
 
@@ -401,13 +401,13 @@ Rent for a new `TradingAccount` (about $0.35 at an assumed $150/SOL; SOL price i
 | `g_peak` | i64 | 8 | highest `E - R` claimed since tight mode began |
 | `l_level` | i64 | 8 | tight floor L (0 when off) |
 | `pass_requested_at` | i64 | 8 | time of `request_advance` |
-| `pass_proposed_at` | i64 | 8 | time of `confirm_pass` (the delay counts from here) |
+| `pass_proposed_at` | i64 | 8 | time of `confirm_pass` (the delay counts from here). **M7 note: once the account is Failed, Abandoned or Graduated nothing can be pending, so the field then holds `terminal_at`, the time of that transition; `close_account` counts 7 days from it.** |
 | **Total** | | **207** | |
 
 The static floor is not stored: it is `0.96 S` if `latch == 1`, else `0.92 S`. Positions, pending orders and the last trades live in the evaluator's database and in the journal; the chain never needs them.
 
 ### 5.2 `WalletProfile` (56 bytes)
-`trader Pubkey, next_challenge_id u64, active_count u8, bump u8, banned u8, pad`. `banned = 1` blocks `open_account` and `reset_account` for that wallet (`WalletBanned`). `active_count <= 5` is enforced at `open_account` and `reset_account` (decision 28). It is decremented when an account becomes Failed,
+`trader Pubkey, next_challenge_id u64, active_count u8, bump u8, banned u8, held_count u8, pad [u8;4]` (M7: `held_count` = number of this wallet's accounts currently held; `ban_wallet` is refused while it is above 0). `banned = 1` blocks `open_account` and `reset_account` for that wallet (`WalletBanned`). `active_count <= 5` is enforced at `open_account` and `reset_account` (decision 28). It is decremented when an account becomes Failed,
 Graduated or Abandoned. `next_challenge_id` hands out unused vault challenge ids (the vault rejects a reused id anyway).
 
 ### 5.3 `SectorConfig` (270 bytes)

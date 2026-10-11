@@ -10,7 +10,11 @@ pub struct WalletProfile {
     pub bump: u8,
     /// 1 blocks `open_account` and `reset_account` (`WalletBanned`).
     pub banned: u8,
-    pub pad: [u8; 5],
+    /// Number of this wallet's accounts that are currently held (DESIGN 2.9). `ban_wallet` is refused while it is
+    /// above 0. Kept by `hold_account` (+1), `release_hold`, `fail_for_violation` and every path that ends a held
+    /// account (-1). Takes the first spare byte, so the size stays 56.
+    pub held_count: u8,
+    pub pad: [u8; 4],
 }
 
 impl WalletProfile {
@@ -33,7 +37,8 @@ mod tests {
             active_count: 3,
             bump: 0xAB,
             banned: 1,
-            pad: [0; 5],
+            held_count: 7,
+            pad: [0; 4],
         };
         let mut d = Vec::new();
         w.try_serialize(&mut d).unwrap();
@@ -43,6 +48,7 @@ mod tests {
         assert_eq!(d[48], 3); // active_count
         assert_eq!(d[49], 0xAB); // bump
         assert_eq!(d[50], 1); // banned
-        assert_eq!(&d[51..56], &[0u8; 5]);
+        assert_eq!(d[51], 7); // held_count
+        assert_eq!(&d[52..56], &[0u8; 4]);
     }
 }

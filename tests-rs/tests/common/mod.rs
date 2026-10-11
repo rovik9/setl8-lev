@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 pub mod journal;
+pub mod lifecycle;
 pub mod pass;
 pub mod vault;
 

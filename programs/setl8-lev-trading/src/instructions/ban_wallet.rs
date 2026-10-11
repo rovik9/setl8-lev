@@ -29,7 +29,7 @@ pub struct BanWallet<'info> {
 }
 
 /// Both admins. Creates the profile if missing (`payer` pays); idempotent if already banned.
-/// OPEN HOOK: DESIGN 6.1 says "for a linked wallet with no held account"; that needs `TradingAccount` (M5/M7).
+/// Refused while the profile's `held_count` is above 0 (M7, DESIGN 6.1 "no held account").
 pub fn handle_ban_wallet(ctx: Context<BanWallet>, trader: Pubkey, evidence_hash: [u8; 32]) -> Result<()> {
     let accounts = ctx.accounts;
     require_both_admins(&accounts.config, &accounts.admin_a, &accounts.admin_b)?;
@@ -41,8 +41,11 @@ pub fn handle_ban_wallet(ctx: Context<BanWallet>, trader: Pubkey, evidence_hash:
         wallet.next_challenge_id = 0;
         wallet.active_count = 0;
         wallet.bump = ctx.bumps.wallet;
-        wallet.pad = [0; 5];
+        wallet.held_count = 0;
+        wallet.pad = [0; 4];
     }
+    // DESIGN 6.1: only a linked wallet with no held account (the hold must be released or failed first)
+    require!(wallet.held_count == 0, Setl8Error::WalletHasHeldAccount);
     wallet.banned = 1;
     emit!(WalletBanned { trader, evidence_hash });
     Ok(())

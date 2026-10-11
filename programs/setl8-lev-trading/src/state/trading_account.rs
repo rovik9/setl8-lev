@@ -46,6 +46,12 @@ pub struct TradingAccount {
 }
 
 impl TradingAccount {
+    /// `terminal_at`: when the account became Failed, Abandoned or Graduated (M7, RESOLVE (b)). Stored in `pass_proposed_at`,
+    /// which is meaningless once nothing can be pending; every transition into a terminal state sets it (`end_account`).
+    pub fn terminal_at(&self) -> i64 {
+        self.pass_proposed_at
+    }
+
     /// 32+8x10 +32 +4+2 +9 +5x8 bytes after the discriminator (DESIGN 5.1).
     pub const BODY_LEN: usize = 32 + 8 * 10 + 32 + 4 + 2 + 9 + 8 * 5;
     /// Total account size including the discriminator: 207.

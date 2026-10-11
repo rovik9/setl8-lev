@@ -106,4 +106,32 @@ pub mod setl8_lev_trading {
     pub fn finalize_pass(ctx: Context<FinalizePass>) -> Result<()> {
         instructions::finalize_pass::handle_finalize_pass(ctx)
     }
+
+    pub fn report_fail<'info>(ctx: Context<'_, '_, 'info, 'info, ReportFail<'info>>, batch_bytes: Vec<u8>, reason: u8) -> Result<()> {
+        instructions::report_fail::handle_report_fail(ctx, batch_bytes, reason)
+    }
+
+    pub fn hold_account(ctx: Context<HoldAccount>, evidence_hash: [u8; 32]) -> Result<()> {
+        instructions::hold_account::handle_hold_account(ctx, evidence_hash)
+    }
+
+    pub fn release_hold(ctx: Context<ReleaseHold>) -> Result<()> {
+        instructions::release_hold::handle_release_hold(ctx)
+    }
+
+    pub fn fail_for_violation(ctx: Context<FailForViolation>, evidence_hash: [u8; 32]) -> Result<()> {
+        instructions::fail_for_violation::handle_fail_for_violation(ctx, evidence_hash)
+    }
+
+    pub fn touch_activity(ctx: Context<TouchActivity>) -> Result<()> {
+        instructions::activity::handle_touch_activity(ctx)
+    }
+
+    pub fn release_account(ctx: Context<ReleaseAccount>) -> Result<()> {
+        instructions::activity::handle_release_account(ctx)
+    }
+
+    pub fn close_account(ctx: Context<CloseAccount>) -> Result<()> {
+        instructions::close_account::handle_close_account(ctx)
+    }
 }

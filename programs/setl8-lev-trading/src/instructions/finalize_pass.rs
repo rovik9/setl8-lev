@@ -130,7 +130,7 @@ pub fn handle_finalize_pass(ctx: Context<FinalizePass>) -> Result<()> {
 
     match outcome {
         PayoutOutcome::Abandoned => {
-            mark_abandoned(&mut ctx.accounts.trading_account, &mut ctx.accounts.wallet)?;
+            mark_abandoned(&mut ctx.accounts.trading_account, &mut ctx.accounts.wallet, now)?;
             emit_cpi!(AccountAbandoned { account: account_key, trader, time: now });
         }
         PayoutOutcome::Paid => {
@@ -156,11 +156,7 @@ pub fn handle_finalize_pass(ctx: Context<FinalizePass>) -> Result<()> {
                     p
                 }
                 engine::NextPhase::Graduated => {
-                    acct.status = STATUS_GRADUATED;
-                    acct.pass_pending = PASS_NONE;
-                    acct.pass_requested_at = 0;
-                    acct.pass_proposed_at = 0;
-                    free_wallet_slot(&mut ctx.accounts.wallet)?;
+                    end_account(acct, &mut ctx.accounts.wallet, STATUS_GRADUATED, now)?;
                     0
                 }
             };

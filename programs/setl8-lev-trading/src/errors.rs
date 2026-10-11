@@ -186,6 +186,37 @@ pub enum Setl8Error {
     RejectReasonInvalid,
     #[msg("the payout tally account does not parse")]
     PayoutTallyInvalid,
+    // ---- M7: fail, hold, violation, activity, close (6089 and up) ----
+    #[msg("the batch ends flat at or below the static floor: use report_fail")]
+    MustReportFail,
+    #[msg("fail reason is not 0 (StaticFloor) or 1 (PhaseQuick)")]
+    FailReasonInvalid,
+    #[msg("the Fail event's reason differs from the argument")]
+    FailReasonMismatch,
+    #[msg("report_fail needs a Fail event")]
+    FailMissing,
+    #[msg("the batch has more than one Fail event")]
+    FailTwice,
+    #[msg("the Fail event is not the one right before Meta")]
+    FailNotBeforeMeta,
+    #[msg("a failing batch must end flat")]
+    FailNotFlat,
+    #[msg("Fail.b_after differs from the closed balance")]
+    FailBalanceMismatch,
+    #[msg("closed balance is above the static floor")]
+    FailStaticFloorNotReached,
+    #[msg("the quick tally is not above 0.028 S")]
+    FailQuickNotExceeded,
+    #[msg("the quick tally is above the limit: the fail reason must be PhaseQuick")]
+    QuickLimitNeedsPhaseQuick,
+    #[msg("the account is already held")]
+    AlreadyHeld,
+    #[msg("the wallet has a held account")]
+    WalletHasHeldAccount,
+    #[msg("the account is not in a terminal state")]
+    AccountNotTerminal,
+    #[msg("vault account is not the owned PDA of this challenge")]
+    InvalidVaultAccount,
 }
 
 #[cfg(test)]
@@ -248,5 +279,20 @@ mod tests {
         assert_eq!(u32::from(Setl8Error::PhaseFailed), 6086);
         assert_eq!(u32::from(Setl8Error::RejectReasonInvalid), 6087);
         assert_eq!(u32::from(Setl8Error::PayoutTallyInvalid), 6088);
+        assert_eq!(u32::from(Setl8Error::MustReportFail), 6089);
+        assert_eq!(u32::from(Setl8Error::FailReasonInvalid), 6090);
+        assert_eq!(u32::from(Setl8Error::FailReasonMismatch), 6091);
+        assert_eq!(u32::from(Setl8Error::FailMissing), 6092);
+        assert_eq!(u32::from(Setl8Error::FailTwice), 6093);
+        assert_eq!(u32::from(Setl8Error::FailNotBeforeMeta), 6094);
+        assert_eq!(u32::from(Setl8Error::FailNotFlat), 6095);
+        assert_eq!(u32::from(Setl8Error::FailBalanceMismatch), 6096);
+        assert_eq!(u32::from(Setl8Error::FailStaticFloorNotReached), 6097);
+        assert_eq!(u32::from(Setl8Error::FailQuickNotExceeded), 6098);
+        assert_eq!(u32::from(Setl8Error::QuickLimitNeedsPhaseQuick), 6099);
+        assert_eq!(u32::from(Setl8Error::AlreadyHeld), 6100);
+        assert_eq!(u32::from(Setl8Error::WalletHasHeldAccount), 6101);
+        assert_eq!(u32::from(Setl8Error::AccountNotTerminal), 6102);
+        assert_eq!(u32::from(Setl8Error::InvalidVaultAccount), 6103);
     }
 }

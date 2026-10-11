@@ -164,3 +164,36 @@ pub struct AccountAbandoned {
     pub trader: Pubkey,
     pub time: i64,
 }
+
+/// `report_fail` (through `emit_cpi!`): the account is Failed. `reason` is 0 StaticFloor or 1 PhaseQuick.
+#[event]
+pub struct AccountFailed {
+    pub account: Pubkey,
+    pub reason: u8,
+    pub b: i64,
+    pub seq: u64,
+    pub journal_hash: [u8; 32],
+}
+
+/// `hold_account` (through `emit_cpi!`).
+#[event]
+pub struct AccountHeld {
+    pub account: Pubkey,
+    pub trader: Pubkey,
+    pub evidence_hash: [u8; 32],
+}
+
+/// `release_hold` (through `emit_cpi!`).
+#[event]
+pub struct HoldReleased {
+    pub account: Pubkey,
+    pub trader: Pubkey,
+}
+
+/// `fail_for_violation` (through `emit_cpi!`).
+#[event]
+pub struct ViolationFail {
+    pub account: Pubkey,
+    pub trader: Pubkey,
+    pub evidence_hash: [u8; 32],
+}

@@ -110,7 +110,8 @@ pub fn handle_open_account(ctx: Context<OpenAccount>, tier_index: u8) -> Result<
         wallet.active_count = 0;
         wallet.banned = 0;
         wallet.bump = ctx.bumps.wallet;
-        wallet.pad = [0; 5];
+        wallet.held_count = 0;
+        wallet.pad = [0; 4];
     }
     require!(wallet.banned == 0, Setl8Error::WalletBanned);
     require!(wallet.active_count < MAX_ACTIVE_ACCOUNTS, Setl8Error::WalletCapReached);

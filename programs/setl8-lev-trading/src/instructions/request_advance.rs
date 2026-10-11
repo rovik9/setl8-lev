@@ -66,7 +66,7 @@ pub fn handle_request_advance(ctx: Context<RequestAdvance>) -> Result<()> {
     )?;
 
     if outcome == ActivityOutcome::Abandoned {
-        mark_abandoned(&mut ctx.accounts.trading_account, &mut ctx.accounts.wallet)?;
+        mark_abandoned(&mut ctx.accounts.trading_account, &mut ctx.accounts.wallet, now)?;
         emit_cpi!(AccountAbandoned { account: account_key, trader, time: now });
         return Ok(());
     }
