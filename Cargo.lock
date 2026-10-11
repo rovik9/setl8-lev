@@ -1574,6 +1574,7 @@ dependencies = [
  "setl8-lev-engine",
  "setl8-lev-journal-types",
  "setl8-shared-interfaces",
+ "solana-sha256-hasher",
 ]
 
 [[package]]

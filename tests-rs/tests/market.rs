@@ -304,7 +304,8 @@ fn update_market_applies_the_same_validations() {
     let mut e = env_with_markets(3);
     let before = e.svm.get_account(&market_pda(1)).unwrap();
     let admins = Admins::both(&e);
-    let cases: Vec<(&str, Box<dyn Fn(&mut MarketParams)>)> = vec![
+    type Case = (&'static str, Box<dyn Fn(&mut MarketParams)>);
+    let cases: Vec<Case> = vec![
         ("status 3", Box::new(|p| p.status = 3)),
         ("feed zero", Box::new(|p| p.feed_id = [0; 32])),
         ("max_age 0", Box::new(|p| p.max_age_secs = 0)),

@@ -2685,6 +2685,9 @@ version = "0.1.0"
 [[package]]
 name = "setl8-lev-journal-types"
 version = "0.1.0"
+dependencies = [
+ "sha2 0.10.9",
+]
 
 [[package]]
 name = "setl8-lev-trading"
@@ -2695,6 +2698,7 @@ dependencies = [
  "setl8-lev-engine",
  "setl8-lev-journal-types",
  "setl8-shared-interfaces",
+ "solana-sha256-hasher",
 ]
 
 [[package]]
@@ -4626,12 +4630,14 @@ name = "tests-rs"
 version = "0.0.0"
 dependencies = [
  "anchor-lang",
+ "anchor-spl",
  "base64 0.21.7",
  "litesvm",
  "setl8-lev-engine",
  "setl8-lev-journal-types",
  "setl8-lev-trading",
  "setl8-shared-interfaces",
+ "sha2 0.10.9",
  "solana-account",
  "solana-keypair",
  "solana-message",

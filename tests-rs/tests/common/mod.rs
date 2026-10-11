@@ -4,6 +4,8 @@
 //! verification is ON, so a signer that did not sign makes the transaction fail like on a real cluster.
 #![allow(dead_code)]
 
+pub mod vault;
+
 use std::path::PathBuf;
 
 use anchor_lang::solana_program::{
@@ -68,8 +70,14 @@ pub struct Env {
 
 impl Env {
     pub fn new() -> Self {
+        Self::new_with(true)
+    }
+
+    /// `sigverify = false` lets a test flag an account as a signer without a signature (the vault harness uses it
+    /// for the vault's public test admins, whose key files are never read).
+    pub fn new_with(sigverify: bool) -> Self {
         let so = so_path();
-        let mut svm = LiteSVM::new().with_sigverify(true);
+        let mut svm = LiteSVM::new().with_sigverify(sigverify);
         svm.add_program_from_file(PROGRAM_ID, &so).unwrap_or_else(|e| panic!("cannot load {} ({e:?})", so.display()));
         let mut clock: Clock = svm.get_sysvar();
         clock.unix_timestamp = T0;

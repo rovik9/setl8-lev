@@ -83,6 +83,15 @@ pub enum Setl8Error {
     AccountHeld,
     #[msg("account is not held")]
     NotHeld,
+    // ---- added after DESIGN 12 (append only; the codes above are fixed) ----
+    #[msg("a flag byte is not 0 or 1")]
+    InvalidFlag,
+    #[msg("token account has the wrong owner or mint")]
+    InvalidTokenAccount,
+    #[msg("vault program account does not match the configured vault")]
+    InvalidVaultProgram,
+    #[msg("stored account fields disagree with the engine state")]
+    EngineStateMismatch,
 }
 
 #[cfg(test)]
@@ -95,5 +104,9 @@ mod tests {
         assert_eq!(u32::from(Setl8Error::DailyPayoutCapReached), 6024);
         assert_eq!(u32::from(Setl8Error::InvalidLimits), 6034);
         assert_eq!(u32::from(Setl8Error::NotHeld), 6038);
+        assert_eq!(u32::from(Setl8Error::InvalidFlag), 6039);
+        assert_eq!(u32::from(Setl8Error::InvalidTokenAccount), 6040);
+        assert_eq!(u32::from(Setl8Error::InvalidVaultProgram), 6041);
+        assert_eq!(u32::from(Setl8Error::EngineStateMismatch), 6042);
     }
 }

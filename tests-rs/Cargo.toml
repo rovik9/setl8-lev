@@ -15,6 +15,8 @@ setl8-lev-trading = { path = "../programs/setl8-lev-trading", features = ["no-en
 setl8-shared-interfaces = { git = "https://github.com/rovik9/setl8-turbo", tag = "v0.4.0" }
 anchor-lang = "0.32.1"
 base64 = "0.21"
+anchor-spl = { version = "0.32.1", default-features = false, features = ["token"] }
+sha2 = "0.10"
 setl8-lev-engine = { path = "../crates/engine" }
 setl8-lev-journal-types = { path = "../crates/journal-types" }
 litesvm = "=0.7.0"
@@ -25,3 +27,7 @@ solana-message = "2"
 solana-transaction-error = "2"
 solana-account = "2"
 solana-pubkey = "2"
+
+[lints.clippy]
+# litesvm's `FailedTransactionMetadata` is large; test helpers return it as is
+result_large_err = "allow"

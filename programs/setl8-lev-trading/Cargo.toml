@@ -20,8 +20,15 @@ idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "anchor-spl/token_
 default = []
 
 [dependencies]
-anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
+anchor-lang = { version = "0.32.1", features = ["init-if-needed", "event-cpi"] }
+# sol_sha256 syscall wrapper (anchor_lang::solana_program does not re-export `hash`)
+solana-sha256-hasher = "2.3"
 anchor-spl = { version = "0.32.1", default-features = false, features = ["token"] }
 setl8-shared-interfaces = { git = "https://github.com/rovik9/setl8-turbo", tag = "v0.4.0" }
 setl8-lev-engine = { path = "../../crates/engine" }
-setl8-lev-journal-types = { path = "../../crates/journal-types" }
+# no native sha2 in the program: hashing goes through the sol_sha256 syscall (journal_types::Sha256)
+setl8-lev-journal-types = { path = "../../crates/journal-types", default-features = false }
+
+# Anchor's macros test these cfgs inside the crate; declaring them keeps `clippy -D warnings` quiet.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))', 'cfg(feature, values("custom-heap", "custom-panic", "anchor-debug"))'] }

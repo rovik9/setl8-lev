@@ -57,3 +57,17 @@ pub struct WalletBanned {
 pub struct WalletUnbanned {
     pub trader: Pubkey,
 }
+
+/// Emitted by `open_account` through `emit_cpi!`. NOT part of the hash chain (`seq = 0`, `journal_hash = genesis_hash`).
+#[event]
+pub struct Opened {
+    pub account: Pubkey,
+    pub trader: Pubkey,
+    pub challenge_id: u64,
+    pub size_s: u64,
+    pub tier_index: u8,
+    pub phase: u8,
+    pub ruleset_version: u16,
+    pub genesis_hash: [u8; 32],
+    pub time: i64,
+}

@@ -85,12 +85,12 @@ fn validate_ruleset(a: &RuleSetArgs) -> Result<()> {
 
     let (size, size_unused) = a.tier_size.split_at(tiers);
     let (cost, cost_unused) = a.tier_cost.split_at(tiers);
-    require!(size.iter().all(|&x| x > 0) && size.windows(2).all(|w| w[0] < w[1]), Setl8Error::InvalidTier);
-    require!(cost.iter().all(|&x| x > 0) && cost.windows(2).all(|w| w[0] < w[1]), Setl8Error::InvalidTier);
+    require!(size.iter().all(|&x| x > 0) && size.is_sorted_by(|a, b| a < b), Setl8Error::InvalidTier);
+    require!(cost.iter().all(|&x| x > 0) && cost.is_sorted_by(|a, b| a < b), Setl8Error::InvalidTier);
     require!(size_unused.iter().all(|&x| x == 0) && cost_unused.iter().all(|&x| x == 0), Setl8Error::InvalidTier);
 
     let (steps, steps_unused) = a.reset_ladder_bps.split_at(ladder);
-    require!(steps.iter().all(|&x| x > 0) && steps.windows(2).all(|w| w[0] <= w[1]), Setl8Error::InvalidTier);
+    require!(steps.iter().all(|&x| x > 0) && steps.is_sorted_by(|a, b| a <= b), Setl8Error::InvalidTier);
     require!(steps_unused.iter().all(|&x| x == 0), Setl8Error::InvalidTier);
     Ok(())
 }

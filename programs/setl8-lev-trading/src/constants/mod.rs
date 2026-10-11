@@ -13,6 +13,21 @@ pub const SECTOR_AUTHORITY_SEED: &[u8] = b"setl8_sector_authority";
 pub const RULESET_SEED: &[u8] = b"ruleset";
 pub const MARKET_SEED: &[u8] = b"market";
 pub const WALLET_SEED: &[u8] = b"wallet";
+/// `TradingAccount`: `["acct", trader, challenge_id u64 LE]`.
+pub const ACCT_SEED: &[u8] = b"acct";
+
+/// At most 5 simultaneously Active accounts per wallet (decision 28).
+pub const MAX_ACTIVE_ACCOUNTS: u8 = 5;
+
+/// `TradingAccount.status`.
+pub const STATUS_ACTIVE: u8 = 0;
+pub const STATUS_FAILED: u8 = 1;
+pub const STATUS_ABANDONED: u8 = 2;
+pub const STATUS_GRADUATED: u8 = 3;
+/// `TradingAccount.pass_pending` (DESIGN 10.3).
+pub const PASS_NONE: u8 = 0;
+pub const PASS_REQUESTED: u8 = 1;
+pub const PASS_CONFIRMED: u8 = 2;
 
 /// Maximum number of markets (DESIGN 6.1, `create_market`).
 pub const MAX_MARKETS: u16 = 128;
