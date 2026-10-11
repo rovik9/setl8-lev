@@ -206,6 +206,7 @@ program takes it as data (`create_market`), nothing market-specific is hardcoded
 Rate units: all rates are fixed-point with 6 decimals ("e6") of the notional. Example: holding fee 0.10% per night = 1,000 e6.
 
 ### 3.3 Price source and the `PriceProof`
+**SUPERSEDED (decisions 43 to 50): the launch sources are the GMX public API and the Hyperliquid xyz oracle, see 8.2 and handover/design-decisions.md. The Stork text below is kept for the later licensed-feed path.**
 **Where prices come from.** The evaluator subscribes to Stork's signed price stream (Stork's own API/WebSocket; the Solana feed account holds only the latest value, so it is not the source).
 Each update it receives is a signed message: feed id, timestamp (ns), value (18 decimals), publisher signature(s). The evaluator:
 1. keeps **every update it uses** in an append-only sample file per market (`samples-<market>-<date>.bin`), and publishes the file hash in each journal batch (4.5);
@@ -224,7 +225,7 @@ whether non-enterprise customers can get the signed stream at all (contact-sales
 
 ### 3.4 Sessions and closed markets (decision 22)
 - Each market has up to 6 weekly windows `(start_minute_of_week, end_minute_of_week)` in UTC. `market_open(now)` = now falls inside a window
-  AND the feed's `publish_time` is within `max_age_secs` of `now`. Holidays need no admin action: the feed goes stale, so the market reads as closed.
+  AND the time of the last price CHANGE of the feed is within `max_age_secs` of `now`. The windows alone decide open or closed, because neither GMX nor Hyperliquid reports a closed market (decision 49); the staleness test never uses `updatedAt`. Holidays need an admin window change.
 - **Closed market:** no new orders and no fills of pending orders; existing positions **may be held** with a frozen mark (the last sample); the evaluator does not trigger floors, SL, TP or pending orders on a frozen mark. The holding fee keeps accruing every calendar night (section 9.3).
 - **Reopen:** the first fresh sample is the next price. If it is past an SL, a floor or a pending order, they trigger at that sample's price
   (a gap is a gap; the trader bears it, consistent with the confirmed rule "even through a gap").
@@ -232,6 +233,7 @@ whether non-enterprise customers can get the signed stream at all (contact-sales
 - **Index markets** (SPX, NDX, DAX, Nikkei, FTSE) are created with `status = 0` until a custom feed exists. Enabling one is an admin action.
 
 ### 3.5 Quote currency
+**Decision 48:** JPY is quoted as yen per USD by the source; the evaluator inverts it (bid = 1/ask, ask = 1/bid, mid = 1/mid, rounded against the trader) and the market trades JPYUSD. EUR and GBP are USD per unit. No conversion market is needed at launch.
 P&L is in USD. A pair quoted in another currency (EURJPY quoted in JPY, DAX in EUR) needs a USD conversion. Design: `Market.quote_conv_market`
 points to another market whose price is USD per one unit of the quote currency; every valuation of the first market uses a fresh sample of the second; both proofs are attached to the event. **Open question (OPEN_QUESTIONS):** simplest launch
 is USD-quoted markets only; cross pairs and non-USD indices are added when the conversion feed exists.
@@ -564,7 +566,7 @@ PriceProof {
   feed_id: [u8;32],      // = sha256("SL8FEED" || source || utf8 symbol), e.g. symbol "BTC" for GMX, "xyz:AAPL" for Hyperliquid (decision 46)
   timestamp_ns: u64,
   quantized_value: i128, // 18 decimals, converted from the source's own units by the evaluator
-  signed_update: Vec<u8> // the source's raw signed report if it has one (source 3), EMPTY for unsigned sources; opaque to the program, at most 512 bytes
+  signed_update: Vec<u8> // source 3: the 32-byte sha256 of the signed Chainlink blob (the blob itself is in the archive, decision 47); EMPTY for sources 2 and 4; at most 512 bytes
 }
 ```
 Size of one proof in a transaction is about 300 bytes (UNVERIFIED, M2); a `Close` or `Fill` event is about 90 to 110 bytes. Hence about two proofs per 1,232-byte transaction; larger batches use an address lookup table or several transactions.

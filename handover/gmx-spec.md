@@ -13,8 +13,8 @@ Hosts: primary `arbitrum-api.gmxinfra.io`, `avalanche-api.gmxinfra.io`. Fallback
 | `/markets/state` | none | market status (open/closed/unknown), closingPrice, latestMarketStatusTransitionTimestamp | 5 s |
 | `/markets/tickers` | addresses, symbols | filtered tickers (400 on bad values) | n/a |
 
-Price scaling (docs): strings scaled to 30 decimals; divide by 10^(30 - tokenDecimals - oracleDecimals) per the docs, but the docs' own ETH example does not obviously work. UNVERIFIED: the probe must find the correct conversion by comparing with candles and a sanity range. Observed live: APE minPrice "151169140215" is plausible as 0.151 USD if USD = value / 10^(30 - 18), i.e. oracleDecimals is NOT subtracted. Prove it.
-`updatedAt` units: seconds in the docs example, live sample was milliseconds in tickers (1791632589793) with a separate seconds `timestamp`. UNVERIFIED.
+Price scaling (PROVEN by probe P5, 13 of 13 tokens within 0.5% of the 1m candle close): `USD = value / 10^(30 - tokenDecimals)` with `tokenDecimals` from `/tokens`; mid = (minPrice + maxPrice) / 2. The docs' formula with `oracleDecimals` is WRONG (tickers carry no `oracleDecimals`).
+`updatedAt` units: MILLISECONDS (proven, probe P5); the separate `timestamp` field is seconds. `updatedAt` is NOT a staleness signal (it advances while the price is frozen); tickers can go backwards in 1 to 4% of responses. The signed blob is 992 bytes (decision 47). `/markets/state` never reports closed.
 
 Coverage seen live (Arbitrum tickers, 114): ~104 crypto; GOLD, SILVER, XAUT, XAUT.v2; WTIOIL, BRENTOIL, NATGAS; SPY, QQQ, SPCX. NO forex. Avalanche tickers: 17 (crypto and XAUt0). `/markets/info`: 82 entries (81 listed), many duplicate index tokens in different pools.
 `/signed_prices/latest` sample (26): USDG, SPY, DYDX, PENDLE, XMR, MEGA, SUI, ORDI, BONK, NEAR, PEPE, ASTER, SOL, XPL, WBTC.b, TRUMP, ANIME, TIA, FIL, CVX, SHIB, APT, DASH, BTC, AR, PENGU. Each has a Chainlink report blob, oracleType realtimeFeed2, feedVersion v3, GMX's own signature fields null.
