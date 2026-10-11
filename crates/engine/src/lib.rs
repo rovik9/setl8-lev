@@ -21,6 +21,7 @@
 )]
 
 pub mod account;
+pub mod claims;
 pub mod consts;
 pub mod cost;
 pub mod error;
@@ -39,10 +40,14 @@ pub use account::{
     pass_check, payout_micro, reset_phase_state, static_floor_micro, AccountState, ClosedSliceDecision, FailReason,
     NextPhase, PassError, Rules,
 };
+pub use claims::{
+    check_breach, check_close, check_floor_raised, check_tight_end, check_tight_start, close_price_e12, fill_price_e12,
+    ClaimError, CloseClaim, CloseCredit,
+};
 pub use error::{EngineError, Result};
 pub use floors::{evaluate_sample, SampleAction, SampleDecision};
 pub use position::{
-    apply_fill, open_profit_micro, pnl_micro, unrealized_micro, CloseSlice, FillOutcome, OpenSlice, Position, Side,
+    apply_fill, open_profit_micro, pnl_micro, slice_credit, unrealized_micro, CloseSlice, FillOutcome, OpenSlice, Position, Side,
 };
 pub use price::{ask_from_mid, bid_from_mid, price_from_oracle};
 pub use triggers::{

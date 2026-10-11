@@ -72,4 +72,7 @@ pub enum ProofError {
     ValueNotPositive,
     /// The converted price does not fit in `u64`.
     ValueTooLarge,
+    /// `signed_update` has the wrong shape for its source (decision 47): empty for sources 2 and 4, exactly 32 bytes
+    /// (the sha256 of the signed blob) for source 3.
+    BadSignedUpdate,
 }

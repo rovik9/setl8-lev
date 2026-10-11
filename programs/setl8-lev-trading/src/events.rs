@@ -71,3 +71,14 @@ pub struct Opened {
     pub genesis_hash: [u8; 32],
     pub time: i64,
 }
+
+/// One journal event as posted, emitted through `emit_cpi!` by `post_journal` (an inner instruction, not a text log).
+/// `event_bytes` and `proof_bytes` are the canonical Borsh bytes that went into the hash chain (`proof_bytes` is empty
+/// when the event references no proof), so a verifier recomputes the chain from these alone.
+#[event]
+pub struct EventLog {
+    pub account: Pubkey,
+    pub seq: u64,
+    pub event_bytes: Vec<u8>,
+    pub proof_bytes: Vec<u8>,
+}

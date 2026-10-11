@@ -92,6 +92,89 @@ pub enum Setl8Error {
     InvalidVaultProgram,
     #[msg("stored account fields disagree with the engine state")]
     EngineStateMismatch,
+    // ---- M5b: one variant per rejection reason of post_journal (6043 and up) ----
+    #[msg("batch.prev_hash is not the stored journal_hash")]
+    BadPrevHash,
+    #[msg("the batch has no events")]
+    EmptyBatch,
+    #[msg("the batch bytes do not decode (truncated, trailing bytes, unknown tag or enum value, bad boolean)")]
+    BatchMalformed,
+    #[msg("an event refers to a proof index that does not exist")]
+    ProofIndexOutOfRange,
+    #[msg("a decisive event carries no price proof")]
+    ProofMissing,
+    #[msg("proof feed id is not the market's current feed")]
+    ProofWrongFeed,
+    #[msg("proof is older than the market's max age")]
+    ProofTooOld,
+    #[msg("proof is more than 2 s ahead of the event")]
+    ProofInFuture,
+    #[msg("proof source is not supported")]
+    ProofUnknownSource,
+    #[msg("mock proofs are only accepted by the localnet build")]
+    ProofMockNotAllowed,
+    #[msg("proof signed_update has the wrong shape for its source")]
+    ProofBadSignedUpdate,
+    #[msg("proof value is not a positive price that fits")]
+    ProofValueInvalid,
+    #[msg("event price differs from the price derived from the proof and the spread")]
+    EventPriceMismatch,
+    #[msg("an event price is zero")]
+    PriceInvalid,
+    #[msg("market is disabled")]
+    MarketDisabled,
+    #[msg("market is reduce-only: opening or adding is refused")]
+    MarketReduceOnly,
+    #[msg("market is outside its session windows")]
+    MarketClosed,
+    #[msg("quantity is zero, off the step or below the minimum")]
+    QuantityInvalid,
+    #[msg("close timer_start is after the close time")]
+    TimerInvalid,
+    #[msg("credited amount is wrong")]
+    CreditMismatch,
+    #[msg("tight mode is already on")]
+    TightAlreadyOn,
+    #[msg("tight mode is not on")]
+    TightNotOn,
+    #[msg("open profit is not above 1% of S")]
+    TightStartPOpen,
+    #[msg("g_peak is negative or above the open profit")]
+    TightStartGPeak,
+    #[msg("r differs from the closed balance")]
+    TightStartR,
+    #[msg("l_start differs from min(static floor + 4% S, r)")]
+    TightStartLStart,
+    #[msg("l_level differs from the tight-start formula")]
+    TightStartLLevel,
+    #[msg("g_peak is not above the stored peak")]
+    FloorNotRaised,
+    #[msg("l_level differs from the ratchet formula")]
+    FloorLLevel,
+    #[msg("TightEnd in a batch that does not end flat")]
+    TightEndNotFlat,
+    #[msg("batch ends flat but tight mode is still on")]
+    TightNotEnded,
+    #[msg("breach l_level differs from the stored tight floor")]
+    BreachLLevel,
+    #[msg("breach b_after differs from the closed balance")]
+    BreachBalance,
+    #[msg("breach balance is above the tight floor")]
+    BreachNotBelowFloor,
+    #[msg("breach balance is at or below the static floor (that is a fail)")]
+    BreachBelowStaticFloor,
+    #[msg("breach in a batch that does not end flat")]
+    BreachNotFlat,
+    #[msg("Fail events are only posted through report_fail")]
+    FailEventNotAllowed,
+    #[msg("the batch has no Meta event")]
+    MetaMissing,
+    #[msg("Meta is not the last event")]
+    MetaNotLast,
+    #[msg("the batch has more than one Meta event")]
+    MetaTwice,
+    #[msg("Meta engine_version differs from the program's engine")]
+    EngineVersionMismatch,
 }
 
 #[cfg(test)]
@@ -108,5 +191,46 @@ mod tests {
         assert_eq!(u32::from(Setl8Error::InvalidTokenAccount), 6040);
         assert_eq!(u32::from(Setl8Error::InvalidVaultProgram), 6041);
         assert_eq!(u32::from(Setl8Error::EngineStateMismatch), 6042);
+        assert_eq!(u32::from(Setl8Error::BadPrevHash), 6043);
+        assert_eq!(u32::from(Setl8Error::EmptyBatch), 6044);
+        assert_eq!(u32::from(Setl8Error::BatchMalformed), 6045);
+        assert_eq!(u32::from(Setl8Error::ProofIndexOutOfRange), 6046);
+        assert_eq!(u32::from(Setl8Error::ProofMissing), 6047);
+        assert_eq!(u32::from(Setl8Error::ProofWrongFeed), 6048);
+        assert_eq!(u32::from(Setl8Error::ProofTooOld), 6049);
+        assert_eq!(u32::from(Setl8Error::ProofInFuture), 6050);
+        assert_eq!(u32::from(Setl8Error::ProofUnknownSource), 6051);
+        assert_eq!(u32::from(Setl8Error::ProofMockNotAllowed), 6052);
+        assert_eq!(u32::from(Setl8Error::ProofBadSignedUpdate), 6053);
+        assert_eq!(u32::from(Setl8Error::ProofValueInvalid), 6054);
+        assert_eq!(u32::from(Setl8Error::EventPriceMismatch), 6055);
+        assert_eq!(u32::from(Setl8Error::PriceInvalid), 6056);
+        assert_eq!(u32::from(Setl8Error::MarketDisabled), 6057);
+        assert_eq!(u32::from(Setl8Error::MarketReduceOnly), 6058);
+        assert_eq!(u32::from(Setl8Error::MarketClosed), 6059);
+        assert_eq!(u32::from(Setl8Error::QuantityInvalid), 6060);
+        assert_eq!(u32::from(Setl8Error::TimerInvalid), 6061);
+        assert_eq!(u32::from(Setl8Error::CreditMismatch), 6062);
+        assert_eq!(u32::from(Setl8Error::TightAlreadyOn), 6063);
+        assert_eq!(u32::from(Setl8Error::TightNotOn), 6064);
+        assert_eq!(u32::from(Setl8Error::TightStartPOpen), 6065);
+        assert_eq!(u32::from(Setl8Error::TightStartGPeak), 6066);
+        assert_eq!(u32::from(Setl8Error::TightStartR), 6067);
+        assert_eq!(u32::from(Setl8Error::TightStartLStart), 6068);
+        assert_eq!(u32::from(Setl8Error::TightStartLLevel), 6069);
+        assert_eq!(u32::from(Setl8Error::FloorNotRaised), 6070);
+        assert_eq!(u32::from(Setl8Error::FloorLLevel), 6071);
+        assert_eq!(u32::from(Setl8Error::TightEndNotFlat), 6072);
+        assert_eq!(u32::from(Setl8Error::TightNotEnded), 6073);
+        assert_eq!(u32::from(Setl8Error::BreachLLevel), 6074);
+        assert_eq!(u32::from(Setl8Error::BreachBalance), 6075);
+        assert_eq!(u32::from(Setl8Error::BreachNotBelowFloor), 6076);
+        assert_eq!(u32::from(Setl8Error::BreachBelowStaticFloor), 6077);
+        assert_eq!(u32::from(Setl8Error::BreachNotFlat), 6078);
+        assert_eq!(u32::from(Setl8Error::FailEventNotAllowed), 6079);
+        assert_eq!(u32::from(Setl8Error::MetaMissing), 6080);
+        assert_eq!(u32::from(Setl8Error::MetaNotLast), 6081);
+        assert_eq!(u32::from(Setl8Error::MetaTwice), 6082);
+        assert_eq!(u32::from(Setl8Error::EngineVersionMismatch), 6083);
     }
 }

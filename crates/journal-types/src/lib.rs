@@ -49,7 +49,10 @@ pub use hash::{
     apply_batch, feed_id, genesis_hash, next_hash, proof_digest, verify_chain, ChainBreak, ChainBreakKind,
     ChainEntry, Sha256,
 };
-pub use proof::{check_proof, price_e12_from_quantized, proof_time_secs};
+pub use proof::{
+    check_proof, check_proof_without_price, check_signed_update_shape, price_e12_from_quantized, proof_time_secs,
+    SIGNED_UPDATE_DIGEST_BYTES,
+};
 pub use session::{in_session, market_open, minute_of_week, MINUTES_PER_WEEK};
 pub use types::{JournalBatch, JournalEvent, PriceProof};
 

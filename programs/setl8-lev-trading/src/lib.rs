@@ -78,4 +78,8 @@ pub mod setl8_lev_trading {
     pub fn open_account(ctx: Context<OpenAccount>, tier_index: u8) -> Result<()> {
         instructions::open_account::handle_open_account(ctx, tier_index)
     }
+
+    pub fn post_journal<'info>(ctx: Context<'_, '_, 'info, 'info, PostJournal<'info>>, batch_bytes: Vec<u8>) -> Result<()> {
+        instructions::post_journal::handle_post_journal(ctx, batch_bytes)
+    }
 }

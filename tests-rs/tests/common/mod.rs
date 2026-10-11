@@ -4,6 +4,7 @@
 //! verification is ON, so a signer that did not sign makes the transaction fail like on a real cluster.
 #![allow(dead_code)]
 
+pub mod journal;
 pub mod vault;
 
 use std::path::PathBuf;
@@ -113,6 +114,13 @@ impl Env {
         let r = self.svm.send_transaction(tx);
         self.svm.expire_blockhash();
         r
+    }
+
+    /// Sets the cluster clock (unix seconds).
+    pub fn set_clock(&mut self, t: i64) {
+        let mut clock: Clock = self.svm.get_sysvar();
+        clock.unix_timestamp = t;
+        self.svm.set_sysvar(&clock);
     }
 
     /// Both test admins sign.

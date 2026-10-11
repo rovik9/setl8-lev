@@ -24,6 +24,9 @@ pub const STATUS_ACTIVE: u8 = 0;
 pub const STATUS_FAILED: u8 = 1;
 pub const STATUS_ABANDONED: u8 = 2;
 pub const STATUS_GRADUATED: u8 = 3;
+/// An event may be at most this many seconds ahead of the block time (DESIGN I-3).
+pub const EVENT_FUTURE_SKEW_SECS: i64 = 2;
+
 /// `TradingAccount.pass_pending` (DESIGN 10.3).
 pub const PASS_NONE: u8 = 0;
 pub const PASS_REQUESTED: u8 = 1;

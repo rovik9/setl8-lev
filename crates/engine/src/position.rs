@@ -58,6 +58,15 @@ pub struct FillOutcome {
     pub quick_tally_delta: i64,
 }
 
+/// The balance credit and the quick-tally delta of a closing slice with realized `pnl` (DESIGN 7.2, 7.4): a loss is
+/// credited in full; a profit in full, or floored to half when the slice is quick. The tally takes the credited
+/// half-profit of a quick slice; a quick loss or break-even adds nothing. Returns `(credit, quick_tally_delta)`.
+pub fn slice_credit(pnl: i64, quick: bool) -> (i64, i64) {
+    let credit = if quick && pnl > 0 { pnl.div_euclid(2) } else { pnl };
+    let tally = if quick { credit.max(0) } else { 0 };
+    (credit, tally)
+}
+
 /// `floor(sign x qty_abs x (exit - entry) / DEN)` in micro-USD, rounding toward minus infinity. `long = false` flips the sign.
 pub fn pnl_micro(long: bool, qty_abs: u64, entry_e12: u64, exit_e12: u64) -> Result<i64> {
     let diff = i128::from(exit_e12).checked_sub(i128::from(entry_e12)).ok_or(EngineError::Overflow)?;
@@ -161,9 +170,7 @@ pub fn apply_fill(
     let c = dq.min(q_abs);
     let pnl = pnl_micro(long, c, p.avg_entry_e12, price_e12)?;
     let quick = age <= QUICK_SECS;
-    let credit = if quick && pnl > 0 { pnl.div_euclid(2) } else { pnl };
-    // the tally takes the credited half-profit of a quick slice; a quick loss or break-even adds nothing
-    let quick_tally_delta = if quick { credit.max(0) } else { 0 };
+    let (credit, quick_tally_delta) = slice_credit(pnl, quick);
     let closed = CloseSlice { qty_abs: c, entry_e12: p.avg_entry_e12, exit_e12: price_e12, pnl, quick, credit };
 
     let (position, opened) = if dq < q_abs {

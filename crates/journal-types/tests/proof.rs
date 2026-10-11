@@ -153,3 +153,58 @@ fn price_conversion_floors_and_rejects_zero_negative_and_overflow() {
     // an 18-decimal $67,250.123456789012 -> 1e-12 USD
     assert_eq!(price_e12_from_quantized(67_250_123_456_789_012_345_678), Ok(67_250_123_456_789_012));
 }
+
+// ---------------------------------------------------------------- M5b additions
+
+#[test]
+fn signed_update_shape_follows_decision_47() {
+    let with = |source: u8, len: usize| PriceProof { source, signed_update: vec![1; len], ..good() };
+    // sources 2 and 4: empty only
+    for source in [2u8, 4] {
+        assert_eq!(check_signed_update_shape(&with(source, 0)), Ok(()), "source {source} empty");
+        assert_eq!(check_signed_update_shape(&with(source, 1)), Err(ProofError::BadSignedUpdate), "source {source} 1 byte");
+        assert_eq!(check_signed_update_shape(&with(source, 32)), Err(ProofError::BadSignedUpdate), "source {source} 32 bytes");
+    }
+    // source 3: exactly 32 bytes
+    for len in [0usize, 1, 31, 33, 64, 512] {
+        assert_eq!(check_signed_update_shape(&with(3, len)), Err(ProofError::BadSignedUpdate), "source 3 len {len}");
+    }
+    assert_eq!(check_signed_update_shape(&with(3, 32)), Ok(()));
+    assert_eq!(SIGNED_UPDATE_DIGEST_BYTES, 32);
+    // mock and unsupported sources: the shape rule does not apply (check_proof enforces the 512 limit)
+    assert_eq!(check_signed_update_shape(&with(255, 512)), Ok(()));
+    assert_eq!(check_signed_update_shape(&with(255, 0)), Ok(()));
+    assert_eq!(check_signed_update_shape(&with(7, 100)), Ok(()));
+}
+
+#[test]
+fn proof_check_without_a_price_still_checks_everything_else() {
+    let chk = |p: &PriceProof, allow_mock: bool| check_proof_without_price(p, &feed(2, "BTC"), MAX_AGE, T, allow_mock);
+    assert_eq!(chk(&good(), false), Ok(()));
+    // no event price to mismatch: any positive value is fine
+    assert_eq!(chk(&PriceProof { quantized_value: 5_000_000, ..good() }, false), Ok(()));
+    assert_eq!(chk(&PriceProof { quantized_value: 0, ..good() }, false), Err(ProofError::ValueNotPositive));
+    assert_eq!(chk(&PriceProof { quantized_value: -1, ..good() }, false), Err(ProofError::ValueNotPositive));
+    assert_eq!(chk(&PriceProof { quantized_value: 999_999, ..good() }, false), Err(ProofError::ValueNotPositive));
+    assert_eq!(chk(&PriceProof { quantized_value: i128::MAX, ..good() }, false), Err(ProofError::ValueTooLarge));
+    let mut wrong_feed = good();
+    wrong_feed.feed_id[0] ^= 1;
+    assert_eq!(chk(&wrong_feed, false), Err(ProofError::WrongFeed));
+    assert_eq!(chk(&PriceProof { source: 7, ..good() }, false), Err(ProofError::UnknownSource));
+    assert_eq!(chk(&PriceProof { source: 255, ..good() }, false), Err(ProofError::MockNotAllowed));
+    assert_eq!(chk(&PriceProof { source: 255, ..good() }, true), Ok(()));
+    assert_eq!(chk(&PriceProof { signed_update: vec![0; 513], ..good() }, false), Err(ProofError::SignedUpdateTooLong));
+    // time window, both ends inclusive
+    let at = |t: i64| PriceProof { timestamp_ns: u64::try_from(t).unwrap() * 1_000_000_000, ..good() };
+    assert_eq!(chk(&at(T - i64::from(MAX_AGE)), false), Ok(()));
+    assert_eq!(chk(&at(T - i64::from(MAX_AGE) - 1), false), Err(ProofError::TooOld));
+    assert_eq!(chk(&at(T + 2), false), Ok(()));
+    assert_eq!(chk(&at(T + 3), false), Err(ProofError::InFuture));
+}
+
+#[test]
+fn check_proof_with_a_price_is_unchanged_by_the_refactor() {
+    assert_eq!(check(&good()), Ok(()));
+    assert_eq!(check_proof(&good(), &feed(2, "BTC"), MAX_AGE, T, PRICE + 1, false), Err(ProofError::PriceMismatch));
+    assert_eq!(check_proof(&good(), &feed(2, "BTC"), MAX_AGE, T, PRICE - 1, false), Err(ProofError::PriceMismatch));
+}

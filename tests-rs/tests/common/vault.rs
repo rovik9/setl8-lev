@@ -126,6 +126,8 @@ pub struct VaultEnv {
     pub fee_wallet: Pubkey,
     pub fee_usdc: Pubkey,
     pub ruleset: RuleSetArgs,
+    /// The evaluator key stored in `config.evaluator` (a real keypair so journal tests can sign with it).
+    pub evaluator: Keypair,
     pub tracked: Vec<Pubkey>,
     pub traders: HashMap<Pubkey, Pubkey>,
 }
@@ -218,6 +220,7 @@ impl VaultEnv {
             fee_wallet,
             fee_usdc: Pubkey::default(),
             ruleset: opts.ruleset.clone(),
+            evaluator: Keypair::new(),
             tracked: vec![],
             traders: HashMap::new(),
         };
@@ -267,6 +270,8 @@ impl VaultEnv {
         let mut args = default_args();
         args.vault_program = VAULT_ID;
         args.sl8_wallet = fee_wallet;
+        args.evaluator = v.evaluator.pubkey();
+        v.e.svm.airdrop(&v.evaluator.pubkey(), 1_000_000_000).unwrap();
         let ix = init_ix_with(v.e.payer.pubkey(), v.e.sl8.pubkey(), v.e.rov.pubkey(), &args);
         super::assert_ok(v.e.send_as_admins(&[ix]));
         v.e.create_ruleset_ok(&opts.ruleset);
