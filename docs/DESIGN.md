@@ -293,10 +293,11 @@ every sample that raised `g_peak`, the breach sample, the fail sample. Ordinary 
 the admins keep). A verifier can recompute the path: given the account's fills (known from the journal) and the sample file it must reproduce every floor, ratchet and trigger the evaluator claims, and find any breach that the evaluator did not claim.
 **Signed order intents.** Each trader order is signed by the trader wallet (ed25519, message `SL8LEV|account|nonce|order bytes`). The evaluator stores them and commits `intents_hash` per batch. A fill without a matching intent
 (or SL/TP/limit/stop already on file) is visible to the verifier as a forged trade. On-chain verification of these signatures (ed25519 precompile via the instructions sysvar) is an optional hardening, not in v1.
+**M9 settles the formats** (handover/verifier-formats.md): ONE logical stream of 68-byte records for all markets (not a file per market), `samples_hash`/`intents_hash` are prefix hashes found by one hashing pass over the record/line boundaries, intents are ed25519-signed 48-byte `OrderIntent`s.
 **Honest limit.** If the evaluator drops a sample that would have caused a breach, nothing on-chain shows it; a verifier with its own copy of the Stork stream can. Setl8 should run an independent second recorder (watchdog) for this reason.
 
 ### 4.6 Public verifier and watchdog
-- `setl8-verify` (a CLI, module M9): reads the program's event log (via any RPC/archive/indexer), the sample archive and the intents file; replays with the `engine` crate; prints a verdict per account, per phase, and per pending pass. Open source so traders can check their own accounts.
+- `setl8-verify` (a CLI, module M9): reads the program's event log (via any RPC/archive/indexer), the sample archive and the intents file; replays with the `engine` crate; prints a verdict per account, per phase, and per pending pass. Open source so traders can check their own accounts. **M9 as built:** `setl8-verify account|watch --events --rules --archive --intents [--snapshot] [--second-archive] [--json] [--as-of-seq N]`, exit codes 0 valid, 1 mismatch, 2 input error.
 - Setl8 runs it as a **watchdog**: on every `PassRequested` event it replays that account and alerts both admins with `VALID` or `MISMATCH` inside the first hour, so the 2-day veto window has operational meaning (13.3, OPEN_QUESTIONS).
 
 ### 4.7 What happens if the evaluator is offline, wrong, or hacked

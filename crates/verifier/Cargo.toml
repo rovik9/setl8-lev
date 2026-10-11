@@ -1,0 +1,25 @@
+[package]
+name = "setl8-lev-verifier"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Public verifier for setl8-lev-trading journals (DESIGN 4.5, 4.6): replays an account from the event log, the sample archive and the signed intents with the same engine as the program."
+
+[lib]
+name = "setl8_verify"
+
+[[bin]]
+name = "setl8-verify"
+path = "src/main.rs"
+
+[dependencies]
+setl8-lev-engine = { path = "../engine" }
+setl8-lev-journal-types = { path = "../journal-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bs58 = "0.5"
+sha2 = "0.10"
+ed25519-dalek = "1"
+
+[dev-dependencies]
+proptest = "1"

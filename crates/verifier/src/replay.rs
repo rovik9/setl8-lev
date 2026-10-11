@@ -1,0 +1,1133 @@
+//! The replay core (pure). It rebuilds the account event by event with the same engine the program and the evaluator use
+//! and records every disagreement as a [`Finding`]. Nothing the evaluator wrote is trusted: prices, pnl, credits, fees,
+//! margins, average entries and floor levels are recomputed from the archive, the rules and the signed intents.
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use engine::{AccountState, Position, Rules as EngineRules, Side as ESide};
+use journal_types::{
+    check_proof_without_price, check_signed_update_shape, genesis_hash, next_hash, CloseReason, FailReason, FeeKind, JournalEvent,
+    NativeSha256, OrderKind, PriceProof, ProofError, Side,
+};
+
+use crate::archive::Archive;
+use crate::finding::*;
+use crate::intents::{verify_signature, IntentFile, IntentKind};
+use crate::log::{OpenedRec, PassKind};
+use crate::rules::Rules;
+use crate::snapshot::Snapshot;
+
+/// One open position and its protective levels.
+#[derive(Clone, Copy, Debug)]
+pub struct Pos {
+    pub p: Position,
+    pub sl: u64,
+    pub tp: u64,
+}
+
+/// Where a finding is attributed.
+#[derive(Clone, Copy, Debug)]
+pub struct Ctx {
+    pub seq: Option<u64>,
+    pub idx: Option<usize>,
+    pub time: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FeeExpKind {
+    Holding,
+    Commission,
+}
+
+/// A fee the replay expects the journal to contain.
+#[derive(Clone, Debug)]
+pub struct FeeExp {
+    pub kind: FeeExpKind,
+    pub market: u16,
+    pub time: i64,
+    pub amount: i64,
+    pub why: String,
+}
+
+#[derive(Default)]
+struct Batch {
+    /// (archive sample index, seq, event index) of every proof used in the batch.
+    proofs: Vec<(usize, u64, usize)>,
+    /// (intent line index, seq, event index) of every intent used in the batch.
+    intents: Vec<(usize, u64, usize)>,
+    /// nonce -> (quantity executed so far, quantity the intent asks for or None when "all").
+    nonce_qty: BTreeMap<u32, (u64, Option<u64>)>,
+}
+
+pub struct PhaseRec {
+    pub phase: u8,
+    pub first_seq: Option<u64>,
+    pub last_seq: Option<u64>,
+    pub events: usize,
+}
+
+pub struct Replay<'a> {
+    pub rules: &'a Rules,
+    pub arch: &'a Archive,
+    pub intents: &'a IntentFile,
+    pub opened: OpenedRec,
+    pub size: i64,
+    pub st: AccountState,
+    pub engine_rules: EngineRules,
+    pub positions: BTreeMap<u16, Pos>,
+    pub phase: u8,
+    pub terminal: bool,
+    pub trades_closed: u32,
+    pub expect_seq: u64,
+    pub last_seq: u64,
+    pub head: [u8; 32],
+    pub last_time: i64,
+    pub event_count: usize,
+    pub f: Findings,
+    batch: Batch,
+    pub fee_exp: Vec<FeeExp>,
+    roll_cursor: Option<i64>,
+    sample_prefix: HashMap<[u8; 32], usize>,
+    intent_prefix: HashMap<[u8; 32], usize>,
+    last_sample_n: usize,
+    last_intent_n: usize,
+    bad_sig_lines: HashSet<usize>,
+    pub phases: Vec<PhaseRec>,
+    pub passes: Vec<PassVerdict>,
+    in_batch_events: usize,
+    pub quick_fail_due: bool,
+}
+
+/// Collects findings with the cap and the miss de-duplication.
+#[derive(Default)]
+pub struct Findings {
+    pub list: Vec<Finding>,
+    pub truncated: bool,
+    pub source: &'static str,
+    seen_miss: HashSet<(FindingClass, u64)>,
+    pub epoch: u64,
+}
+
+impl Findings {
+    pub fn new(source: &'static str) -> Self {
+        Findings { source, ..Default::default() }
+    }
+
+    pub fn add(&mut self, class: FindingClass, ctx: Ctx, expected: impl Into<String>, found: impl Into<String>, message: impl Into<String>) {
+        if self.list.len() >= MAX_FINDINGS {
+            self.truncated = true;
+            return;
+        }
+        self.list.push(Finding { class, seq: ctx.seq, event_index: ctx.idx, expected: expected.into(), found: found.into(), message: message.into(), source: self.source });
+    }
+
+    /// Like `add`, but a repeat of the same class in the same account-state epoch is dropped (a miss that persists over many
+    /// samples is reported once).
+    pub fn add_once(&mut self, class: FindingClass, ctx: Ctx, expected: impl Into<String>, found: impl Into<String>, message: impl Into<String>) {
+        if self.seen_miss.insert((class, self.epoch)) {
+            self.add(class, ctx, expected, found, message);
+        }
+    }
+}
+
+fn side_name(s: Side) -> &'static str {
+    match s {
+        Side::Long => "long",
+        Side::Short => "short",
+    }
+}
+
+fn eside(s: Side) -> ESide {
+    match s {
+        Side::Long => ESide::Buy,
+        Side::Short => ESide::Sell,
+    }
+}
+
+fn opposite(s: Side) -> ESide {
+    match s {
+        Side::Long => ESide::Sell,
+        Side::Short => ESide::Buy,
+    }
+}
+
+pub fn mid_pair(mid: u64, h: u32) -> Option<(u64, u64)> {
+    Some((engine::bid_from_mid(mid, h).ok()?, engine::ask_from_mid(mid, h).ok()?))
+}
+
+/// First rollover (22:00 UTC) instant strictly after `t`.
+pub fn next_rollover_after(t: i64) -> i64 {
+    // day_index changes at 22:00 UTC; the instant of index k is k * 86400 + 22 * 3600
+    let k = engine::day_index(t).saturating_add(1);
+    k.saturating_mul(86_400).saturating_add(22 * 3_600)
+}
+
+impl<'a> Replay<'a> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        rules: &'a Rules,
+        arch: &'a Archive,
+        intents: &'a IntentFile,
+        opened: OpenedRec,
+        source: &'static str,
+        sample_prefix: HashMap<[u8; 32], usize>,
+        intent_prefix: HashMap<[u8; 32], usize>,
+    ) -> Option<Replay<'a>> {
+        let size = i64::try_from(opened.size_s).ok()?;
+        let st = engine::reset_phase_state(size);
+        let head = genesis_hash(&NativeSha256, &opened.account);
+        let phase = opened.phase;
+        Some(Replay {
+            rules,
+            arch,
+            intents,
+            size,
+            st,
+            engine_rules: EngineRules::default(),
+            positions: BTreeMap::new(),
+            phase,
+            terminal: false,
+            trades_closed: 0,
+            expect_seq: 1,
+            last_seq: 0,
+            head,
+            last_time: opened.time,
+            event_count: 0,
+            f: Findings::new(source),
+            batch: Batch::default(),
+            fee_exp: Vec::new(),
+            roll_cursor: None,
+            sample_prefix,
+            intent_prefix,
+            last_sample_n: 0,
+            last_intent_n: 0,
+            bad_sig_lines: HashSet::new(),
+            phases: vec![PhaseRec { phase, first_seq: None, last_seq: None, events: 0 }],
+            passes: Vec::new(),
+            in_batch_events: 0,
+            quick_fail_due: false,
+            opened,
+        })
+    }
+
+    // ------------------------------------------------------------------ helpers
+
+    fn bump_epoch(&mut self) {
+        self.f.epoch = self.f.epoch.saturating_add(1);
+    }
+
+    pub fn is_flat(&self) -> bool {
+        self.positions.is_empty()
+    }
+
+    /// Validates the signatures and decoding of every intent line that the committed prefixes cover (all lines when no
+    /// `Meta` commits a prefix).
+    pub fn check_intents(&mut self, trader: &[u8; 32]) {
+        let limit = if self.intent_prefix.is_empty() {
+            self.intents.lines.len()
+        } else {
+            let max_bytes = self.intent_prefix.values().copied().max().unwrap_or(0);
+            self.intents.lines_in_prefix(max_bytes)
+        };
+        let ctx = Ctx { seq: None, idx: None, time: self.opened.time };
+        for (i, line) in self.intents.lines.iter().enumerate().take(limit) {
+            if let Err(why) = &line.intent {
+                self.f.add(FindingClass::IntentDecode, ctx, "a valid intent line", why.clone(), format!("intent line {} is unusable", i + 1));
+                self.bad_sig_lines.insert(i);
+                continue;
+            }
+            if line.nonce == 0 {
+                self.f.add(FindingClass::IntentDecode, ctx, "nonce > 0", "0", format!("intent line {} uses the reserved nonce 0", i + 1));
+                self.bad_sig_lines.insert(i);
+                continue;
+            }
+            if !verify_signature(trader, &self.opened.account, line.nonce, &line.order, &line.sig) {
+                self.f.add(FindingClass::BadIntentSignature, ctx, "a valid ed25519 signature by the trader", "invalid", format!("intent nonce {} is not signed by the trader", line.nonce));
+                self.bad_sig_lines.insert(i);
+            }
+        }
+        for &d in &self.intents.duplicates {
+            if d < limit {
+                let nonce = self.intents.lines.get(d).map(|l| l.nonce).unwrap_or(0);
+                self.f.add(FindingClass::IntentDecode, ctx, "unique nonces", nonce.to_string(), format!("nonce {nonce} appears twice"));
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ proofs
+
+    /// Checks a proof against the rules and the archive. `market` is the event's market, or `None` for floating events
+    /// (then the market is the one whose feed the proof carries). Returns `(market, mid_e12)` when the proof is usable.
+    fn check_proof(&mut self, ctx: Ctx, proof: &PriceProof, market: Option<u16>, ev_time: i64) -> Option<(u16, u64)> {
+        if let Err(e) = check_signed_update_shape(proof) {
+            self.f.add(FindingClass::ProofShape, ctx, "a well-formed signed_update", format!("{e:?}"), "proof shape");
+            return None;
+        }
+        let m = match market {
+            Some(id) => match self.rules.markets.get(&id) {
+                Some(m) => m,
+                None => {
+                    self.f.add(FindingClass::UnknownMarket, ctx, "a market of the rules file", id.to_string(), "the event names a market the rules do not list");
+                    return None;
+                }
+            },
+            None => match self.rules.market_by_feed(&proof.feed_id) {
+                Some(m) => m,
+                None => {
+                    self.f.add(FindingClass::ProofFeed, ctx, "the feed of a market of the rules file", crate::hexutil::encode(&proof.feed_id), "the proof's feed belongs to no market");
+                    return None;
+                }
+            },
+        };
+        let (mid, mk) = (m.id, m.clone());
+        match check_proof_without_price(proof, &mk.feed_id, u32::from(mk.max_age_secs), ev_time, false) {
+            Ok(()) => {}
+            Err(ProofError::WrongFeed) => {
+                self.f.add(FindingClass::ProofFeed, ctx, crate::hexutil::encode(&mk.feed_id), crate::hexutil::encode(&proof.feed_id), format!("proof feed is not market {mid}'s feed"));
+                return None;
+            }
+            Err(ProofError::TooOld) | Err(ProofError::InFuture) => {
+                let pt = journal_types::proof_time_secs(proof);
+                self.f.add(
+                    FindingClass::ProofAge,
+                    ctx,
+                    format!("{}..={}", ev_time.saturating_sub(i64::from(mk.max_age_secs)), ev_time.saturating_add(2)),
+                    pt.to_string(),
+                    format!("proof time is outside the {} s window of market {mid}", mk.max_age_secs),
+                );
+                return None;
+            }
+            Err(e) => {
+                self.f.add(FindingClass::ProofShape, ctx, "an accepted proof", format!("{e:?}"), "proof rejected by the shared proof check");
+                return None;
+            }
+        }
+        let mid_e12 = match journal_types::price_e12_from_quantized(proof.quantized_value) {
+            Ok(v) => v,
+            Err(e) => {
+                self.f.add(FindingClass::ProofShape, ctx, "a positive price", format!("{e:?}"), "proof value");
+                return None;
+            }
+        };
+        // the proof must be a recorded sample
+        match self.arch.find(mid, proof.timestamp_ns, proof.quantized_value) {
+            Some(i) => {
+                let s = self.arch.samples.get(i);
+                let digest_ok = match s {
+                    Some(s) => s.source == proof.source && (proof.source != 3 || proof.signed_update.as_slice() == s.digest.as_slice()),
+                    None => false,
+                };
+                if !digest_ok {
+                    self.f.add(FindingClass::ArchiveMissing, ctx, "an archive record with the proof's source and blob digest", "different source or digest", "the matching archive record disagrees with the proof");
+                    return None;
+                }
+                if let (Some(seq), Some(idx)) = (ctx.seq, ctx.idx) {
+                    self.batch.proofs.push((i, seq, idx));
+                }
+            }
+            None => {
+                self.f.add(
+                    FindingClass::ArchiveMissing,
+                    ctx,
+                    format!("a record (market {mid}, ts {} ns, value {})", proof.timestamp_ns, proof.quantized_value),
+                    "none",
+                    "the proof is not in the sample archive",
+                );
+                return None;
+            }
+        }
+        Some((mid, mid_e12))
+    }
+
+    fn proof_for(&mut self, ctx: Ctx, ev: &JournalEvent, proof: &Option<PriceProof>, market: Option<u16>, time: i64) -> Option<(u16, u64)> {
+        match (ev.proof_ref(), proof) {
+            (Some(p), Some(pr)) if p != journal_types::NO_PROOF => self.check_proof(ctx, pr, market, time),
+            _ => {
+                self.f.add(FindingClass::ProofShape, ctx, "a price proof", "none", "this event must carry a proof");
+                None
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ fees
+
+    /// Called before every event with the event's time: generates the holding-fee expectations of the rollovers that
+    /// passed, then expires the expectations older than `time`.
+    pub fn before_event(&mut self, ctx: Ctx, time: i64) {
+        let cursor = self.roll_cursor.unwrap_or(self.opened.time);
+        if time > cursor {
+            if self.positions.is_empty() {
+                self.roll_cursor = Some(time);
+            } else {
+                let mut r = next_rollover_after(cursor);
+                let mut guard = 0u32;
+                while r <= time && guard < 100_000 {
+                    guard += 1;
+                    self.holding_expectations(ctx, r);
+                    r = next_rollover_after(r);
+                    if self.positions.is_empty() {
+                        break;
+                    }
+                }
+                self.roll_cursor = Some(time);
+            }
+        }
+        self.expire_fees(ctx, time);
+    }
+
+    fn holding_expectations(&mut self, ctx: Ctx, r: i64) {
+        let today = engine::day_index(r);
+        let list: Vec<(u16, Pos)> = self.positions.iter().map(|(k, v)| (*k, *v)).collect();
+        for (market, pos) in list {
+            if pos.p.fee_day >= today {
+                continue;
+            }
+            let Some(class) = self.rules.class_of(market) else { continue };
+            let rate = self.rules.holding_fee_e6.get(class).copied().unwrap_or(0);
+            let Some(si) = self.arch.last_at_or_before(market, r) else {
+                self.f.add(FindingClass::ArchiveMissing, ctx, format!("a market {market} sample at or before {r}"), "none", "no mark for the holding fee");
+                continue;
+            };
+            let Some(mid) = self.arch.samples.get(si).and_then(|s| s.mid_e12()) else { continue };
+            let Some((bid, ask)) = mid_pair(mid, self.rules.spread(market)) else { continue };
+            let mark = if pos.p.qty > 0 { bid } else { ask };
+            match engine::holding_fee_micro(pos.p.qty.unsigned_abs(), mark, rate, 1) {
+                Ok(amount) => {
+                    if amount > 0 || rate > 0 {
+                        self.fee_exp.push(FeeExp { kind: FeeExpKind::Holding, market, time: r, amount, why: format!("holding fee, night of index {today}") });
+                    }
+                }
+                Err(_) => {
+                    self.f.add(FindingClass::FeeMismatch, ctx, "a computable holding fee", "overflow", "holding fee overflow");
+                }
+            }
+            if let Some(p) = self.positions.get_mut(&market) {
+                p.p.fee_day = today;
+            }
+        }
+    }
+
+    fn expire_fees(&mut self, ctx: Ctx, time: i64) {
+        let mut keep = Vec::new();
+        let old = std::mem::take(&mut self.fee_exp);
+        for e in old {
+            if e.time < time {
+                self.f.add(
+                    FindingClass::FeeMismatch,
+                    Ctx { seq: ctx.seq, idx: ctx.idx, time },
+                    format!("{:?} fee of {} on market {} at {}", e.kind, e.amount, e.market, e.time),
+                    "missing",
+                    format!("{} is missing from the journal", e.why),
+                );
+            } else {
+                keep.push(e);
+            }
+        }
+        self.fee_exp = keep;
+    }
+
+    /// End of the replay: everything still expected is missing.
+    pub fn flush_fees(&mut self) {
+        let ctx = Ctx { seq: Some(self.last_seq), idx: None, time: self.last_time };
+        let old = std::mem::take(&mut self.fee_exp);
+        for e in old {
+            self.f.add(
+                FindingClass::FeeMismatch,
+                ctx,
+                format!("{:?} fee of {} on market {} at {}", e.kind, e.amount, e.market, e.time),
+                "missing",
+                format!("{} is missing from the journal", e.why),
+            );
+        }
+    }
+
+    fn commission_expectation(&mut self, market: u16, qty: u64, price: u64, time: i64, what: &str) {
+        let Some(class) = self.rules.class_of(market) else { return };
+        let rate = self.rules.commission_e6.get(class).copied().unwrap_or(0);
+        if rate == 0 {
+            return;
+        }
+        let Ok(notional) = engine::margin_micro(qty, price, 1) else { return };
+        if let Ok(amount) = engine::fee_ceil_micro(notional, rate) {
+            self.fee_exp.push(FeeExp { kind: FeeExpKind::Commission, market, time, amount, why: format!("commission of the {what}") });
+        }
+    }
+
+    fn debit(&mut self, ctx: Ctx, amount: i64) {
+        match engine::apply_closed_slice(&self.st, &self.engine_rules, amount.saturating_neg(), 0) {
+            Ok(d) => self.st = d.state,
+            Err(_) => self.f.add(FindingClass::StateMismatch, ctx, "a balance that fits i64", "overflow", "fee overflow"),
+        }
+    }
+
+    // ------------------------------------------------------------------ intents
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_intent(&mut self, ctx: Ctx, nonce: u32, market: u16, qty: u64, time: i64, what: IntentUse) {
+        match what {
+            IntentUse::Close { reason, .. } => {
+                let evaluator = matches!(reason, CloseReason::StopLoss | CloseReason::TakeProfit | CloseReason::Breach | CloseReason::Fail);
+                if evaluator && nonce != 0 {
+                    self.f.add(FindingClass::ForgedTrade, ctx, "intent_id 0 (an evaluator-originated close)", nonce.to_string(), format!("a {reason:?} close must not claim a trader intent"));
+                    return;
+                }
+                if !evaluator && nonce == 0 {
+                    self.f.add(FindingClass::ForgedTrade, ctx, "a signed intent", "intent_id 0", format!("a {reason:?} close needs the trader's signed intent"));
+                    return;
+                }
+                if nonce == 0 {
+                    return;
+                }
+            }
+            IntentUse::Fill { .. } => {
+                if nonce == 0 {
+                    self.f.add(FindingClass::ForgedTrade, ctx, "a signed intent", "intent_id 0", "a fill needs the trader's signed intent");
+                    return;
+                }
+            }
+        }
+        let intents = self.intents;
+        let Some((line_idx, line)) = intents.get(nonce) else {
+            self.f.add(FindingClass::ForgedTrade, ctx, format!("intent nonce {nonce} in the intents file"), "absent", "no signed intent with this nonce");
+            return;
+        };
+        if self.bad_sig_lines.contains(&line_idx) {
+            return; // already reported as BadIntentSignature / IntentDecode
+        }
+        let Ok(intent) = line.intent.clone() else { return };
+        self.batch.intents.push((line_idx, ctx.seq.unwrap_or(0), ctx.idx.unwrap_or(0)));
+        let mut bad = |why: String, exp: String, found: String| self.f.add(FindingClass::ForgedTrade, ctx, exp, found, why);
+        if intent.market != market {
+            bad(format!("intent {nonce} is for market {}", intent.market), market.to_string(), intent.market.to_string());
+            return;
+        }
+        if intent.client_time > time {
+            bad(format!("intent {nonce} is dated after the trade"), format!("<= {time}"), intent.client_time.to_string());
+            return;
+        }
+        let mut total: Option<u64> = Some(intent.qty);
+        match what {
+            IntentUse::Fill { side, order_kind, sl, tp } => {
+                let kind_ok = matches!(
+                    (order_kind, intent.kind),
+                    (OrderKind::Market, IntentKind::Market) | (OrderKind::Limit, IntentKind::Limit) | (OrderKind::Stop, IntentKind::Stop)
+                );
+                if !kind_ok {
+                    bad(format!("intent {nonce} is a {:?} order, the fill says {order_kind:?}", intent.kind), format!("{order_kind:?}"), format!("{:?}", intent.kind));
+                    return;
+                }
+                if intent.side != side.as_u8() {
+                    bad(format!("intent {nonce} is the other side"), side_name(side).to_string(), if intent.side == 0 { "long".into() } else { "short".into() });
+                    return;
+                }
+                if intent.sl_e12 != sl || intent.tp_e12 != tp {
+                    bad(format!("intent {nonce} carries other protective levels"), format!("sl {} tp {}", intent.sl_e12, intent.tp_e12), format!("sl {sl} tp {tp}"));
+                    return;
+                }
+            }
+            IntentUse::Close { position_side, .. } => match intent.kind {
+                IntentKind::Market | IntentKind::Limit | IntentKind::Stop => {
+                    if intent.side == position_side.as_u8() {
+                        bad(format!("intent {nonce} adds to the position instead of closing it"), "the opposite side".into(), "the same side".into());
+                        return;
+                    }
+                }
+                IntentKind::Close => {
+                    if intent.qty == 0 {
+                        total = None;
+                    }
+                }
+                IntentKind::Cancel | IntentKind::SetSlTp => {
+                    bad(format!("intent {nonce} is a {:?}, not an order", intent.kind), "an order or close intent".into(), format!("{:?}", intent.kind));
+                    return;
+                }
+            },
+        }
+        let entry = self.batch.nonce_qty.entry(nonce).or_insert((0, total));
+        entry.0 = entry.0.saturating_add(qty);
+        if let Some(t) = entry.1 {
+            if entry.0 > t {
+                let (got, want) = (entry.0, t);
+                self.f.add(FindingClass::ForgedTrade, ctx, format!("at most {want}"), got.to_string(), format!("trades under intent {nonce} exceed its quantity"));
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ events
+
+    /// Applies one log event line. `proof` is the decoded proof of the line, if any.
+    pub fn on_event_line(&mut self, seq: u64, ev_bytes: &[u8], proof_bytes: &[u8]) {
+        self.event_count += 1;
+        let idx = self.event_count - 1;
+        let ctx0 = Ctx { seq: Some(seq), idx: Some(idx), time: self.last_time };
+        if seq != self.expect_seq {
+            self.f.add(FindingClass::SequenceGap, ctx0, self.expect_seq.to_string(), seq.to_string(), "the chain sequence is not contiguous (dropped, repeated or reordered event)");
+        }
+        self.expect_seq = seq.saturating_add(1);
+        let ev = match JournalEvent::decode(ev_bytes) {
+            Ok(e) => e,
+            Err(e) => {
+                self.f.add(FindingClass::EventDecode, ctx0, "a canonical journal event", format!("{e:?}"), "event bytes do not decode");
+                return;
+            }
+        };
+        let proof = if proof_bytes.is_empty() {
+            None
+        } else {
+            match PriceProof::decode(proof_bytes) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    self.f.add(FindingClass::EventDecode, ctx0, "a canonical price proof", format!("{e:?}"), "proof bytes do not decode");
+                    return;
+                }
+            }
+        };
+        // hash chain (events whose proof reference and bytes disagree cannot be hashed)
+        match next_hash(&NativeSha256, &self.head, seq, &ev, proof.as_ref()) {
+            Ok(h) => self.head = h,
+            Err(_) => self.f.add(FindingClass::ProofShape, ctx0, "a proof exactly when the event references one", if proof.is_some() { "an unreferenced proof" } else { "no proof" }, "proof presence disagrees with the event"),
+        }
+        self.last_seq = seq;
+        let time = ev.time();
+        let ctx = Ctx { seq: Some(seq), idx: Some(idx), time };
+        if self.terminal && !matches!(ev, JournalEvent::Meta { .. }) {
+            self.f.add(FindingClass::StateMismatch, ctx, "no events after the account failed", "an event", "the account is already terminal");
+        }
+        if time < self.last_time && !matches!(ev, JournalEvent::Meta { .. }) {
+            self.f.add(FindingClass::StateMismatch, ctx, format!(">= {}", self.last_time), time.to_string(), "event time goes backwards");
+        }
+        if let Some(ph) = self.phases.last_mut() {
+            ph.first_seq.get_or_insert(seq);
+            ph.last_seq = Some(seq);
+            ph.events += 1;
+        }
+        self.in_batch_events += 1;
+        self.before_event(ctx, time);
+        self.stage2_before(ctx, &ev, &proof);
+        self.apply(ctx, &ev, &proof);
+        if !matches!(ev, JournalEvent::Meta { .. }) {
+            self.last_time = self.last_time.max(time);
+        }
+    }
+
+    fn apply(&mut self, ctx: Ctx, ev: &JournalEvent, proof: &Option<PriceProof>) {
+        match ev {
+            JournalEvent::Fill { market, side, order_kind, qty, price_e12, time, avg_entry_after, margin, sl, tp, intent_id, .. } => {
+                self.on_fill(ctx, ev, proof, *market, *side, *order_kind, *qty, *price_e12, *time, *avg_entry_after, *margin, *sl, *tp, *intent_id)
+            }
+            JournalEvent::Close { market, side, qty, entry_e12, exit_e12, time, timer_start, pnl, quick, credited, reason, intent_id, .. } => {
+                self.on_close(ctx, ev, proof, *market, *side, *qty, *entry_e12, *exit_e12, *time, *timer_start, *pnl, *quick, *credited, *reason, *intent_id)
+            }
+            JournalEvent::Fee { kind, market, amount, time } => self.on_fee(ctx, *kind, *market, *amount, *time),
+            JournalEvent::TightStart { time, p_open, r, l_start, g_peak, l_level, .. } => {
+                self.floating_proof(ctx, ev, proof, *time);
+                self.on_tight_start(ctx, *p_open, *r, *l_start, *g_peak, *l_level);
+            }
+            JournalEvent::FloorRaised { time, g_peak, l_level, .. } => {
+                self.floating_proof(ctx, ev, proof, *time);
+                self.on_floor_raised(ctx, *g_peak, *l_level);
+            }
+            JournalEvent::TightEnd { .. } => self.on_tight_end(ctx),
+            JournalEvent::Breach { time, l_level, b_after, .. } => {
+                self.floating_proof(ctx, ev, proof, *time);
+                self.on_breach(ctx, *time, *l_level, *b_after);
+            }
+            JournalEvent::Fail { time, reason, b_after, .. } => {
+                self.floating_proof(ctx, ev, proof, *time);
+                self.on_fail(ctx, *reason, *b_after);
+            }
+            JournalEvent::Meta { flat, samples_hash, intents_hash, engine_version, .. } => self.on_meta(ctx, *flat, samples_hash, intents_hash, *engine_version),
+        }
+    }
+
+    fn floating_proof(&mut self, ctx: Ctx, ev: &JournalEvent, proof: &Option<PriceProof>, time: i64) {
+        let _ = self.proof_for(ctx, ev, proof, None, time);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn on_fill(&mut self, ctx: Ctx, ev: &JournalEvent, proof: &Option<PriceProof>, market: u16, side: Side, kind: OrderKind, qty: u64, price: u64, time: i64, avg_after: u64, margin: u64, sl: u64, tp: u64, intent: u32) {
+        if !self.rules.markets.contains_key(&market) {
+            self.f.add(FindingClass::UnknownMarket, ctx, "a market of the rules file", market.to_string(), "the Fill names a market the rules do not list");
+            return;
+        }
+        let priced = self.proof_for(ctx, ev, proof, Some(market), time);
+        if let Some((_, mid)) = priced {
+            let long = side == Side::Long;
+            match engine::fill_price_e12(mid, self.rules.spread(market), long) {
+                Ok(expected) if expected != price => {
+                    self.f.add(FindingClass::PriceMismatch, ctx, expected.to_string(), price.to_string(), format!("fill price vs proof mid {mid} and the {} half-spread", self.rules.spread(market)));
+                }
+                Ok(_) => {}
+                Err(_) => self.f.add(FindingClass::PriceMismatch, ctx, "a computable price", "overflow", "fill price overflow"),
+            }
+        }
+        self.check_intent(ctx, intent, market, qty, time, IntentUse::Fill { side, order_kind: kind, sl, tp });
+        self.stage2_fill(ctx, market, side, kind, intent);
+        let existing = self.positions.get(&market).copied();
+        let out = match engine::apply_fill(existing.map(|p| p.p), eside(side), qty, price, time, engine::day_index(time)) {
+            Ok(o) => o,
+            Err(e) => {
+                self.f.add(FindingClass::EventDecode, ctx, "a valid fill", format!("{e:?}"), "the engine refuses this fill");
+                return;
+            }
+        };
+        if out.closed.is_some() {
+            self.f.add(FindingClass::PositionMismatch, ctx, "a Fill that only opens or adds", "a Fill against an opposite position", "a reducing fill must be a Close event");
+        }
+        if let Some(np) = out.position {
+            if np.avg_entry_e12 != avg_after {
+                self.f.add(FindingClass::AvgEntryMismatch, ctx, np.avg_entry_e12.to_string(), avg_after.to_string(), "average entry after the fill");
+            }
+            let lev = self.rules.class_of(market).and_then(|c| self.rules.leverage_x.get(c).copied()).unwrap_or(1);
+            match engine::margin_micro(np.qty.unsigned_abs(), np.avg_entry_e12, lev) {
+                Ok(m) => {
+                    if u64::try_from(m).ok() != Some(margin) {
+                        self.f.add(FindingClass::MarginMismatch, ctx, m.to_string(), margin.to_string(), "margin of the whole position after the fill");
+                    }
+                }
+                Err(_) => self.f.add(FindingClass::MarginMismatch, ctx, "a computable margin", "overflow", "margin overflow"),
+            }
+            let (osl, otp) = existing.map(|p| (p.sl, p.tp)).filter(|_| out.closed.is_none()).unwrap_or((0, 0));
+            self.positions.insert(market, Pos { p: np, sl: if sl != 0 { sl } else { osl }, tp: if tp != 0 { tp } else { otp } });
+        } else {
+            self.positions.remove(&market);
+        }
+        self.commission_expectation(market, qty, price, time, "fill");
+        self.bump_epoch();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn on_close(&mut self, ctx: Ctx, ev: &JournalEvent, proof: &Option<PriceProof>, market: u16, side: Side, qty: u64, entry: u64, exit: u64, time: i64, timer_start: i64, pnl: i64, quick: bool, credited: i64, reason: CloseReason, intent: u32) {
+        if !self.rules.markets.contains_key(&market) {
+            self.f.add(FindingClass::UnknownMarket, ctx, "a market of the rules file", market.to_string(), "the Close names a market the rules do not list");
+            return;
+        }
+        let priced = self.proof_for(ctx, ev, proof, Some(market), time);
+        if let Some((_, mid)) = priced {
+            match engine::close_price_e12(mid, self.rules.spread(market), side == Side::Long) {
+                Ok(expected) if expected != exit => {
+                    self.f.add(FindingClass::PriceMismatch, ctx, expected.to_string(), exit.to_string(), format!("close price vs proof mid {mid} and the {} half-spread", self.rules.spread(market)));
+                }
+                Ok(_) => {}
+                Err(_) => self.f.add(FindingClass::PriceMismatch, ctx, "a computable price", "overflow", "close price overflow"),
+            }
+        }
+        self.check_intent(ctx, intent, market, qty, time, IntentUse::Close { reason, position_side: side });
+        self.stage2_close(ctx, market, reason);
+        let Some(pos) = self.positions.get(&market).copied() else {
+            self.f.add(FindingClass::PositionMismatch, ctx, "an open position in this market", "none", "Close without a position");
+            return;
+        };
+        let pos_side = if pos.p.qty > 0 { Side::Long } else { Side::Short };
+        if pos_side != side {
+            self.f.add(FindingClass::PositionMismatch, ctx, side_name(pos_side), side_name(side), "Close names the other side than the open position");
+            return;
+        }
+        if qty == 0 || qty > pos.p.qty.unsigned_abs() {
+            self.f.add(FindingClass::PositionMismatch, ctx, format!("1..={}", pos.p.qty.unsigned_abs()), qty.to_string(), "Close quantity exceeds the position");
+            return;
+        }
+        if entry != pos.p.avg_entry_e12 {
+            self.f.add(FindingClass::AvgEntryMismatch, ctx, pos.p.avg_entry_e12.to_string(), entry.to_string(), "entry price of the closed slice");
+        }
+        if timer_start != pos.p.timer_start {
+            self.f.add(FindingClass::QuickMismatch, ctx, pos.p.timer_start.to_string(), timer_start.to_string(), "timer start of the closed position");
+        }
+        let out = match engine::apply_fill(Some(pos.p), opposite(side), qty, exit, time, engine::day_index(time)) {
+            Ok(o) => o,
+            Err(e) => {
+                self.f.add(FindingClass::EventDecode, ctx, "a valid close", format!("{e:?}"), "the engine refuses this close");
+                return;
+            }
+        };
+        let Some(slice) = out.closed else { return };
+        // the claims the program checks, against the REPLAYED position
+        let claim = engine::CloseClaim { long: side == Side::Long, qty, entry_e12: pos.p.avg_entry_e12, exit_e12: exit, time, timer_start: pos.p.timer_start, pnl, quick, credited };
+        if let Err(e) = engine::check_close(&claim) {
+            let class = match e {
+                engine::ClaimError::PnlMismatch => FindingClass::PnlMismatch,
+                engine::ClaimError::CreditMismatch => FindingClass::CreditMismatch,
+                engine::ClaimError::QuickMismatch | engine::ClaimError::TimerAfterTime => FindingClass::QuickMismatch,
+                _ => FindingClass::EventDecode,
+            };
+            let (exp, found) = match class {
+                FindingClass::PnlMismatch => (slice.pnl.to_string(), pnl.to_string()),
+                FindingClass::CreditMismatch => (slice.credit.to_string(), credited.to_string()),
+                FindingClass::QuickMismatch => (slice.quick.to_string(), quick.to_string()),
+                _ => ("a valid close".to_string(), format!("{e:?}")),
+            };
+            self.f.add(class, ctx, exp, found, format!("close claim: {e:?}"));
+        }
+        // the balance moves by what the ENGINE computed
+        match engine::apply_closed_slice(&self.st, &self.engine_rules, slice.credit, out.quick_tally_delta) {
+            Ok(d) => {
+                self.st = d.state;
+                if d.fail.is_some() {
+                    self.quick_fail_due = true;
+                }
+            }
+            Err(_) => self.f.add(FindingClass::StateMismatch, ctx, "a balance that fits i64", "overflow", "credit overflow"),
+        }
+        self.trades_closed = self.trades_closed.saturating_add(1);
+        match out.position {
+            Some(np) => {
+                self.positions.insert(market, Pos { p: np, sl: pos.sl, tp: pos.tp });
+            }
+            None => {
+                self.positions.remove(&market);
+            }
+        }
+        self.commission_expectation(market, qty, exit, time, "close");
+        self.bump_epoch();
+    }
+
+    fn on_fee(&mut self, ctx: Ctx, kind: FeeKind, market: u16, amount: u64, time: i64) {
+        let want = match kind {
+            FeeKind::Holding => FeeExpKind::Holding,
+            FeeKind::Commission => FeeExpKind::Commission,
+        };
+        let pos = self.fee_exp.iter().position(|e| e.kind == want && e.market == market && e.time == time);
+        match pos {
+            Some(i) => {
+                let e = self.fee_exp.remove(i);
+                if i64::try_from(amount).ok() != Some(e.amount) {
+                    self.f.add(FindingClass::FeeMismatch, ctx, e.amount.to_string(), amount.to_string(), format!("{} has the wrong amount", e.why));
+                }
+            }
+            None => {
+                self.f.add(
+                    FindingClass::FeeMismatch,
+                    ctx,
+                    "no such fee",
+                    format!("{kind:?} fee of {amount} on market {market} at {time}"),
+                    "a fee the rules do not call for (flat day, wrong time or wrong market)",
+                );
+            }
+        }
+        match i64::try_from(amount) {
+            Ok(a) => self.debit(ctx, a),
+            Err(_) => self.f.add(FindingClass::FeeMismatch, ctx, "an amount that fits i64", amount.to_string(), "fee amount"),
+        }
+        self.bump_epoch();
+    }
+
+    fn on_tight_start(&mut self, ctx: Ctx, p_open: i64, r: i64, l_start: i64, g_peak: i64, l_level: i64) {
+        self.stage2_floor(ctx, FloorKind::TightStart, [p_open, r, l_start, g_peak, l_level]);
+        match engine::check_tight_start(&self.st, p_open, r, l_start, g_peak, l_level) {
+            Ok(ns) => self.st = ns,
+            Err(e) => {
+                self.f.add(FindingClass::FloorMismatch, ctx, "a TightStart that follows the formulas", format!("{e:?}"), "tight start claim");
+                self.st = AccountState { tight_on: true, r, l_start, g_peak, l_level, ..self.st };
+            }
+        }
+        self.bump_epoch();
+    }
+
+    fn on_floor_raised(&mut self, ctx: Ctx, g_peak: i64, l_level: i64) {
+        self.stage2_floor(ctx, FloorKind::FloorRaised, [0, 0, 0, g_peak, l_level]);
+        match engine::check_floor_raised(&self.st, g_peak, l_level) {
+            Ok(ns) => self.st = ns,
+            Err(e) => {
+                self.f.add(FindingClass::FloorMismatch, ctx, "a FloorRaised that follows the formulas", format!("{e:?}"), "floor raise claim");
+                self.st = AccountState { g_peak, l_level, ..self.st };
+            }
+        }
+        self.bump_epoch();
+    }
+
+    fn on_tight_end(&mut self, ctx: Ctx) {
+        if !self.is_flat() {
+            self.f.add(FindingClass::FloorMismatch, ctx, "flat", format!("{} open positions", self.positions.len()), "TightEnd with open positions");
+        }
+        match engine::check_tight_end(&self.st) {
+            Ok(ns) => self.st = ns,
+            Err(e) => self.f.add(FindingClass::FloorMismatch, ctx, "tight mode on", format!("{e:?}"), "TightEnd claim"),
+        }
+        self.bump_epoch();
+    }
+
+    fn on_breach(&mut self, ctx: Ctx, time: i64, l_level: i64, b_after: i64) {
+        self.stage2_floor(ctx, FloorKind::Breach, [0, 0, 0, 0, l_level]);
+        if !self.is_flat() {
+            self.f.add(FindingClass::FloorMismatch, ctx, "every position closed before the Breach", format!("{} open positions", self.positions.len()), "Breach with open positions");
+        }
+        match engine::check_breach(&self.st, time, l_level, b_after) {
+            Ok(ns) => self.st = ns,
+            Err(e) => {
+                self.f.add(FindingClass::FloorMismatch, ctx, "a Breach that follows the formulas", format!("{e:?}"), "breach claim");
+                self.st = AccountState { tight_on: false, r: 0, l_start: 0, g_peak: 0, l_level: 0, lock_until: time.saturating_add(43_200), flat: true, ..self.st };
+            }
+        }
+        self.bump_epoch();
+    }
+
+    fn on_fail(&mut self, ctx: Ctx, reason: FailReason, b_after: i64) {
+        self.stage2_floor(ctx, FloorKind::Fail(reason), [0, 0, 0, 0, 0]);
+        if b_after != self.st.b {
+            self.f.add(FindingClass::FloorMismatch, ctx, self.st.b.to_string(), b_after.to_string(), "Fail.b_after is not the closed balance");
+        }
+        let justified = match reason {
+            FailReason::StaticFloor => self.is_flat() && engine::static_floor_micro(&self.st).map(|f| self.st.b <= f).unwrap_or(false),
+            FailReason::PhaseQuick => engine::apply_closed_slice(&self.st, &self.engine_rules, 0, 0).map(|d| d.fail.is_some()).unwrap_or(false),
+        };
+        if !justified {
+            self.f.add(FindingClass::FalseFail, ctx, format!("{reason:?} conditions"), format!("b {} q {}", self.st.b, self.st.q_tally), "the account state does not justify this Fail");
+        }
+        self.terminal = true;
+        self.quick_fail_due = false;
+        self.bump_epoch();
+    }
+
+    fn on_meta(&mut self, ctx: Ctx, flat: bool, samples_hash: &[u8; 32], intents_hash: &[u8; 32], engine_version: u16) {
+        if engine_version != engine::ENGINE_VERSION {
+            self.f.add(FindingClass::EngineVersion, ctx, engine::ENGINE_VERSION.to_string(), engine_version.to_string(), "Meta.engine_version");
+        }
+        if flat != self.is_flat() {
+            self.f.add(FindingClass::StateMismatch, ctx, self.is_flat().to_string(), flat.to_string(), "Meta.flat disagrees with the replayed positions");
+        }
+        if self.st.tight_on && self.is_flat() && !self.terminal {
+            self.f.add(FindingClass::FloorMismatch, ctx, "TightEnd before a flat Meta", "tight mode still on", "missing TightEnd");
+        }
+        self.st.flat = flat;
+        // commitments
+        let batch = std::mem::take(&mut self.batch);
+        let n_samp = match self.sample_prefix.get(samples_hash) {
+            Some(n) if *n >= self.last_sample_n => {
+                self.last_sample_n = *n;
+                Some(*n)
+            }
+            Some(n) => {
+                self.f.add(FindingClass::SamplesHashMismatch, ctx, format!(">= {} records", self.last_sample_n), format!("{n} records"), "the committed archive prefix shrank");
+                None
+            }
+            None => {
+                self.f.add(FindingClass::SamplesHashMismatch, ctx, "the sha256 of a prefix of the archive stream", crate::hexutil::encode(samples_hash), "Meta.samples_hash matches no record boundary");
+                None
+            }
+        };
+        if let Some(n) = n_samp {
+            for (si, seq, idx) in &batch.proofs {
+                if *si >= n {
+                    self.f.add(FindingClass::ArchiveMissing, Ctx { seq: Some(*seq), idx: Some(*idx), time: ctx.time }, format!("a sample inside the first {n} records"), format!("record {si}"), "the proof's sample is not covered by the batch's samples_hash");
+                }
+            }
+        }
+        let n_int = match self.intent_prefix.get(intents_hash) {
+            Some(bytes) if *bytes >= self.last_intent_n => {
+                self.last_intent_n = *bytes;
+                Some(self.intents.lines_in_prefix(*bytes))
+            }
+            Some(bytes) => {
+                self.f.add(FindingClass::IntentsHashMismatch, ctx, format!(">= {} bytes", self.last_intent_n), format!("{bytes} bytes"), "the committed intents prefix shrank");
+                None
+            }
+            None => {
+                self.f.add(FindingClass::IntentsHashMismatch, ctx, "the sha256 of a prefix of the intents file", crate::hexutil::encode(intents_hash), "Meta.intents_hash matches no line boundary");
+                None
+            }
+        };
+        if let Some(n) = n_int {
+            for (li, seq, idx) in &batch.intents {
+                if *li >= n {
+                    self.f.add(FindingClass::ForgedTrade, Ctx { seq: Some(*seq), idx: Some(*idx), time: ctx.time }, format!("an intent inside the first {n} lines"), format!("line {li}"), "the intent is not covered by the batch's intents_hash");
+                }
+            }
+        }
+        for (nonce, (got, want)) in &batch.nonce_qty {
+            if let Some(w) = want {
+                if got != w {
+                    self.f.add(FindingClass::ForgedTrade, ctx, w.to_string(), got.to_string(), format!("the trades under intent {nonce} do not add up to its quantity"));
+                }
+            }
+        }
+        self.in_batch_events = 0;
+        self.stage2_meta(ctx);
+    }
+
+    // ------------------------------------------------------------------ pass lines and phases
+
+    fn state_summary_flat(&self) -> bool {
+        self.is_flat() && self.st.flat
+    }
+
+    pub fn on_pass_line(&mut self, kind: &PassKind, phase: u8, amount: u64, b: i64, seq: u64, hash: &[u8; 32]) {
+        let mut reasons: Vec<String> = Vec::new();
+        if seq > self.last_seq {
+            reasons.push("journal_behind".into());
+        } else if seq < self.last_seq {
+            reasons.push("seq_mismatch".into());
+        } else if hash != &self.head {
+            reasons.push("hash_mismatch".into());
+        }
+        if phase != self.phase {
+            reasons.push("phase_mismatch".into());
+        }
+        if b != self.st.b {
+            reasons.push("b_mismatch".into());
+        }
+        let failed = self.phase_failed();
+        match engine::pass_check(&self.st, self.state_summary_flat(), failed) {
+            Ok(()) => {}
+            Err(engine::PassError::NotFlat) => reasons.push("not_flat".into()),
+            Err(engine::PassError::TargetNotReached) => reasons.push("target_not_reached".into()),
+            Err(engine::PassError::PhaseFailed) => reasons.push("phase_failed".into()),
+        }
+        let want_amount = match engine::next_phase(self.phase) {
+            Ok(n) if n.pays() => engine::payout_micro(self.size).ok().and_then(|a| u64::try_from(a).ok()),
+            Ok(_) => Some(0),
+            Err(_) => None,
+        };
+        if want_amount != Some(amount) {
+            reasons.push("amount_mismatch".into());
+        }
+        if self.f.list.iter().any(|f| f.seq.is_some_and(|s| s <= self.last_seq)) {
+            reasons.push("history_invalid".into());
+        }
+        let valid = reasons.is_empty();
+        let ctx = Ctx { seq: Some(seq), idx: None, time: self.last_time };
+        if !valid {
+            self.f.add(FindingClass::PassInvalid, ctx, "a pass request that passes pass_check against the replay", reasons.join(","), format!("{kind:?} pass of phase {phase}"));
+        }
+        self.passes.push(PassVerdict { phase, kind: if *kind == PassKind::Requested { "requested" } else { "confirmed" }, requested_seq: seq, valid, reasons });
+    }
+
+    pub fn phase_failed(&self) -> bool {
+        let floor = engine::static_floor_micro(&self.st).unwrap_or(i64::MAX);
+        if self.st.b <= floor {
+            return true;
+        }
+        engine::apply_closed_slice(&self.st, &self.engine_rules, 0, 0).map(|d| d.fail.is_some()).unwrap_or(true)
+    }
+
+    /// `PhaseAdvanced` / `PassFinalized`: a fresh phase starts (the program's reset, keeping an active lock).
+    pub fn on_phase_change(&mut self, from_phase: u8, to_phase: u8, paid: Option<u64>) {
+        let ctx = Ctx { seq: Some(self.last_seq), idx: None, time: self.last_time };
+        if from_phase != self.phase {
+            self.f.add(FindingClass::StateMismatch, ctx, self.phase.to_string(), from_phase.to_string(), "phase change from another phase");
+        }
+        let failed = self.phase_failed();
+        if let Err(e) = engine::pass_check(&self.st, self.state_summary_flat(), failed) {
+            self.f.add(FindingClass::PassInvalid, ctx, "the pass condition at the phase change", format!("{e:?}"), "the phase advanced without a passing state");
+        }
+        if let Some(a) = paid {
+            let want = engine::payout_micro(self.size).ok().and_then(|x| u64::try_from(x).ok());
+            if want != Some(a) {
+                self.f.add(FindingClass::PassInvalid, ctx, format!("{want:?}"), a.to_string(), "payout amount");
+            }
+        }
+        match engine::next_phase(from_phase) {
+            Ok(engine::NextPhase::Next { phase, .. }) if phase == to_phase => {}
+            Ok(engine::NextPhase::Graduated) if to_phase == 0 => {}
+            other => self.f.add(FindingClass::PassInvalid, ctx, format!("{other:?}"), to_phase.to_string(), "unexpected next phase"),
+        }
+        if to_phase == 0 {
+            self.terminal = true;
+        } else {
+            let mut ns = engine::reset_phase_state(self.size);
+            ns.lock_until = self.st.lock_until;
+            self.st = ns;
+            self.phase = to_phase;
+            self.phases.push(PhaseRec { phase: to_phase, first_seq: None, last_seq: None, events: 0 });
+        }
+        self.bump_epoch();
+    }
+
+    // ------------------------------------------------------------------ end
+
+    pub fn finish(&mut self, as_of: bool) {
+        self.stage2_finish();
+        self.flush_fees();
+        if self.in_batch_events > 0 && !as_of {
+            let ctx = Ctx { seq: Some(self.last_seq), idx: None, time: self.last_time };
+            self.f.add(FindingClass::StateMismatch, ctx, "a log that ends with a Meta", format!("{} events after the last Meta", self.in_batch_events), "the log ends inside a batch");
+        }
+    }
+
+    pub fn compare_snapshot(&mut self, snap: &Snapshot) {
+        let ctx = Ctx { seq: Some(self.last_seq), idx: None, time: self.last_time };
+        if snap.seq != self.last_seq {
+            self.f.add(FindingClass::SequenceGap, ctx, snap.seq.to_string(), self.last_seq.to_string(), "the replayed log ends at another sequence than the stored account");
+        } else if snap.hash() != self.head {
+            self.f.add(FindingClass::HashChain, ctx, crate::hexutil::encode(&snap.hash()), crate::hexutil::encode(&self.head), "the replayed chain head differs from the stored journal_hash");
+        }
+        let status = if self.terminal { None } else { Some(0u8) };
+        let checks: Vec<(&str, String, String)> = vec![
+            ("b", snap.b.to_string(), self.st.b.to_string()),
+            ("q_tally", snap.q_tally.to_string(), self.st.q_tally.to_string()),
+            ("latch", snap.latch.to_string(), u8::from(self.st.latch).to_string()),
+            ("tight_on", snap.tight_on.to_string(), u8::from(self.st.tight_on).to_string()),
+            ("r", snap.r.to_string(), self.st.r.to_string()),
+            ("g_peak", snap.g_peak.to_string(), self.st.g_peak.to_string()),
+            ("l_level", snap.l_level.to_string(), self.st.l_level.to_string()),
+            ("lock_until", snap.lock_until.to_string(), self.st.lock_until.to_string()),
+            ("flat", snap.flat.to_string(), u8::from(self.st.flat).to_string()),
+            ("phase", snap.phase.to_string(), self.phase.to_string()),
+            ("trades_closed", snap.trades_closed.to_string(), self.trades_closed.to_string()),
+        ];
+        for (name, want, got) in checks {
+            if want != got {
+                self.f.add(FindingClass::StateMismatch, ctx, got, want, format!("snapshot field {name}"));
+            }
+        }
+        if let Some(s) = status {
+            if snap.status != s {
+                self.f.add(FindingClass::StateMismatch, ctx, s.to_string(), snap.status.to_string(), "snapshot field status");
+            }
+        }
+    }
+
+    pub fn summary(&self) -> StateSummary {
+        StateSummary {
+            b: self.st.b,
+            q_tally: self.st.q_tally,
+            latch: self.st.latch,
+            tight_on: self.st.tight_on,
+            r: self.st.r,
+            g_peak: self.st.g_peak,
+            l_level: self.st.l_level,
+            lock_until: self.st.lock_until,
+            flat: self.is_flat(),
+            phase: self.phase,
+            terminal: self.terminal,
+            trades_closed: self.trades_closed,
+            seq: self.last_seq,
+            journal_hash: crate::hexutil::encode(&self.head),
+            open_positions: self.positions.len(),
+        }
+    }
+
+    pub fn phase_verdicts(&self) -> Vec<PhaseVerdict> {
+        self.phases
+            .iter()
+            .map(|p| {
+                let (first, last) = (p.first_seq.unwrap_or(0), p.last_seq.unwrap_or(0));
+                let bad_find = self.f.list.iter().any(|f| f.seq.is_some_and(|s| p.first_seq.is_some() && s >= first && s <= last));
+                let bad_pass = self.passes.iter().any(|v| v.phase == p.phase && !v.valid);
+                PhaseVerdict { phase: p.phase, first_seq: first, last_seq: last, events: p.events, valid: !bad_find && !bad_pass }
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum IntentUse {
+    Fill { side: Side, order_kind: OrderKind, sl: u64, tp: u64 },
+    Close { reason: CloseReason, position_side: Side },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloorKind {
+    TightStart,
+    FloorRaised,
+    Breach,
+    Fail(FailReason),
+}
+
+// Stage 2 hooks. Stage 1 compiles them to no-ops.
+impl<'a> Replay<'a> {
+    fn stage2_before(&mut self, _ctx: Ctx, _ev: &JournalEvent, _proof: &Option<PriceProof>) {}
+    fn stage2_fill(&mut self, _ctx: Ctx, _market: u16, _side: Side, _kind: OrderKind, _intent: u32) {}
+    fn stage2_close(&mut self, _ctx: Ctx, _market: u16, _reason: CloseReason) {}
+    fn stage2_floor(&mut self, _ctx: Ctx, _kind: FloorKind, _vals: [i64; 5]) {}
+    fn stage2_meta(&mut self, _ctx: Ctx) {}
+    fn stage2_finish(&mut self) {}
+}

@@ -1,0 +1,21 @@
+{
+  "findings": 0,
+  "state": {
+    "b": 100535140971,
+    "flat": true,
+    "g_peak": 0,
+    "journal_hash": "90d43888239c8c9f68d95b3f6065b09221575f6d737c38a39bfb2880ad656216",
+    "l_level": 0,
+    "latch": false,
+    "lock_until": 0,
+    "open_positions": 0,
+    "phase": 1,
+    "q_tally": 0,
+    "r": 0,
+    "seq": 8,
+    "terminal": false,
+    "tight_on": false,
+    "trades_closed": 1
+  },
+  "verdict": "VALID"
+}
