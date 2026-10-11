@@ -11,7 +11,8 @@ use journal_types::{CloseReason, FailReason, FeeKind, JournalEvent, NativeSha256
 use serde_json::json;
 use setl8_verify::archive::{ArchiveWriter, Sample, RECORD_LEN};
 use setl8_verify::hexutil;
-use setl8_verify::intents::{self, IntentKind, OrderIntent};
+pub use setl8_verify::intents::IntentKind;
+use setl8_verify::intents::{self, OrderIntent};
 use setl8_verify::log::{self, OpenedRec};
 
 pub const USD: i64 = 1_000_000;
@@ -35,6 +36,7 @@ pub fn trader_keypair() -> Keypair {
 pub struct MarketSpec {
     pub id: u16,
     pub class: u8,
+    pub source: u8,
     pub symbol: &'static str,
     pub spread_e6: u16,
     pub max_age_secs: u16,
@@ -43,7 +45,7 @@ pub struct MarketSpec {
 
 impl MarketSpec {
     pub fn feed(&self) -> [u8; 32] {
-        journal_types::feed_id(&NativeSha256, 2, self.symbol)
+        journal_types::feed_id(&NativeSha256, self.source, self.symbol)
     }
 }
 
@@ -66,7 +68,7 @@ impl Spec {
             leverage: [50, 20, 20, 20, 10, 5, 5, 2],
             holding: [100, 200, 400, 200, 400, 400, 1000, 1600],
             commission: [0; 8],
-            markets: vec![MarketSpec { id: 0, class: 0, symbol: "EURUSD", spread_e6: 30, max_age_secs: 60, sessions: vec![(0, 10_080)] }],
+            markets: vec![MarketSpec { id: 0, class: 0, source: 2, symbol: "EURUSD", spread_e6: 30, max_age_secs: 60, sessions: vec![(0, 10_080)] }],
             opened_time: T_1400 - HOUR,
         }
     }
@@ -128,13 +130,21 @@ pub struct Bundle {
 }
 
 pub fn sample_for(spec: &Spec, market: u16, t: i64, mid_e12: u64) -> Sample {
-    let _ = spec;
     let ts_ns = u64::try_from(t).expect("t") * 1_000_000_000;
-    Sample { market, source: 2, recv_ns: ts_ns + 1_000_000, ts_ns, value: i128::from(mid_e12) * 1_000_000, digest: [0; 32] }
+    let source = spec.market(market).source;
+    // source 3 records the sha256 of the signed blob (here a stand-in blob derived from market and time)
+    let digest = if source == 3 {
+        use sha2::{Digest, Sha256};
+        Sha256::digest([market.to_le_bytes().as_slice(), ts_ns.to_le_bytes().as_slice()].concat()).into()
+    } else {
+        [0; 32]
+    };
+    Sample { market, source, recv_ns: ts_ns + 1_000_000, ts_ns, value: i128::from(mid_e12) * 1_000_000, digest }
 }
 
 pub fn proof_of(spec: &Spec, s: &Sample) -> PriceProof {
-    PriceProof { source: s.source, feed_id: spec.market(s.market).feed(), timestamp_ns: s.ts_ns, quantized_value: s.value, signed_update: vec![] }
+    let signed_update = if s.source == 3 { s.digest.to_vec() } else { vec![] };
+    PriceProof { source: s.source, feed_id: spec.market(s.market).feed(), timestamp_ns: s.ts_ns, quantized_value: s.value, signed_update }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -172,6 +182,8 @@ struct Pending {
 pub enum Script {
     Sample { market: u16, t: i64, mid: u64 },
     Order { t: i64, intent: OrderIntent },
+    /// A batch that carries only a `Meta` (the evaluator says "I have processed everything up to `t`").
+    Heartbeat { t: i64 },
 }
 
 pub struct Gen {
@@ -250,6 +262,7 @@ impl Gen {
             match *s {
                 Script::Sample { market, t, mid } => self.on_sample(market, t, mid),
                 Script::Order { t, intent } => self.on_order(t, intent),
+                Script::Heartbeat { t } => self.heartbeat(t),
             }
         }
         self.finish()
@@ -307,8 +320,16 @@ impl Gen {
         self.st = engine::apply_closed_slice(&self.st, &ERules::default(), -amount, 0).expect("debit").state;
     }
 
+    fn heartbeat(&mut self, t: i64) {
+        self.flush_batch_force(t, true);
+    }
+
     fn flush_batch(&mut self, t: i64) {
-        if self.batch.is_empty() {
+        self.flush_batch_force(t, false);
+    }
+
+    fn flush_batch_force(&mut self, t: i64, force: bool) {
+        if self.batch.is_empty() && !force {
             return;
         }
         let events = std::mem::take(&mut self.batch);
@@ -388,6 +409,10 @@ impl Gen {
                     let (bid, ask) = self.bid_ask(m, idx);
                     let mark = if p.p.qty > 0 { bid } else { ask };
                     let rate = self.rate(m, true);
+                    if rate == 0 {
+                        self.pos.get_mut(&m).expect("pos").p.fee_day = today;
+                        continue;
+                    }
                     let fee = engine::holding_fee_micro(p.p.qty.unsigned_abs(), mark, rate, 1).expect("fee");
                     self.push(JournalEvent::Fee { kind: FeeKind::Holding, market: m, amount: u64::try_from(fee).expect("fee"), time: r }, None);
                     self.debit(fee);
@@ -727,7 +752,9 @@ impl Bundle {
         let mut h = journal_types::genesis_hash(&NativeSha256, &account_key());
         for l in &self.lines {
             if let GLine::Event { seq, ev, proof } = l {
-                h = journal_types::next_hash(&NativeSha256, &h, *seq, ev, proof.as_ref()).expect("hash");
+                if let Ok(n) = journal_types::next_hash(&NativeSha256, &h, *seq, ev, proof.as_ref()) {
+                    h = n;
+                }
             }
         }
         h
@@ -752,6 +779,7 @@ impl Bundle {
             archive: self.archive_bytes(),
             intents: self.intents_text().into_bytes(),
             snapshot: Some(self.snapshot_json().into_bytes()),
+            second: None,
         }
     }
 
@@ -789,6 +817,7 @@ pub struct Files {
     pub archive: Vec<u8>,
     pub intents: Vec<u8>,
     pub snapshot: Option<Vec<u8>>,
+    pub second: Option<Vec<u8>>,
 }
 
 impl Files {
@@ -799,7 +828,7 @@ impl Files {
             archive: &self.archive,
             intents: &self.intents,
             snapshot: self.snapshot.as_deref(),
-            second_archive: None,
+            second_archive: self.second.as_deref(),
             as_of_seq: None,
         }
     }
@@ -907,4 +936,186 @@ pub fn vector_sets() -> Vec<(&'static str, Bundle)> {
 pub fn vector_files(b: &Bundle) -> Vec<(&'static str, Vec<u8>)> {
     let f = b.files();
     vec![("events.jsonl", f.events), ("rules.json", f.rules), ("archive.bin", f.archive), ("intents.jsonl", f.intents), ("snapshot.json", f.snapshot.unwrap())]
+}
+
+
+// -------------------------------------------------------------------------------------------- stage 2 scenarios
+
+/// Linear interpolation (integer) between waypoints `(second offset, value)`, with a 1-unit wobble so the price changes
+/// on every sample (a price that stands still for more than `max_age_secs` closes the market).
+pub fn path(points: &[(i64, u64)], k: i64) -> u64 {
+    let wobble = u64::from(k.rem_euclid(2) == 1) * 7;
+    for w in points.windows(2) {
+        let ((t0, v0), (t1, v1)) = (w[0], w[1]);
+        if k >= t0 && k <= t1 {
+            let (a, b) = (i128::from(v0), i128::from(v1));
+            let v = a + (b - a) * i128::from(k - t0) / i128::from(t1 - t0);
+            return u64::try_from(v).expect("v") + wobble;
+        }
+    }
+    points.last().expect("points").1 + wobble
+}
+
+/// A two-market account over 3.5 hours (20:00 to 23:30): a quick trade, a limit order that is cancelled and one that
+/// fills, a stop-loss on BTC, a take-profit on EUR with a tight mode and a raise, a holding-fee night, a set_sl_tp, a
+/// second tight mode with a raise and a breach, commissions throughout. Samples every 10 s for both markets.
+pub fn honest_long() -> Bundle {
+    let mut spec = Spec::base();
+    spec.commission[0] = 20;
+    spec.commission[6] = 50;
+    spec.markets.push(MarketSpec { id: 1, class: 6, source: 2, symbol: "BTCUSD", spread_e6: 50, max_age_secs: 60, sessions: vec![(0, 10_080)] });
+    let t0 = T_1400 + 6 * HOUR;
+    let eur_path = [(0, eur(10_800)), (300, eur(10_800)), (320, eur(10_810)), (400, eur(10_800)), (1_200, eur(10_790)), (1_500, eur(10_800)), (2_400, eur(10_800)),
+        (3_000, eur(10_850)), (3_600, eur(10_912)), (5_400, eur(10_900)), (6_300, eur(10_950)), (9_000, eur(10_980)), (10_800, eur(10_750)), (12_600, eur(10_740))];
+    let btc_path = [(0, 60_000 * E12), (600, 60_000 * E12), (1_800, 58_900 * E12), (12_600, 59_000 * E12)];
+    let orders: Vec<(i64, OrderIntent)> = vec![
+        (300, market_order(0, true, 200_000_000_000, t0 + 300)),
+        (320, market_order(0, false, 200_000_000_000, t0 + 320)),
+        (600, order(IntentKind::Market, 1, 0, 500_000, 0, 59_000 * E12, 0, 0, t0 + 600)),
+        (720, order(IntentKind::Limit, 0, 1, 50_000_000_000, eur(11_200), 0, 0, 0, t0 + 720)),
+        (840, order(IntentKind::Cancel, 0, 0, 0, 0, 0, 0, 4, t0 + 840)),
+        (900, order(IntentKind::Limit, 0, 0, 100_000_000_000, eur(10_795), 0, 0, 0, t0 + 900)),
+        (2_400, order(IntentKind::Market, 0, 0, 300_000_000_000, 0, 0, eur(10_900), 0, t0 + 2_400)),
+        (5_400, market_order(0, true, 400_000_000_000, t0 + 5_400)),
+        (5_460, order(IntentKind::SetSlTp, 0, 0, 0, 0, eur(10_700), 0, 0, t0 + 5_460)),
+    ];
+    let mut script = vec![];
+    for k in (0..=12_600).step_by(10) {
+        let t = t0 + k;
+        script.push(Script::Sample { market: 0, t, mid: path(&eur_path, k) });
+        script.push(Script::Sample { market: 1, t, mid: path(&btc_path, k) });
+        for (off, it) in &orders {
+            if *off == k {
+                script.push(Script::Order { t, intent: *it });
+            }
+        }
+    }
+    Gen::new(spec).run(&script)
+}
+
+/// Solves `bid_from_mid(mid, h) == target` for the mid (exists for every target: the bid steps by <= 1 per unit of mid).
+pub fn mid_for_bid(target_bid: u64, h: u32) -> u64 {
+    let m0 = u64::try_from(u128::from(target_bid) * 1_000_000 / u128::from(1_000_000 - h)).expect("m");
+    for m in m0.saturating_sub(3)..m0 + 3 {
+        if engine::bid_from_mid(m, h).expect("bid") == target_bid {
+            return m;
+        }
+    }
+    panic!("no mid for bid {target_bid}");
+}
+
+/// 1,000,000 EUR bought at 14:00:00 (mid 1.0800, ask 1.0800324); the account then sees `mids` (one sample per 30 s from
+/// 14:00:30); the journal is whatever an honest evaluator makes of it; a heartbeat Meta follows at the last sample.
+pub fn eur_run(spec: Spec, mids: &[u64]) -> Bundle {
+    let mut script = vec![Script::Sample { market: 0, t: T_1400, mid: eur(10_800) }, Script::Order { t: T_1400, intent: market_order(0, true, 1_000_000_000_000, T_1400) }];
+    let mut t = T_1400;
+    for m in mids {
+        t += 30;
+        script.push(Script::Sample { market: 0, t, mid: *m });
+    }
+    script.push(Script::Heartbeat { t });
+    Gen::new(spec).run(&script)
+}
+
+pub const ASK_1_0800: u64 = 1_080_032_400_000;
+pub const BID_H30: u32 = 30;
+
+/// The 4.9 path then a recovery, with a heartbeat: the breach sample is the 5th (14:02:30) and the price recovers after.
+pub fn breach_then_recovery() -> Bundle {
+    eur_run(Spec::base(), &[eur(10_806), eur(10_813), eur(10_831), eur(10_811), eur(10_780), eur(10_830)])
+}
+
+/// A pass case: phase 2 account, 1,000,000 EUR bought at 14:00:00 and closed at 14:20:00 for a profit of exactly
+/// `8,000.000000 + delta` micro-USD (a non-quick slice, no commission), then flat; the closed balance is `1.08 S + delta`.
+pub fn pass_case(delta: i64) -> Bundle {
+    pass_case_in_phase(delta, 2)
+}
+
+pub fn pass_case_in_phase(delta: i64, phase: u8) -> Bundle {
+    let mut spec = Spec::base();
+    spec.phase = phase;
+    let target_bid = u64::try_from(i64::try_from(ASK_1_0800).unwrap() + 8_000_000_000 + delta).unwrap();
+    let close_mid = mid_for_bid(target_bid, BID_H30);
+    let script = vec![
+        Script::Sample { market: 0, t: T_1400, mid: eur(10_800) },
+        Script::Order { t: T_1400, intent: market_order(0, true, 1_000_000_000_000, T_1400) },
+        Script::Sample { market: 0, t: T_1400 + 600, mid: eur(10_850) },
+        Script::Sample { market: 0, t: T_1400 + 1_200, mid: close_mid },
+        Script::Order { t: T_1400 + 1_200, intent: order(IntentKind::Close, 0, 0, 0, 0, 0, 0, 0, T_1400 + 1_200) },
+    ];
+    Gen::new(spec).run(&script)
+}
+
+impl Bundle {
+    /// The chain head after the event with sequence number `seq`.
+    pub fn head_at(&self, seq: u64) -> [u8; 32] {
+        let mut h = journal_types::genesis_hash(&NativeSha256, &account_key());
+        for l in &self.lines {
+            if let GLine::Event { seq: s, ev, proof } = l {
+                if *s > seq {
+                    break;
+                }
+                h = journal_types::next_hash(&NativeSha256, &h, *s, ev, proof.as_ref()).expect("hash");
+            }
+        }
+        h
+    }
+
+    /// Appends a `pass_requested` line for the current end of the journal (b, seq, head as the chain has them).
+    pub fn push_pass_requested(&mut self, phase: u8, amount: u64, b: i64, seq: u64, time: i64) {
+        let h = self.head_at(seq);
+        self.lines.push(GLine::Raw(format!(
+            "{{\"type\":\"pass_requested\",\"account\":\"{}\",\"phase\":{phase},\"amount\":{amount},\"b\":{b},\"seq\":{seq},\"journal_hash\":\"{}\",\"time\":{time}}}",
+            setl8_verify::log::base58(&account_key()),
+            hexutil::encode(&h)
+        )));
+    }
+
+    pub fn push_pass_confirmed(&mut self, phase: u8, amount: u64, b: i64, seq: u64, eligible_at: i64) {
+        let h = self.head_at(seq);
+        self.lines.push(GLine::Raw(format!(
+            "{{\"type\":\"pass_confirmed\",\"account\":\"{}\",\"phase\":{phase},\"amount\":{amount},\"b\":{b},\"seq\":{seq},\"journal_hash\":\"{}\",\"eligible_at\":{eligible_at}}}",
+            setl8_verify::log::base58(&account_key()),
+            hexutil::encode(&h)
+        )));
+    }
+
+    pub fn push_raw(&mut self, ty_fields: &str) {
+        self.lines.push(GLine::Raw(format!("{{{ty_fields},\"account\":\"{}\"}}", setl8_verify::log::base58(&account_key()))));
+    }
+
+    /// Removes the lines at the given indexes, keeps the Meta commit table pointing at the right lines, and renumbers.
+    pub fn remove_lines(&mut self, idx: &[usize]) {
+        let set: std::collections::HashSet<usize> = idx.iter().copied().collect();
+        let mut map = vec![None; self.lines.len()];
+        let mut n = 0usize;
+        for (i, slot) in map.iter_mut().enumerate() {
+            if !set.contains(&i) {
+                *slot = Some(n);
+                n += 1;
+            }
+        }
+        let old = std::mem::take(&mut self.lines);
+        self.lines = old.into_iter().enumerate().filter(|(i, _)| !set.contains(i)).map(|(_, l)| l).collect();
+        let metas = std::mem::take(&mut self.metas);
+        self.metas = metas.into_iter().filter_map(|m| map[m.line].map(|line| MetaCommit { line, ..m })).collect();
+        self.renumber();
+    }
+}
+
+
+pub fn verify_second(a: &Bundle, b_archive: Vec<u8>) -> setl8_verify::Report {
+    let mut f = a.files();
+    f.snapshot = None;
+    f.second = Some(b_archive);
+    setl8_verify::verify_account(&f.inputs()).expect("inputs parse")
+}
+
+/// The mid at which a 1,000,000 EUR long bought at ask 1.0800324 has an open profit of exactly `pnl` micro-USD.
+pub fn mid_for_pnl(pnl: i64) -> u64 {
+    mid_for_bid(u64::try_from(i64::try_from(ASK_1_0800).unwrap() + pnl).unwrap(), BID_H30)
+}
+
+pub fn last_event_time(b: &Bundle) -> i64 {
+    b.events().iter().map(|e| e.time()).max().unwrap()
 }

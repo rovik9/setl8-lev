@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn event_and_opened_round_trip() {
         let acct = [9u8; 32];
-        let o = OpenedRec { account: acct, trader: [3; 32], challenge_id: 4, size_s: 100, tier_index: 8, phase: 1, ruleset_version: 1, genesis_hash: [5; 32], time: 1000 };
+        let o = OpenedRec { account: acct, trader: [3; 32], challenge_id: 4, size_s: 100, tier_index: 8, phase: 1, ruleset_version: 7, genesis_hash: [5; 32], time: 1000 };
         let text = format!("{}{}{}", header_line(), opened_line(&o), event_line(&acct, 1, &[1, 2, 3], &[], 77));
         let lines = parse(&text).unwrap();
         assert_eq!(lines.len(), 2);
@@ -203,6 +203,22 @@ mod tests {
         assert_eq!(lines[0].line_no, 2);
         assert_eq!(lines[1].line, Line::Event { seq: 1, event: vec![1, 2, 3], proof: vec![], slot: 77 });
         assert_eq!(lines[1].account, Some(acct));
+    }
+
+    #[test]
+    fn integer_fields_are_range_checked() {
+        let acct = base58(&[9; 32]);
+        let h = crate::hexutil::encode(&[1u8; 32]);
+        let line = |tier: &str, rv: &str| {
+            format!(
+                "{}{{\"type\":\"opened\",\"account\":\"{acct}\",\"trader\":\"{acct}\",\"challenge_id\":0,\"size_s\":1,\"tier_index\":{tier},\"phase\":1,\"ruleset_version\":{rv},\"genesis_hash\":\"{h}\",\"time\":1}}\n",
+                header_line()
+            )
+        };
+        assert!(parse(&line("255", "65535")).is_ok());
+        assert!(parse(&line("256", "1")).is_err());
+        assert!(parse(&line("1", "65536")).is_err());
+        assert!(parse(&line("-1", "1")).is_err());
     }
 
     #[test]

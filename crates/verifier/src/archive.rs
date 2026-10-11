@@ -279,6 +279,38 @@ mod tests {
     }
 
     #[test]
+    fn a_new_segment_writes_a_header() {
+        let mut w = ArchiveWriter::new();
+        w.push(&s(0, 1, 1));
+        w.start_segment();
+        w.push(&s(0, 2, 2));
+        let bytes = w.into_bytes();
+        assert_eq!(bytes.len(), 2 * HEADER_LEN + 2 * RECORD_LEN);
+        assert_eq!(&bytes[HEADER_LEN + RECORD_LEN..HEADER_LEN + RECORD_LEN + 8], MAGIC);
+    }
+
+    #[test]
+    fn every_header_field_is_checked_on_its_own() {
+        let mut w = ArchiveWriter::new();
+        w.push(&s(0, 1, 1));
+        let good = w.into_bytes();
+        for (at, byte) in [(8usize, 2u8), (10, 67), (11, 1), (12, 1), (15, 1)] {
+            let mut bad = good.clone();
+            bad[at] = byte;
+            assert!(matches!(Archive::parse(&bad), Err(ArchiveError::BadHeader(_))), "byte {at}");
+        }
+        assert!(Archive::parse(&good).is_ok());
+    }
+
+    #[test]
+    fn errors_have_readable_messages() {
+        assert_eq!(ArchiveError::MissingHeader.to_string(), "archive does not start with the SL8SAMPL header");
+        assert_eq!(ArchiveError::BadHeader("x".into()).to_string(), "bad archive header: x");
+        assert_eq!(ArchiveError::Truncated { offset: 7 }.to_string(), "archive truncated at byte 7");
+        assert_eq!(ArchiveError::BadRecord { offset: 9 }.to_string(), "bad archive record at byte 9");
+    }
+
+    #[test]
     fn parse_errors() {
         assert_eq!(Archive::parse(&[]).unwrap_err(), ArchiveError::MissingHeader);
         assert_eq!(Archive::parse(b"nonsense").unwrap_err(), ArchiveError::MissingHeader);

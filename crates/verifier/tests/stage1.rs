@@ -294,7 +294,7 @@ fn forged_trade_fill_without_an_intent() {
 #[test]
 fn forged_trade_intent_is_for_another_market() {
     let mut b = close_case(600);
-    b.spec.markets.push(MarketSpec { id: 1, class: 6, symbol: "BTCUSD", spread_e6: 50, max_age_secs: 60, sessions: vec![(0, 10_080)] });
+    b.spec.markets.push(MarketSpec { id: 1, class: 6, source: 2, symbol: "BTCUSD", spread_e6: 50, max_age_secs: 60, sessions: vec![(0, 10_080)] });
     let mut i = b.intents[0].intent;
     i.market = 1;
     b.intents[0] = sign(1, &i);
@@ -333,7 +333,7 @@ fn forged_trade_evaluator_close_claiming_an_intent_and_trader_close_without_one(
     let mut b = close_case(600);
     let i = b.find(|e| matches!(e, E::Close { .. }));
     if let E::Close { reason, .. } = b.ev_mut(i) {
-        *reason = CloseReason::StopLoss; // an evaluator-originated close must carry intent 0
+        *reason = CloseReason::Breach; // an evaluator-originated close must carry intent 0
     }
     only(&verify_no_snapshot(&b), C::ForgedTrade);
 }

@@ -287,6 +287,18 @@ mod tests {
     }
 
     #[test]
+    fn every_kind_round_trips() {
+        for k in 0u8..=5 {
+            let kind = IntentKind::from_u8(k).unwrap();
+            assert_eq!(kind as u8, k);
+            let mut i = intent();
+            i.kind = kind;
+            assert_eq!(OrderIntent::from_bytes(&i.to_bytes()), Some(i));
+        }
+        assert_eq!(IntentKind::from_u8(6), None);
+    }
+
+    #[test]
     fn signing_message_layout() {
         let m = signing_message(&[0xAA; 32], 0x01020304, &[9, 9]);
         assert_eq!(&m[..7], b"SL8LEV|");

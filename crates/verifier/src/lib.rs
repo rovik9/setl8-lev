@@ -13,6 +13,7 @@ pub mod replay;
 pub mod rules;
 pub mod snapshot;
 pub mod verify;
+pub mod walk;
 
 pub use finding::{Finding, FindingClass, PassVerdict, PhaseVerdict, Report, Verdict};
 pub use verify::{verify_account, InputError, Inputs};

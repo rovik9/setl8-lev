@@ -19,12 +19,6 @@ pub struct MarketJson {
     pub qty_min: u64,
     pub max_notional_usd: u64,
     pub sessions: Vec<[u16; 2]>,
-    #[serde(default = "no_conv")]
-    pub quote_conv_market: u16,
-}
-
-fn no_conv() -> u16 {
-    0xFFFF
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -136,6 +130,11 @@ impl Rules {
 }
 
 #[cfg(test)]
+pub(crate) fn sample_json() -> String {
+    tests::sample_json()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -157,6 +156,13 @@ mod tests {
         assert_eq!(r.market_by_feed(&[7; 32]).map(|m| m.id), Some(0));
         assert!(r.market_by_feed(&[8; 32]).is_none());
         assert_eq!(r.markets.get(&0).unwrap().sessions, vec![(0, 10080)]);
+    }
+
+    #[test]
+    fn market_class_boundary_is_seven() {
+        let ok = sample_json();
+        assert!(Rules::parse(ok.replace("\"class\":0", "\"class\":7").as_bytes()).is_ok());
+        assert!(Rules::parse(ok.replace("\"class\":0", "\"class\":8").as_bytes()).is_err());
     }
 
     #[test]

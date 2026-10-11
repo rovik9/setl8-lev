@@ -28,7 +28,7 @@ pub fn decode(s: &str) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(b.len() / 2);
     for pair in b.chunks_exact(2) {
         match (pair.first().copied().and_then(nibble), pair.get(1).copied().and_then(nibble)) {
-            (Some(h), Some(l)) => out.push((h << 4) | l),
+            (Some(h), Some(l)) => out.push((h << 4) + l),
             _ => return Err("invalid hex digit".to_string()),
         }
     }

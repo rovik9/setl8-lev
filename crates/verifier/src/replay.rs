@@ -86,15 +86,19 @@ pub struct Replay<'a> {
     batch: Batch,
     pub fee_exp: Vec<FeeExp>,
     roll_cursor: Option<i64>,
-    sample_prefix: HashMap<[u8; 32], usize>,
-    intent_prefix: HashMap<[u8; 32], usize>,
+    pub(crate) sample_prefix: HashMap<[u8; 32], usize>,
+    pub(crate) intent_prefix: HashMap<[u8; 32], usize>,
     last_sample_n: usize,
     last_intent_n: usize,
-    bad_sig_lines: HashSet<usize>,
+    pub(crate) bad_sig_lines: HashSet<usize>,
     pub phases: Vec<PhaseRec>,
     pub passes: Vec<PassVerdict>,
     in_batch_events: usize,
     pub quick_fail_due: bool,
+    /// Archive-walk state (stage 2).
+    pub walk: Option<crate::walk::Walker>,
+    /// The largest event or Meta time seen (the walk runs up to it).
+    pub max_time: i64,
 }
 
 /// Collects findings with the cap and the miss de-duplication.
@@ -122,6 +126,11 @@ impl Findings {
 
     /// Like `add`, but a repeat of the same class in the same account-state epoch is dropped (a miss that persists over many
     /// samples is reported once).
+    /// The account state changed: a miss of a class already reported may be reported again.
+    pub fn bump(&mut self) {
+        self.epoch = self.epoch.saturating_add(1);
+    }
+
     pub fn add_once(&mut self, class: FindingClass, ctx: Ctx, expected: impl Into<String>, found: impl Into<String>, message: impl Into<String>) {
         if self.seen_miss.insert((class, self.epoch)) {
             self.add(class, ctx, expected, found, message);
@@ -149,6 +158,9 @@ fn opposite(s: Side) -> ESide {
         Side::Short => ESide::Buy,
     }
 }
+
+/// Longest stretch between two events over which holding-fee nights are checked one by one (about ten years).
+pub const MAX_ROLLOVER_GAP: i64 = 3_660;
 
 pub fn mid_pair(mid: u64, h: u32) -> Option<(u64, u64)> {
     Some((engine::bid_from_mid(mid, h).ok()?, engine::ask_from_mid(mid, h).ok()?))
@@ -205,14 +217,16 @@ impl<'a> Replay<'a> {
             passes: Vec::new(),
             in_batch_events: 0,
             quick_fail_due: false,
+            walk: None,
+            max_time: opened.time,
             opened,
         })
     }
 
     // ------------------------------------------------------------------ helpers
 
-    fn bump_epoch(&mut self) {
-        self.f.epoch = self.f.epoch.saturating_add(1);
+    pub(crate) fn bump_epoch(&mut self) {
+        self.f.bump();
     }
 
     pub fn is_flat(&self) -> bool {
@@ -354,23 +368,23 @@ impl<'a> Replay<'a> {
     /// passed, then expires the expectations older than `time`.
     pub fn before_event(&mut self, ctx: Ctx, time: i64) {
         let cursor = self.roll_cursor.unwrap_or(self.opened.time);
-        if time > cursor {
-            if self.positions.is_empty() {
-                self.roll_cursor = Some(time);
+        if !self.positions.is_empty() {
+            let nights = engine::day_index(time).saturating_sub(engine::day_index(cursor));
+            if nights > MAX_ROLLOVER_GAP {
+                // an account that holds positions across more nights than any journal covers: do not loop over them
+                self.f.add(FindingClass::FeeMismatch, ctx, format!("at most {MAX_ROLLOVER_GAP} nights between two events"), nights.to_string(), "too many holding-fee nights between two events to check");
+                for p in self.positions.values_mut() {
+                    p.p.fee_day = engine::day_index(time);
+                }
             } else {
                 let mut r = next_rollover_after(cursor);
-                let mut guard = 0u32;
-                while r <= time && guard < 100_000 {
-                    guard += 1;
+                while r <= time && !self.positions.is_empty() {
                     self.holding_expectations(ctx, r);
                     r = next_rollover_after(r);
-                    if self.positions.is_empty() {
-                        break;
-                    }
                 }
-                self.roll_cursor = Some(time);
             }
         }
+        self.roll_cursor = Some(cursor.max(time));
         self.expire_fees(ctx, time);
     }
 
@@ -389,10 +403,10 @@ impl<'a> Replay<'a> {
             };
             let Some(mid) = self.arch.samples.get(si).and_then(|s| s.mid_e12()) else { continue };
             let Some((bid, ask)) = mid_pair(mid, self.rules.spread(market)) else { continue };
-            let mark = if pos.p.qty > 0 { bid } else { ask };
+            let mark = if pos.p.qty.is_positive() { bid } else { ask };
             match engine::holding_fee_micro(pos.p.qty.unsigned_abs(), mark, rate, 1) {
                 Ok(amount) => {
-                    if amount > 0 || rate > 0 {
+                    if rate > 0 {
                         self.fee_exp.push(FeeExp { kind: FeeExpKind::Holding, market, time: r, amount, why: format!("holding fee, night of index {today}") });
                     }
                 }
@@ -559,6 +573,7 @@ impl<'a> Replay<'a> {
         self.event_count += 1;
         let idx = self.event_count - 1;
         let ctx0 = Ctx { seq: Some(seq), idx: Some(idx), time: self.last_time };
+        let prev_seq = self.last_seq;
         if seq != self.expect_seq {
             self.f.add(FindingClass::SequenceGap, ctx0, self.expect_seq.to_string(), seq.to_string(), "the chain sequence is not contiguous (dropped, repeated or reordered event)");
         }
@@ -602,7 +617,17 @@ impl<'a> Replay<'a> {
         }
         self.in_batch_events += 1;
         self.before_event(ctx, time);
-        self.stage2_before(ctx, &ev, &proof);
+        // the archive walk: a holding fee is dated at the rollover and the samples of that second are judged AFTER it
+        let walk_to = match &ev {
+            JournalEvent::Fee { kind: FeeKind::Holding, time, .. } => time.saturating_sub(1),
+            _ => time,
+        };
+        self.walk_advance(walk_to, prev_seq);
+        self.max_time = self.max_time.max(time);
+        if self.quick_fail_due && !self.terminal && !matches!(ev, JournalEvent::Fail { .. } | JournalEvent::Meta { .. } | JournalEvent::Fee { kind: FeeKind::Commission, .. }) {
+            self.f.add_once(FindingClass::MissedFail, ctx, "a Fail{PhaseQuick} right after the closing slice", "another event", "the quick tally is above 0.028 S and the account was not failed");
+            self.quick_fail_due = false;
+        }
         self.apply(ctx, &ev, &proof);
         if !matches!(ev, JournalEvent::Meta { .. }) {
             self.last_time = self.last_time.max(time);
@@ -661,7 +686,7 @@ impl<'a> Replay<'a> {
             }
         }
         self.check_intent(ctx, intent, market, qty, time, IntentUse::Fill { side, order_kind: kind, sl, tp });
-        self.stage2_fill(ctx, market, side, kind, intent);
+        self.walk_fill(ctx, market, kind, intent);
         let existing = self.positions.get(&market).copied();
         let out = match engine::apply_fill(existing.map(|p| p.p), eside(side), qty, price, time, engine::day_index(time)) {
             Ok(o) => o,
@@ -712,12 +737,12 @@ impl<'a> Replay<'a> {
             }
         }
         self.check_intent(ctx, intent, market, qty, time, IntentUse::Close { reason, position_side: side });
-        self.stage2_close(ctx, market, reason);
+        self.walk_close(ctx, market, reason);
         let Some(pos) = self.positions.get(&market).copied() else {
             self.f.add(FindingClass::PositionMismatch, ctx, "an open position in this market", "none", "Close without a position");
             return;
         };
-        let pos_side = if pos.p.qty > 0 { Side::Long } else { Side::Short };
+        let pos_side = if pos.p.qty.is_positive() { Side::Long } else { Side::Short };
         if pos_side != side {
             self.f.add(FindingClass::PositionMismatch, ctx, side_name(pos_side), side_name(side), "Close names the other side than the open position");
             return;
@@ -811,24 +836,29 @@ impl<'a> Replay<'a> {
     }
 
     fn on_tight_start(&mut self, ctx: Ctx, p_open: i64, r: i64, l_start: i64, g_peak: i64, l_level: i64) {
-        self.stage2_floor(ctx, FloorKind::TightStart, [p_open, r, l_start, g_peak, l_level]);
-        match engine::check_tight_start(&self.st, p_open, r, l_start, g_peak, l_level) {
+        let claims = engine::check_tight_start(&self.st, p_open, r, l_start, g_peak, l_level);
+        let exp = self.walk_floor(ctx, FloorKind::TightStart, [p_open, r, l_start, g_peak, l_level], claims.is_ok());
+        match claims {
             Ok(ns) => self.st = ns,
             Err(e) => {
                 self.f.add(FindingClass::FloorMismatch, ctx, "a TightStart that follows the formulas", format!("{e:?}"), "tight start claim");
-                self.st = AccountState { tight_on: true, r, l_start, g_peak, l_level, ..self.st };
+                // a wrong claim must not poison what follows: continue from the numbers the samples give, if there are any
+                let v = exp.unwrap_or([p_open, r, l_start, g_peak, l_level]);
+                self.st = AccountState { tight_on: true, r: v[1], l_start: v[2], g_peak: v[3], l_level: v[4], ..self.st };
             }
         }
         self.bump_epoch();
     }
 
     fn on_floor_raised(&mut self, ctx: Ctx, g_peak: i64, l_level: i64) {
-        self.stage2_floor(ctx, FloorKind::FloorRaised, [0, 0, 0, g_peak, l_level]);
-        match engine::check_floor_raised(&self.st, g_peak, l_level) {
+        let claims = engine::check_floor_raised(&self.st, g_peak, l_level);
+        let exp = self.walk_floor(ctx, FloorKind::FloorRaised, [0, 0, 0, g_peak, l_level], claims.is_ok());
+        match claims {
             Ok(ns) => self.st = ns,
             Err(e) => {
                 self.f.add(FindingClass::FloorMismatch, ctx, "a FloorRaised that follows the formulas", format!("{e:?}"), "floor raise claim");
-                self.st = AccountState { g_peak, l_level, ..self.st };
+                let v = exp.unwrap_or([0, 0, 0, g_peak, l_level]);
+                self.st = AccountState { g_peak: v[3], l_level: v[4], ..self.st };
             }
         }
         self.bump_epoch();
@@ -846,7 +876,7 @@ impl<'a> Replay<'a> {
     }
 
     fn on_breach(&mut self, ctx: Ctx, time: i64, l_level: i64, b_after: i64) {
-        self.stage2_floor(ctx, FloorKind::Breach, [0, 0, 0, 0, l_level]);
+        let _ = self.walk_floor(ctx, FloorKind::Breach, [0, 0, 0, 0, l_level], true);
         if !self.is_flat() {
             self.f.add(FindingClass::FloorMismatch, ctx, "every position closed before the Breach", format!("{} open positions", self.positions.len()), "Breach with open positions");
         }
@@ -854,14 +884,15 @@ impl<'a> Replay<'a> {
             Ok(ns) => self.st = ns,
             Err(e) => {
                 self.f.add(FindingClass::FloorMismatch, ctx, "a Breach that follows the formulas", format!("{e:?}"), "breach claim");
-                self.st = AccountState { tight_on: false, r: 0, l_start: 0, g_peak: 0, l_level: 0, lock_until: time.saturating_add(43_200), flat: true, ..self.st };
+                self.st = engine::end_tight_if_flat(&self.st, true);
+                self.st.lock_until = time.saturating_add(engine::consts::LOCK_SECS);
             }
         }
         self.bump_epoch();
     }
 
     fn on_fail(&mut self, ctx: Ctx, reason: FailReason, b_after: i64) {
-        self.stage2_floor(ctx, FloorKind::Fail(reason), [0, 0, 0, 0, 0]);
+        let _ = self.walk_floor(ctx, FloorKind::Fail(reason), [0, 0, 0, 0, 0], true);
         if b_after != self.st.b {
             self.f.add(FindingClass::FloorMismatch, ctx, self.st.b.to_string(), b_after.to_string(), "Fail.b_after is not the closed balance");
         }
@@ -880,6 +911,10 @@ impl<'a> Replay<'a> {
     fn on_meta(&mut self, ctx: Ctx, flat: bool, samples_hash: &[u8; 32], intents_hash: &[u8; 32], engine_version: u16) {
         if engine_version != engine::ENGINE_VERSION {
             self.f.add(FindingClass::EngineVersion, ctx, engine::ENGINE_VERSION.to_string(), engine_version.to_string(), "Meta.engine_version");
+        }
+        if self.quick_fail_due && !self.terminal {
+            self.f.add_once(FindingClass::MissedFail, ctx, "a Fail{PhaseQuick} right after the closing slice", "none before the batch ended", "the quick tally is above 0.028 S and the account was not failed");
+            self.quick_fail_due = false;
         }
         if flat != self.is_flat() {
             self.f.add(FindingClass::StateMismatch, ctx, self.is_flat().to_string(), flat.to_string(), "Meta.flat disagrees with the replayed positions");
@@ -940,7 +975,6 @@ impl<'a> Replay<'a> {
             }
         }
         self.in_batch_events = 0;
-        self.stage2_meta(ctx);
     }
 
     // ------------------------------------------------------------------ pass lines and phases
@@ -949,7 +983,13 @@ impl<'a> Replay<'a> {
         self.is_flat() && self.st.flat
     }
 
-    pub fn on_pass_line(&mut self, kind: &PassKind, phase: u8, amount: u64, b: i64, seq: u64, hash: &[u8; 32]) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn on_pass_line(&mut self, kind: &PassKind, phase: u8, amount: u64, b: i64, seq: u64, hash: &[u8; 32], time: i64) {
+        if *kind == PassKind::Requested {
+            let prev = self.last_seq;
+            self.walk_advance(time, prev);
+            self.max_time = self.max_time.max(time);
+        }
         let mut reasons: Vec<String> = Vec::new();
         if seq > self.last_seq {
             reasons.push("journal_behind".into());
@@ -1034,7 +1074,7 @@ impl<'a> Replay<'a> {
     // ------------------------------------------------------------------ end
 
     pub fn finish(&mut self, as_of: bool) {
-        self.stage2_finish();
+        self.walk_finish();
         self.flush_fees();
         if self.in_batch_events > 0 && !as_of {
             let ctx = Ctx { seq: Some(self.last_seq), idx: None, time: self.last_time };
@@ -1122,12 +1162,215 @@ pub enum FloorKind {
     Fail(FailReason),
 }
 
-// Stage 2 hooks. Stage 1 compiles them to no-ops.
-impl<'a> Replay<'a> {
-    fn stage2_before(&mut self, _ctx: Ctx, _ev: &JournalEvent, _proof: &Option<PriceProof>) {}
-    fn stage2_fill(&mut self, _ctx: Ctx, _market: u16, _side: Side, _kind: OrderKind, _intent: u32) {}
-    fn stage2_close(&mut self, _ctx: Ctx, _market: u16, _reason: CloseReason) {}
-    fn stage2_floor(&mut self, _ctx: Ctx, _kind: FloorKind, _vals: [i64; 5]) {}
-    fn stage2_meta(&mut self, _ctx: Ctx) {}
-    fn stage2_finish(&mut self) {}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::archive::{ArchiveWriter, Sample};
+    use crate::intents::{header_line, IntentFile};
+    use crate::log::OpenedRec;
+
+    pub(crate) const T0: i64 = 1_791_813_600; // 2026-10-12 14:00:00 UTC
+
+    pub(crate) fn with_replay(samples: &[Sample], f: impl FnOnce(&mut Replay)) {
+        let rules = Rules::parse(crate::rules::sample_json().as_bytes()).unwrap();
+        let mut w = ArchiveWriter::new();
+        for s in samples {
+            w.push(s);
+        }
+        let arch = Archive::parse(&w.into_bytes()).unwrap();
+        let intents = IntentFile::parse(header_line().as_bytes()).unwrap();
+        let account = [1u8; 32];
+        let opened = OpenedRec {
+            account,
+            trader: [2; 32],
+            challenge_id: 0,
+            size_s: 100_000_000_000,
+            tier_index: 8,
+            phase: 1,
+            ruleset_version: 1,
+            genesis_hash: genesis_hash(&NativeSha256, &account),
+            time: T0,
+        };
+        let mut rp = Replay::new(&rules, &arch, &intents, opened, "primary", Default::default(), Default::default()).unwrap();
+        f(&mut rp);
+    }
+
+    pub(crate) fn sample(t: i64, mid: u64) -> Sample {
+        let ts_ns = u64::try_from(t).unwrap() * 1_000_000_000;
+        Sample { market: 0, source: 2, recv_ns: ts_ns, ts_ns, value: i128::from(mid) * 1_000_000, digest: [0; 32] }
+    }
+
+    pub(crate) fn long_position(fee_day: i64) -> Pos {
+        Pos { p: Position { qty: 1_000_000_000_000, avg_entry_e12: 1_080_000_000_000, timer_start: T0, opened_at: T0, fee_day }, sl: 0, tp: 0 }
+    }
+
+    pub(crate) fn ctx() -> Ctx {
+        Ctx { seq: Some(1), idx: Some(0), time: T0 }
+    }
+
+    #[test]
+    fn a_miss_is_reported_once_per_epoch_and_again_after_the_state_changed() {
+        with_replay(&[], |rp| {
+            rp.f.add_once(FindingClass::MissedBreach, ctx(), "a", "b", "m");
+            rp.f.add_once(FindingClass::MissedBreach, ctx(), "a", "b", "m");
+            assert_eq!(rp.f.list.len(), 1);
+            rp.f.add_once(FindingClass::MissedFail, ctx(), "a", "b", "m");
+            assert_eq!(rp.f.list.len(), 2, "another class is reported");
+            rp.bump_epoch();
+            rp.f.add_once(FindingClass::MissedBreach, ctx(), "a", "b", "m");
+            assert_eq!(rp.f.list.len(), 3, "the account changed in between");
+        });
+    }
+
+    #[test]
+    fn findings_are_capped() {
+        with_replay(&[], |rp| {
+            for _ in 0..(MAX_FINDINGS + 5) {
+                rp.f.add(FindingClass::StateMismatch, ctx(), "a", "b", "m");
+            }
+            assert_eq!(rp.f.list.len(), MAX_FINDINGS);
+            assert!(rp.f.truncated);
+        });
+    }
+
+    #[test]
+    fn a_night_already_charged_is_not_expected_again() {
+        let r = T0 + 8 * 3_600; // 22:00:00
+        let today = engine::day_index(r);
+        with_replay(&[sample(T0, 1_080_000_000_000)], |rp| {
+            rp.positions.insert(0, long_position(today));
+            rp.holding_expectations(ctx(), r);
+            assert!(rp.fee_exp.is_empty() && rp.f.list.is_empty());
+            rp.positions.insert(0, long_position(today - 1));
+            rp.holding_expectations(ctx(), r);
+            assert_eq!(rp.fee_exp.len(), 1);
+            assert_eq!((rp.fee_exp[0].time, rp.fee_exp[0].market), (r, 0));
+            assert_eq!(rp.positions[&0].p.fee_day, today, "charged once");
+            // the same night again: nothing new
+            rp.holding_expectations(ctx(), r);
+            assert_eq!(rp.fee_exp.len(), 1);
+        });
+    }
+
+    #[test]
+    fn a_rate_of_zero_expects_no_fee() {
+        let r = T0 + 8 * 3_600;
+        with_replay(&[sample(T0, 1_080_000_000_000)], |rp| {
+            let mut rules = rp.rules.clone();
+            rules.holding_fee_e6 = [0; 8];
+            let rules = Box::leak(Box::new(rules));
+            rp.rules = rules;
+            rp.positions.insert(0, long_position(engine::day_index(r) - 1));
+            rp.holding_expectations(ctx(), r);
+            assert!(rp.fee_exp.is_empty());
+        });
+    }
+
+    #[test]
+    fn no_mark_before_the_rollover_is_a_finding() {
+        let r = T0 + 8 * 3_600;
+        with_replay(&[sample(r + 5, 1_080_000_000_000)], |rp| {
+            rp.positions.insert(0, long_position(engine::day_index(r) - 1));
+            rp.holding_expectations(ctx(), r);
+            assert!(rp.fee_exp.is_empty());
+            assert_eq!(rp.f.list.len(), 1);
+            assert_eq!(rp.f.list[0].class, FindingClass::ArchiveMissing);
+        });
+    }
+
+    #[test]
+    fn the_gap_between_two_events_is_capped() {
+        with_replay(&[sample(T0, 1_080_000_000_000)], |rp| {
+            rp.positions.insert(0, long_position(engine::day_index(T0)));
+            rp.before_event(ctx(), T0 + MAX_ROLLOVER_GAP * 86_400 + 5 * 86_400);
+            let capped: Vec<_> = rp.f.list.iter().filter(|f| f.message.contains("too many holding-fee nights")).collect();
+            assert_eq!(capped.len(), 1);
+            assert!(rp.fee_exp.is_empty());
+        });
+        // exactly the cap is checked night by night
+        with_replay(&[sample(T0, 1_080_000_000_000)], |rp| {
+            rp.positions.insert(0, long_position(engine::day_index(T0)));
+            let t = T0 + 8 * 3_600 + (MAX_ROLLOVER_GAP - 1) * 86_400;
+            assert_eq!(engine::day_index(t) - engine::day_index(T0), MAX_ROLLOVER_GAP);
+            rp.before_event(ctx(), t);
+            assert!(!rp.f.list.iter().any(|f| f.message.contains("too many holding-fee nights")));
+        });
+    }
+
+    #[test]
+    fn expired_and_flushed_fees_are_reported_with_their_attribution() {
+        with_replay(&[], |rp| {
+            let exp = |time: i64| FeeExp { kind: FeeExpKind::Commission, market: 0, time, amount: 5, why: "w".into() };
+            rp.fee_exp.push(exp(T0));
+            rp.fee_exp.push(exp(T0 + 10));
+            rp.expire_fees(Ctx { seq: Some(9), idx: None, time: T0 + 10 }, T0 + 10);
+            assert_eq!(rp.f.list.len(), 1, "only the older one expires");
+            assert_eq!(rp.f.list[0].seq, Some(9));
+            assert_eq!(rp.fee_exp.len(), 1);
+            rp.last_seq = 12;
+            rp.flush_fees();
+            assert_eq!(rp.f.list.len(), 2);
+            assert_eq!(rp.f.list[1].seq, Some(12));
+            assert!(rp.fee_exp.is_empty());
+        });
+    }
+
+    #[test]
+    fn phase_failed_and_the_flat_flag() {
+        with_replay(&[], |rp| {
+            assert!(!rp.phase_failed());
+            rp.st.b = 92_000_000_000;
+            assert!(rp.phase_failed(), "at the static floor");
+            rp.st.b = 92_000_000_001;
+            assert!(!rp.phase_failed());
+            rp.st.q_tally = 2_800_000_000;
+            assert!(!rp.phase_failed());
+            rp.st.q_tally = 2_800_000_001;
+            assert!(rp.phase_failed());
+            rp.st.q_tally = 0;
+            rp.st.latch = true;
+            rp.st.b = 96_000_000_000;
+            assert!(rp.phase_failed(), "the latched floor is 0.96 S");
+            // state_summary_flat needs both the replayed positions and the stored flag
+            rp.st.flat = true;
+            assert!(rp.state_summary_flat());
+            rp.st.flat = false;
+            assert!(!rp.state_summary_flat());
+            rp.st.flat = true;
+            rp.positions.insert(0, long_position(0));
+            assert!(!rp.state_summary_flat());
+        });
+    }
+
+    #[test]
+    fn phase_verdicts_attribute_findings_to_the_phase_that_holds_their_sequence() {
+        with_replay(&[], |rp| {
+            rp.phases = vec![
+                PhaseRec { phase: 2, first_seq: Some(1), last_seq: Some(4), events: 4 },
+                PhaseRec { phase: 3, first_seq: Some(5), last_seq: Some(8), events: 4 },
+                PhaseRec { phase: 4, first_seq: None, last_seq: None, events: 0 },
+            ];
+            rp.f.add(FindingClass::StateMismatch, Ctx { seq: Some(5), idx: None, time: 0 }, "a", "b", "m");
+            let v = rp.phase_verdicts();
+            assert_eq!((v[0].valid, v[1].valid, v[2].valid), (true, false, true));
+            assert_eq!((v[0].first_seq, v[0].last_seq, v[0].events), (1, 4, 4));
+            // a finding with the boundary sequence belongs to the phase that ends there
+            rp.f.list.clear();
+            rp.f.add(FindingClass::StateMismatch, Ctx { seq: Some(4), idx: None, time: 0 }, "a", "b", "m");
+            let v = rp.phase_verdicts();
+            assert_eq!((v[0].valid, v[1].valid), (false, true));
+            rp.f.list.clear();
+            rp.f.add(FindingClass::StateMismatch, Ctx { seq: Some(8), idx: None, time: 0 }, "a", "b", "m");
+            assert_eq!((rp.phase_verdicts()[1].valid, rp.phase_verdicts()[0].valid), (false, true));
+            rp.f.list.clear();
+            rp.f.add(FindingClass::StateMismatch, Ctx { seq: Some(9), idx: None, time: 0 }, "a", "b", "m");
+            assert!(rp.phase_verdicts().iter().all(|p| p.valid));
+            // an invalid pass belongs to its phase only
+            rp.f.list.clear();
+            rp.passes.push(PassVerdict { phase: 3, kind: "requested", requested_seq: 6, valid: false, reasons: vec![] });
+            let v = rp.phase_verdicts();
+            assert_eq!((v[0].valid, v[1].valid, v[2].valid), (true, false, true));
+        });
+    }
 }
