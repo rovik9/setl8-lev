@@ -32,6 +32,15 @@ pub const PASS_NONE: u8 = 0;
 pub const PASS_REQUESTED: u8 = 1;
 pub const PASS_CONFIRMED: u8 = 2;
 
+/// `cancel_pass` is allowed this many seconds after the request (the evaluator never answered), DESIGN 6.2.
+pub const CANCEL_PASS_AFTER_SECS: i64 = 3_600;
+
+/// `reject_pass` reasons (DESIGN 6.3).
+pub const REJECT_NOT_FLAT: u8 = 0;
+pub const REJECT_JOURNAL_BEHIND: u8 = 1;
+pub const REJECT_TARGET_NOT_REACHED: u8 = 2;
+pub const REJECT_OTHER: u8 = 3;
+
 /// Maximum number of markets (DESIGN 6.1, `create_market`).
 pub const MAX_MARKETS: u16 = 128;
 

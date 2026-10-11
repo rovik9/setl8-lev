@@ -82,4 +82,28 @@ pub mod setl8_lev_trading {
     pub fn post_journal<'info>(ctx: Context<'_, '_, 'info, 'info, PostJournal<'info>>, batch_bytes: Vec<u8>) -> Result<()> {
         instructions::post_journal::handle_post_journal(ctx, batch_bytes)
     }
+
+    pub fn request_advance(ctx: Context<RequestAdvance>) -> Result<()> {
+        instructions::request_advance::handle_request_advance(ctx)
+    }
+
+    pub fn cancel_pass(ctx: Context<CancelPass>) -> Result<()> {
+        instructions::cancel_pass::handle_cancel_pass(ctx)
+    }
+
+    pub fn confirm_pass(ctx: Context<ConfirmPass>) -> Result<()> {
+        instructions::confirm_pass::handle_confirm_pass(ctx)
+    }
+
+    pub fn reject_pass(ctx: Context<RejectPass>, reason: u8) -> Result<()> {
+        instructions::reject_pass::handle_reject_pass(ctx, reason)
+    }
+
+    pub fn veto_pass(ctx: Context<VetoPass>) -> Result<()> {
+        instructions::veto_pass::handle_veto_pass(ctx)
+    }
+
+    pub fn finalize_pass(ctx: Context<FinalizePass>) -> Result<()> {
+        instructions::finalize_pass::handle_finalize_pass(ctx)
+    }
 }

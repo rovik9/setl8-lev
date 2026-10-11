@@ -175,6 +175,17 @@ pub enum Setl8Error {
     MetaTwice,
     #[msg("Meta engine_version differs from the program's engine")]
     EngineVersionMismatch,
+    // ---- M6: the pass flow (6084 and up) ----
+    #[msg("a pass is already requested or confirmed")]
+    PassAlreadyPending,
+    #[msg("tight mode is on")]
+    TightModeOn,
+    #[msg("the phase is failed (static floor or quick limit)")]
+    PhaseFailed,
+    #[msg("reject reason is not 0 (NotFlat), 1 (JournalBehind), 2 (TargetNotReached) or 3 (Other)")]
+    RejectReasonInvalid,
+    #[msg("the payout tally account does not parse")]
+    PayoutTallyInvalid,
 }
 
 #[cfg(test)]
@@ -232,5 +243,10 @@ mod tests {
         assert_eq!(u32::from(Setl8Error::MetaNotLast), 6081);
         assert_eq!(u32::from(Setl8Error::MetaTwice), 6082);
         assert_eq!(u32::from(Setl8Error::EngineVersionMismatch), 6083);
+        assert_eq!(u32::from(Setl8Error::PassAlreadyPending), 6084);
+        assert_eq!(u32::from(Setl8Error::TightModeOn), 6085);
+        assert_eq!(u32::from(Setl8Error::PhaseFailed), 6086);
+        assert_eq!(u32::from(Setl8Error::RejectReasonInvalid), 6087);
+        assert_eq!(u32::from(Setl8Error::PayoutTallyInvalid), 6088);
     }
 }
