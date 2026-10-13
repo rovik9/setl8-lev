@@ -12,7 +12,7 @@ description = "Dev-only LiteSVM integration tests for setl8-lev-trading. Not an 
 # The program crate is used only to build instructions and decode accounts; the program under test
 # is the built localnet .so (target/test-deploy/), loaded into LiteSVM.
 setl8-lev-trading = { path = "../programs/setl8-lev-trading", features = ["no-entrypoint", "localnet"] }
-setl8-shared-interfaces = { git = "https://github.com/rovik9/setl8-turbo", tag = "v0.4.0" }
+setl8-shared-interfaces = { git = "https://github.com/rovik9/setl8-turbo", tag = "v0.5.0" }
 anchor-lang = "0.32.1"
 base64 = "0.21"
 anchor-spl = { version = "0.32.1", default-features = false, features = ["token"] }

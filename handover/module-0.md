@@ -24,6 +24,7 @@ Note: `anchor-lang`/`anchor-spl` resolve to **0.32.2** in `Cargo.lock` (the `"0.
 cp ../setl8-vault/target/test-deploy/core_vault.so tests-rs/fixtures/core_vault.so
 ```
 If that file is missing, build it in a temp copy of the vault with the vault's `scripts/build-test-so.sh` (never inside the vault folder).
+UPDATE 2026-10-13: the fixture was rebuilt from a clean clone of the vault at core commit `9a5c179` with the vault's `scripts/build-test-so.sh` (localnet build); new sha256 `42c6267008ca25cfd7b71792f3797307292049d91420dbba8fe07dc3098c89a6` (the vault's own `target/test-deploy/core_vault.so` has the same hash, so the build is reproducible). The paragraph below is the original M0 history.
 This session used the existing `../setl8-vault/target/test-deploy/core_vault.so` (vault HEAD `591ced6`), sha256 `ed4c8c7cb93bd209cbd03ed46e58f755ca99e3aff681b4dc75b806cb6d762ba7`; nothing was built in or modified in the vault.
 
 ## Deviations from the earlier M0 draft

@@ -1,4 +1,4 @@
-//! Harness for the real vault: loads the vault fixture (`tests-rs/fixtures/core_vault.so`, vault HEAD 591ced6) AND our
+//! Harness for the real vault: loads the vault fixture (`tests-rs/fixtures/core_vault.so`, vault core commit 9a5c179) AND our
 //! localnet `.so` into one LiteSVM, runs the vault's `init_vault`, registers THIS program as a product, creates the USDC
 //! and USDT test mints, funds token accounts and exposes `open`, `account`, `vault_trader_state`.
 //!
@@ -46,8 +46,8 @@ pub const VAULT_ID: Pubkey = anchor_lang::prelude::pubkey!("2Z6WNsj4hNhKhmK9Cj3s
 /// The vault's LOCALNET admin pubkeys (public constants of ../setl8-vault/programs/core-vault/src/constants/admin.rs).
 pub const VAULT_SL8_ADMIN: Pubkey = anchor_lang::prelude::pubkey!("9SWJUtUBp1AyqfmAAFffbRfb4Qnr2u6Jqek8vHZMkFKP");
 pub const VAULT_ROV_ADMIN: Pubkey = anchor_lang::prelude::pubkey!("D1EuhXLMWzz9Ypy9gkkwjpzVhEXi4RoDc6NQZv9og1m6");
-/// sha256 of the vault fixture (vault HEAD 591ced6, localnet build).
-pub const VAULT_FIXTURE_SHA256: &str = "ed4c8c7cb93bd209cbd03ed46e58f755ca99e3aff681b4dc75b806cb6d762ba7";
+/// sha256 of the vault fixture (vault core commit 9a5c179, localnet build).
+pub const VAULT_FIXTURE_SHA256: &str = "42c6267008ca25cfd7b71792f3797307292049d91420dbba8fe07dc3098c89a6";
 pub const FEE_SPLIT_BPS: u16 = 6500;
 pub const RESET_LADDER_BPS: [u16; 5] = [10_000, 11_500, 12_000, 12_750, 13_000];
 /// A trader's starting USDC: 100,000 USDC in base units (6 decimals).

@@ -1,6 +1,6 @@
 # Module M6: the pass flow (DONE, verified 2026-10-11)
 
-`request_advance`, `cancel_pass`, `confirm_pass`, `reject_pass`, `veto_pass`, `finalize_pass`; phase transitions, graduation, `PayoutTally`, daily cap. Builds on M5a/M5b (`post_journal` already freezes `pass_pending == 2`). Tests run against the real vault fixture (HEAD 591ced6). No money amount is ever taken from a caller: `finalize_pass` and every other instruction here have NO arguments except `reject_pass(reason u8)`; the payout is `engine::payout_micro(S)` = 0.08 S.
+`request_advance`, `cancel_pass`, `confirm_pass`, `reject_pass`, `veto_pass`, `finalize_pass`; phase transitions, graduation, `PayoutTally`, daily cap. Builds on M5a/M5b (`post_journal` already freezes `pass_pending == 2`). Tests run against the real vault fixture (HEAD 591ced6 when written; rebuilt from core commit 9a5c179 on 2026-10-13, decision 51). No money amount is ever taken from a caller: `finalize_pass` and every other instruction here have NO arguments except `reject_pass(reason u8)`; the payout is `engine::payout_micro(S)` = 0.08 S.
 
 ## Accounts in order
 All six use `Box<Account>` for big accounts; `scripts/build-test-so.sh` and `scripts/anchor-build-checked.sh` report no frame over 4096 bytes. `#[event_cpi]` instructions end with `event_authority`, `program`.
