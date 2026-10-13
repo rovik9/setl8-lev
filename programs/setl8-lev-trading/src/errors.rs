@@ -217,6 +217,12 @@ pub enum Setl8Error {
     AccountNotTerminal,
     #[msg("vault account is not the owned PDA of this challenge")]
     InvalidVaultAccount,
+    #[msg("reset price: not exactly one tier has the failed account's size")]
+    ResetTierInvalid,
+    #[msg("reset price: the failed phase is beyond the reset ladder")]
+    ResetPhaseOutOfRange,
+    #[msg("reset price: the price does not fit in a u64")]
+    ResetPriceOverflow,
 }
 
 #[cfg(test)]
@@ -294,5 +300,8 @@ mod tests {
         assert_eq!(u32::from(Setl8Error::WalletHasHeldAccount), 6101);
         assert_eq!(u32::from(Setl8Error::AccountNotTerminal), 6102);
         assert_eq!(u32::from(Setl8Error::InvalidVaultAccount), 6103);
+        assert_eq!(u32::from(Setl8Error::ResetTierInvalid), 6104);
+        assert_eq!(u32::from(Setl8Error::ResetPhaseOutOfRange), 6105);
+        assert_eq!(u32::from(Setl8Error::ResetPriceOverflow), 6106);
     }
 }

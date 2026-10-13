@@ -59,12 +59,12 @@ The program does not hide this. It bounds the damage and makes it visible:
 What C cannot do: prove a breach that the evaluator left out, or stop the evaluator from failing an honest trader (section 4.7, 13).
 
 ### 1.4 Facts this design is built on (verified in the read-only repos, 2026-10-09)
-- `setl8-shared-interfaces` is at **v0.4.0** (the earlier note of v0.3.2 was stale). `request_payout` queues a claim and needs
+- `setl8-shared-interfaces` is pinned at **v0.5.0** (tag commit 3b0580c4; was v0.4.0 until 2026-10-13). `request_payout` queues a claim and needs
   7 accounts; `flag_trader_failed` takes the registry read-only. Vault commit `be97396` does not yet enforce the payout tally,
   but the sector must maintain it from day one (`PayoutTally`, section 10.5).
 - Vault `INACTIVITY_LIMIT_SECS` = 604,800 (7 days), `ACTIVITY_THROTTLE_SECS` = 86,400, `MAX_RESET_PHASES` = 8.
-- Vault `deposit_reset` today prices a reset as a percent of account SIZE. The locked ladder (decision 17) is a percent of
-  tier PRICE. **Vault change required** (prompt in `handover/vault-change-reset-price.md`). BUILD-BLOCKING for the reset module only.
+- Vault `deposit_reset` (core commit 9a5c179, shared-interfaces v0.5.0) prices a reset as `ceil(CURRENT tier cost x reset_price_bps[failed phase] / 10000)`,
+  a percent of the tier PRICE as it is registered NOW, not of account size and not of what the trader paid (decisions 17, 18, 51). No longer build-blocking.
 - Stork's Solana feed account stores only the latest value (`timestamp_ns: u64`, `quantized_value: i128`, 18 decimals). Neither
   Stork nor Pyth provides verified high/low/OHLC. The evaluator therefore must record its own sample stream (section 4.5).
 - The vault pays queued claims through a permissionless heartbeat (about every 5 days, pro rata). Total time from "button" to money is 2 days (ours) plus up to 5 days (vault).
@@ -446,7 +446,7 @@ Notation: `[S]` signer, `[W]` writable, `[R]` read-only. Compute figures are **e
 | Instruction | Signers | Accounts (R/W) | Effect |
 |---|---|---|---|
 | `open_account(tier_index, mint)` | trader [S], payer (= trader) [S] | trader; `WalletProfile` [W, init if needed]; `TradingAccount` [W, init]; config [R]; rule set [R]; `sector_authority` [R]; vault: program [R], `product_registry` [W], `trader_state` [W, created by vault], `vault_state` [R], `trader_token_account` [W], mint [R], pool token account [W], SL8 token account [W], token program [R], system program [R] | Checks cap 5 and not paused; transfers the 0.4% fee (trader -> SL8 token account, round UP); CPI `deposit_fee(amount = tier cost)` signed by `sector_authority`; initialises the account (`b = S`, phase 1, rule set snapshot); emits `Opened` (not part of the hash chain; `seq = 0`, `journal_hash = h_0`, see 8.3). The evaluator learns of it from the event. |
-| `reset_account(prev_challenge_id, mint)` | trader [S], payer [S] | as above plus the previous `TradingAccount` [W] and the previous vault `trader_state` [W] | Previous account must be locally `Failed`; CPI `deposit_reset(amount = ceil(tier cost x ladder[phase-1]), reset_phase = phase-1)`; new account starts at the SAME phase with fresh state; 0.4% fee on the reset price (assumption A-FEE-1). Needs the vault change (decision 18). |
+| `reset_account(prev_challenge_id, mint)` | trader [S], payer [S] | as above plus the previous `TradingAccount` [W] and the previous vault `trader_state` [W] | Previous account must be locally `Failed`; CPI `deposit_reset(amount = reset_amount_micro(...) = ceil(CURRENT tier cost x ladder[phase-1] / 10000), reset_phase = phase-1)` with the tier list read from the vault's `ProductRegistry`; the sector passes NEITHER `payout_count` NOR `account_size` (the vault copies both from the failed record); new account starts at the SAME phase with fresh state; 0.4% fee on the reset price (assumption A-FEE-1, still open). Vault side done (decision 51). |
 | `request_advance` (the "request payout and move to next phase" button) | trader [S], payer (= trader) [S] | `TradingAccount` [W]; config [R]; `sector_authority` [R]; vault `product_registry` [R], `trader_state` [W] | Requires: Active, not held, not paused, `flat == 1`, `tight_on == 0`, `pass_pending == 0`, `b >= 1.08 S` (program-maintained), phase not failed. Sets `pass_pending = 1`, `pass_requested_at = now`, CPI `record_activity`, emits `PassRequested{phase, amount 0.08 S (0 in phase 1), b, seq, journal_hash}`. No money moves and the phase does not change yet. |
 | `cancel_pass` | trader [S] | `TradingAccount` [W] | Only if `pass_pending == 1` and `now - pass_requested_at >= 3,600 s` (the evaluator never answered). Sets `pass_pending = 0`. |
 | `release_account` | trader [S] | `TradingAccount` [W], vault `trader_state` [W], registry [R] | Only calls `record_activity`; if the vault says `Abandoned` the local account is marked Abandoned and the wallet slot is freed. Otherwise it is a harmless activity refresh and the trader's own way to keep the vault clock alive if the evaluator stops touching it. |
@@ -640,8 +640,8 @@ price move in the gap, and tested. Each application becomes a `Fee{HoldingFee}` 
 ### 9.4 Commission
 Pending (decision 14). The rule set has a per-class `commission_e6` charged on notional at open and at close (ceil). The estimated closing commission is included in `E`, so a floor decision never ignores a cost the trader will pay on closing.
 
-### 9.5 Reset price (decision 17; needs the vault change of decision 18)
-`reset price = ceil(tier cost x ladder[failed_phase] / 10000)`, ladder (phase 1 to 5) = 10000, 11500, 12000, 12750, 13000 bps. The 0.4% fee applies on top (assumption, confirm). The account resumes in the same phase it failed.
+### 9.5 Reset price (decisions 17, 18, 51)
+`reset price = ceil(CURRENT tier cost x ladder[failed_phase_idx] / 10000)` through the shared `setl8_shared_interfaces::reset_price` (u128, rounded up), ladder (phase 1 to 5, index 0 to 4) = 10000, 11500, 12000, 12750, 13000 bps. The tier is the registered `challenge_sizes` entry whose size equals the failed account's size, read as it is NOW: a tier repriced or removed by `update_product_config` changes or blocks every pending reset of that size (never reprice or remove a tier while Failed records exist), and tier sizes must be unique. The program computes the amount with `reset_price::reset_amount_micro`. The 0.4% fee applies on top (assumption A-FEE-1, confirm). The account resumes in the same phase it failed. The table below is for the launch tier costs.
 | Size | Phase 1 (100%) | Phase 2 (115%) | Phase 3 (120%) | Phase 4 (127.5%) | Phase 5 (130%) |
 |---|---|---|---|---|---|
 | $2,500 | $30.00 | $34.50 | $36.00 | $38.25 | $39.00 |
@@ -858,7 +858,7 @@ No instruction in this program takes an admin-supplied or evaluator-supplied amo
 | A-MKT-1 | Launch with USD-quoted markets; cross pairs and non-USD indices wait for conversion feeds | 3.5 |
 | A-CAP-1 | At most 10 pending orders per account and 8 open positions (engine limits, enforced off-chain; the open-position cap exists to bound valuation work and per-account proofs) | 16 |
 | A-ADM-1 | Either admin may change markets and feeds (no delay); both admins for rule sets, limits, veto, evaluator rotation and upgrade | 14 |
-| A-VLT-1 | Vault changes the reset price formula (decision 18) before module M8 is built | 1.4, 9.5 |
+| A-VLT-1 | RESOLVED 2026-10-13 (decision 51): the vault (core commit 9a5c179, shared-interfaces v0.5.0) prices resets as ceil(current tier cost x ladder / 10000) | 1.4, 9.5 |
 | A-C-1 | A pass needs the evaluator's `confirm_pass`; the account is frozen during the 2-day delay | 10.3 |
 | A-C-2 | Price-proof and intent signatures are verified off-chain only in v1 | 3.3, 4.5 |
 | A-C-3 | Evaluator posts fills within about 60 s; not a chain rule in v1 | 8.5 |

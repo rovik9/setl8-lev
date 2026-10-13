@@ -24,6 +24,7 @@ pub mod constants;
 pub mod errors;
 pub mod events;
 pub mod instructions;
+pub mod reset_price;
 pub mod state;
 
 use instructions::*;

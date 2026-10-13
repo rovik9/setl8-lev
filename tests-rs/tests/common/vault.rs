@@ -465,6 +465,126 @@ impl VaultEnv {
     }
 }
 
+/// The parts of the vault's `ProductRegistry` this suite checks, decoded by hand from the Anchor/Borsh layout
+/// (8-byte discriminator, `product_program_id`, `challenge_sizes`, `fee_split_bps`, `max_payout_count`, `active`,
+/// `total_requests_emitted`, `reset_price_bps`, ...; the vault source at 9a5c179 is the reference).
+#[derive(Debug, PartialEq, Eq)]
+pub struct VaultRegistry {
+    pub product_program_id: Pubkey,
+    /// `(size, cost)` in registration order.
+    pub challenge_sizes: Vec<(u64, u64)>,
+    pub fee_split_bps: u16,
+    pub max_payout_count: u64,
+    pub active: bool,
+    pub reset_price_bps: Vec<u16>,
+}
+
+impl VaultEnv {
+    /// Reads the product registry back from the vault account.
+    pub fn registry(&self) -> VaultRegistry {
+        let acc = self.e.svm.get_account(&registry_pda()).expect("product registry exists");
+        assert_eq!(acc.owner, VAULT_ID);
+        let d = &acc.data;
+        let u64_at = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
+        let u32_at = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap()) as usize;
+        let mut o = 8;
+        let product_program_id = Pubkey::new_from_array(d[o..o + 32].try_into().unwrap());
+        o += 32;
+        let n = u32_at(o);
+        o += 4;
+        let mut challenge_sizes = Vec::new();
+        for _ in 0..n {
+            challenge_sizes.push((u64_at(o), u64_at(o + 8)));
+            o += 16;
+        }
+        let fee_split_bps = u16::from_le_bytes(d[o..o + 2].try_into().unwrap());
+        o += 2;
+        let max_payout_count = u64_at(o);
+        o += 8;
+        let active = d[o] != 0;
+        o += 1 + 8; // active, total_requests_emitted
+        let m = u32_at(o);
+        o += 4;
+        let reset_price_bps = (0..m).map(|i| u16::from_le_bytes(d[o + 2 * i..o + 2 * i + 2].try_into().unwrap())).collect();
+        VaultRegistry { product_program_id, challenge_sizes, fee_split_bps, max_payout_count, active, reset_price_bps }
+    }
+
+    /// Marks the vault record `Failed` the way `report_fail` would (`flag_trader_failed`). The `sector_authority` PDA
+    /// is flagged as a signer without a signature, which works because this environment runs with signature
+    /// verification off (the vault only checks the key and the flag; our program's `invoke_signed` is what provides it
+    /// in production).
+    pub fn flag_vault_failed(&mut self, trader: &Pubkey, challenge_id: u64) -> TransactionResult {
+        let ix = si::flag_trader_failed(
+            VAULT_ID,
+            sector_authority_pda(),
+            registry_pda(),
+            &[AccountMeta::new(vault_trader_state_pda(trader, challenge_id), false)],
+            si::FlagTraderFailedArgs { trader_wallet: *trader, product_program_id: PROGRAM_ID, challenge_id },
+        );
+        self.send_plain(ix)
+    }
+
+    /// The vault's `deposit_reset` called DIRECTLY (not through our program: M8 does not exist yet), with the
+    /// `sector_authority` PDA flagged as a signer as in `flag_vault_failed`. The trader signs for real.
+    pub fn vault_deposit_reset(&mut self, trader: &Keypair, prev_id: u64, new_id: u64, amount: u64, reset_phase: u8) -> TransactionResult {
+        let tk = trader.pubkey();
+        let ix = si::deposit_reset(
+            VAULT_ID,
+            sector_authority_pda(),
+            registry_pda(),
+            &[
+                AccountMeta::new(vault_trader_state_pda(&tk, prev_id), false),
+                AccountMeta::new(vault_trader_state_pda(&tk, new_id), false),
+                AccountMeta::new(tk, true),
+                AccountMeta::new_readonly(system_program::ID, false),
+                AccountMeta::new_readonly(self.vault_state, false),
+                AccountMeta::new_readonly(tk, true),
+                AccountMeta::new(self.trader_token(&tk), false),
+                AccountMeta::new_readonly(self.usdc, false),
+                AccountMeta::new(self.usdc_pool, false),
+                AccountMeta::new(self.vault_sl8_usdc, false),
+                AccountMeta::new_readonly(spl_token::ID, false),
+            ],
+            si::DepositResetArgs { amount, trader_wallet: tk, product_program_id: PROGRAM_ID, prev_challenge_id: prev_id, new_challenge_id: new_id, reset_phase },
+        );
+        let s = dup(trader);
+        self.e.send(&[ix], &[&s])
+    }
+
+    /// Overwrites `account_size` (offset 80) and `payout_count` (offset 88) of a vault `TraderState` in place.
+    pub fn edit_vault_record(&mut self, trader: &Pubkey, challenge_id: u64, account_size: Option<u64>, payout_count: Option<u64>) {
+        let addr = vault_trader_state_pda(trader, challenge_id);
+        let mut acc = self.e.svm.get_account(&addr).expect("vault trader state");
+        if let Some(v) = account_size {
+            acc.data[80..88].copy_from_slice(&v.to_le_bytes());
+        }
+        if let Some(v) = payout_count {
+            acc.data[88..96].copy_from_slice(&v.to_le_bytes());
+        }
+        self.e.svm.set_account(addr, acc).unwrap();
+    }
+
+    /// `update_product_config` by both vault admins (signature verification is off), keeping everything but the tiers.
+    pub fn vault_set_tiers(&mut self, tiers: Vec<(u64, u64)>) -> TransactionResult {
+        let cur = self.registry();
+        let ix = si::update_product_config(
+            VAULT_ID,
+            VAULT_SL8_ADMIN,
+            VAULT_ROV_ADMIN,
+            registry_pda(),
+            &[],
+            si::UpdateProductConfigArgs {
+                product_program_id: PROGRAM_ID,
+                challenge_sizes: tiers.into_iter().map(|(size, cost)| si::ChallengeSize { size, cost }).collect(),
+                fee_split_bps: cur.fee_split_bps,
+                max_payout_count: cur.max_payout_count,
+                reset_price_bps: cur.reset_price_bps,
+            },
+        );
+        self.send_plain(ix)
+    }
+}
+
 /// All `Opened` events emitted through `emit_cpi!` (inner instructions to our program) in a transaction.
 pub fn opened_events(meta: &TransactionMetadata) -> Vec<Opened> {
     let mut out = Vec::new();
