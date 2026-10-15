@@ -1,0 +1,23 @@
+[package]
+name = "setl8-lev-evaluator"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Reference evaluator for setl8-lev-trading (DESIGN 1.3, 4.3): the venue's order book, valuation, rules and journal batches as a deterministic library. No I/O, no clock, no floats."
+
+[lib]
+name = "evaluator"
+
+# The core has NO crates.io dependencies: only the workspace crates. Hashing is the crate's own SHA-256 (sha256.rs),
+# signature checking is injected (`IntentVerifier`). journal-types is used WITHOUT its `native-sha2` feature.
+[dependencies]
+setl8-lev-engine = { path = "../engine" }
+setl8-lev-journal-types = { path = "../journal-types", default-features = false }
+
+[dev-dependencies]
+setl8-lev-journal-types = { path = "../journal-types" }
+setl8-lev-verifier = { path = "../verifier" }
+proptest = "1"
+sha2 = "0.10"
+ed25519-dalek = "1"
+serde_json = "1"

@@ -1,0 +1,791 @@
+//! Test support (no dependencies, std only): a seeded PRNG (xorshift64*) and a generator of random but reproducible
+//! account histories - price paths with fat tails, gaps, quiet periods, session closes, weekend gaps and holding-fee
+//! nights, and a trader who fires every kind of order. A history is a list of [`Step`]s; the harness feeds them to an
+//! [`crate::Evaluator`] (and, in `tests-rs`, posts the batches through the real program). Every path is a pure function of a `u64` seed.
+use std::collections::BTreeSet;
+
+use crate::codec::{IntentKind, OrderIntent};
+
+/// xorshift64* (Vigna): small, fast, good enough, and identical everywhere.
+#[derive(Clone, Debug)]
+pub struct Rng(u64);
+
+impl Rng {
+    pub fn new(seed: u64) -> Rng {
+        // splitmix64 scrambles the seed so nearby seeds give unrelated streams, and zero is never the state
+        let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        Rng(if z == 0 { 0x2545_F491_4F6C_DD1D } else { z })
+    }
+
+    pub fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// Uniform in `lo..=hi`.
+    pub fn range(&mut self, lo: i64, hi: i64) -> i64 {
+        if hi <= lo {
+            return lo;
+        }
+        let span = (i128::from(hi) - i128::from(lo) + 1) as u128;
+        let v = u128::from(self.next_u64()) % span;
+        (i128::from(lo) + v as i128) as i64
+    }
+
+    /// True with probability `ppm` / 1,000,000.
+    pub fn chance(&mut self, ppm: u32) -> bool {
+        self.next_u64() % 1_000_000 < u64::from(ppm)
+    }
+
+    pub fn pick<T: Copy>(&mut self, xs: &[T]) -> T {
+        xs[(self.next_u64() % xs.len() as u64) as usize]
+    }
+
+    /// Roughly normal, standard deviation 1000 (Irwin-Hall of four uniforms).
+    pub fn normal_milli(&mut self) -> i64 {
+        let s: i64 = (0..4).map(|_| self.range(-1000, 1000)).sum();
+        s * 1000 / 1155
+    }
+}
+
+/// The market classes the generator uses.
+#[derive(Clone, Debug)]
+pub struct MarketSpec {
+    pub id: u16,
+    pub class: u8,
+    pub symbol: String,
+    /// PriceProof source: 2 GMX tickers, 3 GMX signed report (proof carries a 32-byte digest), 4 Hyperliquid.
+    pub source: u8,
+    pub start_price: u64,
+    pub max_age_secs: u16,
+    pub spread_e6: u32,
+    pub sessions: Vec<(u16, u16)>,
+}
+
+/// One input of a history, in arrival order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    Sample { market: u16, sec: i64, mid: u64 },
+    Order { nonce: u32, intent: OrderIntent },
+    /// Backend time advances to `sec` with no input.
+    Tick { sec: i64 },
+    /// A posting opportunity: drain the batches (and post them).
+    Post { sec: i64, heartbeat: bool },
+    /// The trader presses "request payout and move to the next phase" at `sec`.
+    Pass { sec: i64, plan: PassPlan },
+}
+
+/// What happens after the button is pressed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassPlan {
+    /// The evaluator confirms; the delay runs out and anyone finalizes (phase 1: the next phase starts at once).
+    Confirm,
+    /// The evaluator never answers; the trader cancels after an hour.
+    Unanswered,
+    /// Confirmed, then both admins veto.
+    Veto,
+    /// The evaluator has queued events the chain has not seen: `reject_pass(JournalBehind)`.
+    JournalBehind,
+    /// A pending order is left: `reject_pass(Other)`.
+    PendingLeft,
+}
+
+/// The kind of story a history tells (the campaigns count what happened, not what was planned).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scenario {
+    Noise,
+    Breach,
+    StaticFail,
+    QuickFail,
+    Pass,
+    Night,
+    Closed,
+    TightClean,
+}
+
+/// A complete history.
+#[derive(Clone, Debug)]
+pub struct PathSpec {
+    pub seed: u64,
+    pub scenario: Scenario,
+    /// Index into the ten launch tiers (DESIGN 9.2).
+    pub tier: usize,
+    pub size_micro: i64,
+    pub phase: u8,
+    pub opened_time: i64,
+    pub markets: Vec<MarketSpec>,
+    pub commission_e6: [u32; 8],
+    pub steps: Vec<Step>,
+    /// Maximum events per batch the harness uses for this path (a different SPLIT shape per path).
+    pub batch_max_events: usize,
+    pub end: i64,
+}
+
+pub const TIER_SIZES_DOLLARS: [i64; 10] = [2_500, 5_000, 10_000, 15_000, 20_000, 25_000, 50_000, 75_000, 100_000, 200_000];
+const USD: i64 = 1_000_000;
+const E12: u64 = 1_000_000_000_000;
+/// 2026-10-12 (a Monday) 00:00:00 UTC.
+pub const MONDAY: i64 = 1_791_763_200;
+const DAY: i64 = 86_400;
+const FULL_WEEK: [(u16, u16); 1] = [(0, 10_080)];
+
+fn symbol_of(class: u8, id: u16) -> String {
+    format!("M{id}C{class}")
+}
+
+/// One market's evolving price.
+#[derive(Clone, Debug)]
+struct MarketGen {
+    spec: MarketSpec,
+    price: u64,
+    next_due: i64,
+    /// Session windows closed right now (frozen price, samples keep coming).
+    frozen: bool,
+}
+
+struct Plot {
+    rng: Rng,
+    t: i64,
+    steps: Vec<Step>,
+    mk: Vec<MarketGen>,
+    used: BTreeSet<i64>,
+    nonce: u32,
+    size: i64,
+    /// Notional multiple of the main position in thousandths of S, and its side, for profit-space moves.
+    k_milli: i64,
+    long: bool,
+    allow_collide: bool,
+    /// The newest second any emitted sample carries (orders and posts are dated with it).
+    last: i64,
+    /// Margin the script has committed (every order assumed to fill and never to shrink), micro-USD.
+    pub committed: i64,
+}
+
+impl Plot {
+    fn new(rng: Rng, t0: i64, size: i64, markets: &[MarketSpec], allow_collide: bool) -> Plot {
+        let mk = markets.iter().map(|m| MarketGen { spec: m.clone(), price: m.start_price, next_due: t0, frozen: false }).collect();
+        Plot { rng, t: t0, steps: Vec::new(), mk, used: BTreeSet::new(), nonce: 1, size, k_milli: 1_000, long: true, allow_collide, last: t0, committed: 0 }
+    }
+
+    fn emit_sample(&mut self, m: usize, mut sec: i64) {
+        if !self.allow_collide {
+            while self.used.contains(&sec) {
+                sec += 1;
+            }
+        }
+        self.used.insert(sec);
+        self.last = self.last.max(sec);
+        let (id, mid) = (self.mk[m].spec.id, self.mk[m].price);
+        self.steps.push(Step::Sample { market: id, sec, mid });
+    }
+
+    /// One sample of the primary market now and of every other market that is due. With steps of `dt` seconds a
+    /// secondary market is sampled `m` seconds after the primary (never later than the next step), or at the same second when
+    /// collisions are allowed.
+    fn tick(&mut self, dt: i64) {
+        let t = self.t;
+        self.emit_sample(0, t);
+        for m in 1..self.mk.len() {
+            let off = if self.allow_collide { 0 } else { m as i64 };
+            if self.mk[m].next_due <= t && off < dt {
+                let sec = t + off;
+                self.emit_sample(m, sec);
+                let gap = i64::from(self.mk[m].spec.max_age_secs / 4).clamp(10, 300);
+                self.mk[m].next_due = t + gap;
+            }
+        }
+    }
+
+    /// Multiplies a market's price by `1 + ppb / 1e9`.
+    fn bump(&mut self, m: usize, ppb: i64) {
+        let p = i128::from(self.mk[m].price);
+        let n = p + p * i128::from(ppb) / 1_000_000_000;
+        self.mk[m].price = u64::try_from(n.max(1)).unwrap_or(1);
+    }
+
+    /// Random-walk the secondary markets one step.
+    fn wander_others(&mut self, base_ppb: i64) {
+        for m in 1..self.mk.len() {
+            let z = self.rng.normal_milli();
+            let mut r = base_ppb * z / 1000;
+            if self.rng.chance(20_000) {
+                r *= 5;
+            }
+            if self.rng.chance(2_000) {
+                r *= 25;
+            }
+            if !self.mk[m].frozen {
+                self.bump(m, r);
+            }
+        }
+    }
+
+    /// Price change of the primary market, in ppb, that moves the open profit of the main position by `g_ppm` of S.
+    fn s_to_ppb(&self, g_ppm: i64) -> i64 {
+        let k = self.k_milli.max(1);
+        let v = i128::from(g_ppm) * 1_000_000 / i128::from(k);
+        let v = i64::try_from(v).unwrap_or(i64::MAX);
+        if self.long {
+            v
+        } else {
+            -v
+        }
+    }
+
+    /// Runs `secs` seconds in steps of `dt`: the main position gains `g_ppm` of S in total (plus noise of `sigma_ppm` of S per step).
+    fn run(&mut self, secs: i64, dt: i64, g_ppm: i64, sigma_ppm: i64, others_ppb: i64) {
+        let n = (secs / dt).max(1);
+        for _ in 0..n {
+            self.t += dt;
+            let z = self.rng.normal_milli();
+            let mut noise = sigma_ppm * z / 1000;
+            if self.rng.chance(15_000) {
+                noise *= 4;
+            }
+            let step_g = g_ppm / n + noise;
+            let ppb = self.s_to_ppb(step_g);
+            self.bump(0, ppb);
+            self.wander_others(others_ppb);
+            self.tick(dt);
+        }
+    }
+
+    /// An immediate jump of the main position's profit by `g_ppm` of S (a gap), then one sample.
+    fn gap(&mut self, g_ppm: i64) {
+        self.t += 1;
+        let ppb = self.s_to_ppb(g_ppm);
+        self.bump(0, ppb);
+        self.tick(1);
+    }
+
+    fn qty_for(&self, m: usize, k_milli: i64) -> u64 {
+        let notional = i128::from(self.size) * i128::from(k_milli) / 1000;
+        let q = notional * i128::from(E12) / i128::from(self.mk[m].price.max(1));
+        let q = (q / 1000) * 1000;
+        u64::try_from(q.clamp(1_000, i128::from(i64::MAX / 4))).unwrap_or(1_000)
+    }
+
+    fn nonce(&mut self) -> u32 {
+        let n = self.nonce;
+        self.nonce += 1;
+        n
+    }
+
+    fn order(&mut self, intent: OrderIntent) -> u32 {
+        let nonce = self.nonce();
+        self.steps.push(Step::Order { nonce, intent });
+        nonce
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn intent(&self, kind: IntentKind, m: usize, side: u8, qty: u64, price: u64, sl: u64, tp: u64, target: u32) -> OrderIntent {
+        OrderIntent { kind, market: self.mk[m].spec.id, side, qty, price_e12: price, sl_e12: sl, tp_e12: tp, target_nonce: target, client_time: self.last }
+    }
+
+    fn market_order(&mut self, m: usize, long: bool, qty: u64, sl: u64, tp: u64) -> u32 {
+        let it = self.intent(IntentKind::Market, m, if long { 0 } else { 1 }, qty, 0, sl, tp, 0);
+        self.order(it)
+    }
+
+    fn close_order(&mut self, m: usize, qty: u64) -> u32 {
+        let it = self.intent(IntentKind::Close, m, 0, qty, 0, 0, 0, 0);
+        self.order(it)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn limit_order(&mut self, m: usize, long: bool, qty: u64, level: u64, stop: bool, sl: u64, tp: u64) -> u32 {
+        let kind = if stop { IntentKind::Stop } else { IntentKind::Limit };
+        let it = self.intent(kind, m, if long { 0 } else { 1 }, qty, level, sl, tp, 0);
+        self.order(it)
+    }
+
+    fn cancel_order(&mut self, m: usize, target: u32) {
+        let it = self.intent(IntentKind::Cancel, m, 0, 0, 0, 0, 0, target);
+        self.order(it);
+    }
+
+    fn set_sl_tp(&mut self, m: usize, sl: u64, tp: u64) {
+        let it = self.intent(IntentKind::SetSlTp, m, 0, 0, 0, sl, tp, 0);
+        self.order(it);
+    }
+
+    /// Opens the main position (market 0) of `k_milli` thousandths of S.
+    fn open_main(&mut self, long: bool, k_milli: i64, sl: u64, tp: u64) {
+        self.long = long;
+        self.k_milli = k_milli;
+        let q = self.qty_for(0, k_milli);
+        self.market_order(0, long, q, sl, tp);
+    }
+
+    fn post(&mut self, heartbeat: bool) {
+        let sec = self.last;
+        self.steps.push(Step::Post { sec, heartbeat });
+    }
+
+    fn price(&self, m: usize) -> u64 {
+        self.mk[m].price
+    }
+
+    /// `price x (1 + ppm/1e6)`.
+    fn scaled(&self, m: usize, ppm: i64) -> u64 {
+        let p = i128::from(self.mk[m].price);
+        u64::try_from((p + p * i128::from(ppm) / 1_000_000).max(1)).unwrap_or(1)
+    }
+}
+
+struct Ctx {
+    size: i64,
+    lev0: i64,
+    phase: u8,
+}
+
+fn k_range(ctx: &Ctx) -> (i64, i64) {
+    // main position notional between 0.4 S and 45% of the margin capacity (S x leverage), at most 25 S
+    let hi = (ctx.lev0 * 450).min(25_000);
+    (400.min(hi), hi.max(500))
+}
+
+fn main_k(rng: &mut Rng, ctx: &Ctx) -> i64 {
+    let (lo, hi) = k_range(ctx);
+    rng.range(lo, hi)
+}
+
+fn pick_source(rng: &mut Rng) -> u8 {
+    match rng.range(0, 99) {
+        0..=69 => 2,
+        70..=84 => 3,
+        _ => 4,
+    }
+}
+
+fn markets_for(rng: &mut Rng, closed_scenario: bool) -> Vec<MarketSpec> {
+    let n = rng.range(1, 3);
+    let mut v = Vec::new();
+    // primary: FX major 65%, crypto major 15%, metal 10%, index 10%
+    let r = rng.range(0, 99);
+    let (class, price, spread, age): (u8, u64, u32, u16) = if r < 65 {
+        (0, rng.range(900, 1400) as u64 * E12 / 1000, rng.range(10, 60) as u32, 900)
+    } else if r < 80 {
+        (6, rng.range(20_000, 90_000) as u64 * E12, rng.range(30, 120) as u32, 900)
+    } else if r < 90 {
+        (2, rng.range(1_800, 3_200) as u64 * E12, rng.range(20, 80) as u32, 900)
+    } else {
+        (3, rng.range(3_000, 6_000) as u64 * E12, rng.range(15, 60) as u32, 900)
+    };
+    v.push(MarketSpec { id: 0, class, symbol: symbol_of(class, 0), source: pick_source(rng), start_price: price, max_age_secs: age, spread_e6: spread, sessions: FULL_WEEK.to_vec() });
+    for i in 1..n {
+        let id = i as u16;
+        let (class, price) = *[(6u8, 30_000u64 * E12), (0, 1_100_000_000_000), (4, 80 * E12), (5, 150 * E12)].get(rng.range(0, 3) as usize).unwrap_or(&(0, E12));
+        // a market with Monday to Friday 13:30-20:00 UTC sessions when a closed market is wanted
+        let sessions = if closed_scenario && i == 1 {
+            (0..5u16).map(|d| (d * 1440 + 13 * 60 + 30, d * 1440 + 20 * 60)).collect()
+        } else {
+            FULL_WEEK.to_vec()
+        };
+        v.push(MarketSpec { id, class, symbol: symbol_of(class, id), source: pick_source(rng), start_price: price, max_age_secs: 900, spread_e6: rng.range(10, 100) as u32, sessions });
+    }
+    v
+}
+
+/// The leverage of a class in the launch rule set.
+pub fn leverage_of(class: u8) -> i64 {
+    [50, 20, 20, 20, 10, 5, 5, 2].get(usize::from(class)).copied().unwrap_or(1)
+}
+
+/// Generates the history of `seed`.
+pub fn generate(seed: u64) -> PathSpec {
+    let mut rng = Rng::new(seed);
+    // scenario mix (ppm): chosen so that the coverage floors of the gate run are cleared with a wide margin
+    let r = rng.range(0, 999);
+    let scenario = match r {
+        0..=99 => Scenario::Breach,
+        100..=149 => Scenario::StaticFail,
+        150..=219 => Scenario::QuickFail,
+        220..=269 => Scenario::Pass,
+        270..=429 => Scenario::Night,
+        430..=489 => Scenario::Closed,
+        490..=599 => Scenario::TightClean,
+        _ => Scenario::Noise,
+    };
+    let tier = if matches!(scenario, Scenario::Pass) { rng.range(3, 9) as usize } else { rng.range(0, 9) as usize };
+    let size = TIER_SIZES_DOLLARS[tier] * USD;
+    let phase = match scenario {
+        Scenario::Pass => rng.range(1, 5) as u8,
+        _ => rng.range(1, 5) as u8,
+    };
+    let markets = markets_for(&mut rng, matches!(scenario, Scenario::Closed));
+    let mut commission = [0u32; 8];
+    // commission on some paths (never together with a quick-limit story: handover/module-10.md, finding on commission)
+    if !matches!(scenario, Scenario::QuickFail) && rng.chance(250_000) {
+        commission = [rng.range(5, 40) as u32, 30, 30, 30, 40, 50, 60, 80];
+    }
+    let opened_time = match scenario {
+        Scenario::Night => MONDAY + 2 * DAY + 20 * 3_600 + rng.range(0, 3_000),
+        Scenario::Closed => MONDAY + 2 * DAY + 19 * 3_600 + rng.range(0, 1_500),
+        _ => MONDAY + rng.range(0, 3) * DAY + 8 * 3_600 + rng.range(0, 3 * 3_600),
+    };
+    let t0 = opened_time + 600;
+    let ctx = Ctx { size, lev0: leverage_of(markets[0].class), phase };
+    let collide = rng.chance(50_000);
+    let mut p = Plot::new(rng.clone(), t0, size, &markets, collide);
+    p.rng = Rng::new(seed ^ 0xDEAD_BEEF);
+    match scenario {
+        Scenario::Noise => noise(&mut p, &ctx),
+        Scenario::Breach => breach(&mut p, &ctx),
+        Scenario::StaticFail => static_fail(&mut p, &ctx),
+        Scenario::QuickFail => quick_fail(&mut p, &ctx),
+        Scenario::Pass => pass(&mut p, &ctx),
+        Scenario::Night => night(&mut p, &ctx),
+        Scenario::Closed => closed(&mut p, &ctx),
+        Scenario::TightClean => tight_clean(&mut p, &ctx),
+    }
+    // a final tick one second after the last input closes the last second
+    let end = p.last + 2;
+    p.steps.push(Step::Tick { sec: end });
+    p.steps.push(Step::Post { sec: end, heartbeat: true });
+    let batch_max_events = [8usize, 8, 8, 6, 4, 3, 2][(seed % 7) as usize];
+    PathSpec { seed, scenario, tier, size_micro: size, phase, opened_time, markets, commission_e6: commission, steps: p.steps, batch_max_events, end }
+}
+
+// ---------------------------------------------------------------------------------------------- scenarios
+
+fn sprinkle_posts(p: &mut Plot) {
+    // posting opportunities are part of the path; the harness drains at these points
+    let n = p.steps.len();
+    if n.is_multiple_of(3) {
+        p.post(false);
+    }
+}
+
+fn noise(p: &mut Plot, ctx: &Ctx) {
+    let secs = p.rng.range(200, 900);
+    let k = main_k(&mut p.rng, ctx).min(1500);
+    p.run(30, 5, 0, 800, 100_000);
+    let long = p.rng.chance(500_000);
+    p.open_main(long, k, 0, 0);
+    let mut pend: Vec<(u32, usize)> = Vec::new();
+    let mut elapsed = 0;
+    while elapsed < secs {
+        let dt = p.rng.pick(&[2i64, 3, 5, 10, 15]);
+        let drift = p.rng.range(-4_000, 4_000);
+        p.run(dt * 6, dt, drift, 1_500, 200_000);
+        elapsed += dt * 6;
+        sprinkle_posts(p);
+        match p.rng.range(0, 11) {
+            0 => {
+                // a market order on the main market
+                let kk = p.rng.range(100, 700);
+                let long = p.rng.chance(500_000);
+                let q = p.qty_for(0, kk);
+                p.market_order(0, long, q, 0, 0);
+            }
+            1 | 2 | 8 | 9 => {
+                // a limit or a stop around a SECONDARY market; every pending order of a market has the same side, so a
+                // pending order can only open or add (a pure reduce by a pending order has no Fill event: finding in module-10.md)
+                if p.mk.len() > 1 {
+                    let m = p.rng.range(1, p.mk.len() as i64 - 1) as usize;
+                    let long = m % 2 == 1;
+                    let stop = p.rng.chance(400_000);
+                    let off = p.rng.range(500, 6_000);
+                    let below = long != stop;
+                    let level = p.scaled(m, if below { -off } else { off });
+                    let kk = p.rng.range(80, 500);
+                    let q = p.qty_for(m, kk);
+                    let (sl, tp) = if p.rng.chance(400_000) {
+                        let w1 = p.rng.range(1_000, 6_000);
+                        let w2 = p.rng.range(1_000, 6_000);
+                        if long {
+                            (scaled_level(level, -w1), scaled_level(level, w2))
+                        } else {
+                            (scaled_level(level, w1), scaled_level(level, -w2))
+                        }
+                    } else {
+                        (0, 0)
+                    };
+                    if p.committed + margin_of(p, m, kk) < ctx.size * 45 / 100 {
+                        p.committed += margin_of(p, m, kk);
+                        let n = p.limit_order(m, long, q, level, stop, sl, tp);
+                        pend.push((n, m));
+                    }
+                }
+            }
+            3 => {
+                if let Some((n, m)) = pend.pop() {
+                    p.cancel_order(m, n);
+                }
+            }
+            4 => {
+                let m = p.rng.range(0, p.mk.len() as i64 - 1) as usize;
+                p.close_order(m, 0);
+            }
+            5 => {
+                // flip the main position
+                let q = p.qty_for(0, k * 3 / 2);
+                p.market_order(0, !p.long, q, 0, 0);
+                p.long = !p.long;
+            }
+            6 => {
+                let w1 = p.rng.range(3_000, 12_000);
+                let w2 = p.rng.range(3_000, 12_000);
+                let (sl, tp) = if p.long { (p.scaled(0, -w1), p.scaled(0, w2)) } else { (p.scaled(0, w1), p.scaled(0, -w2)) };
+                p.set_sl_tp(0, sl, tp);
+            }
+            7 => {
+                // add to the main position with SL and TP attached
+                let w = p.rng.range(4_000, 15_000);
+                let (sl, tp) = if p.long { (p.scaled(0, -w), p.scaled(0, w)) } else { (p.scaled(0, w), p.scaled(0, -w)) };
+                let q = p.qty_for(0, k / 3);
+                let l = p.long;
+                p.market_order(0, l, q, sl, tp);
+            }
+            _ => {}
+        }
+    }
+    p.run(60, 5, 0, 500, 100_000);
+    p.close_order(0, 0);
+    p.run(30, 5, 0, 300, 50_000);
+}
+
+fn scaled_level(level: u64, ppm: i64) -> u64 {
+    let p = i128::from(level);
+    u64::try_from((p + p * i128::from(ppm) / 1_000_000).max(1)).unwrap_or(1)
+}
+
+fn margin_of(p: &Plot, m: usize, k_milli: i64) -> i64 {
+    let lev = leverage_of(p.mk[m].spec.class).max(1);
+    let notional = i128::from(p.size) * i128::from(k_milli) / 1000;
+    i64::try_from(notional / i128::from(lev)).unwrap_or(i64::MAX)
+}
+
+fn breach(p: &mut Plot, ctx: &Ctx) {
+    let k = main_k(&mut p.rng, ctx);
+    let long = p.rng.chance(500_000);
+    p.run(20, 5, 0, 600, 100_000);
+    p.post(false);
+    let sl_tp_noise = p.rng.chance(200_000);
+    p.open_main(long, k, 0, 0);
+    p.run(10, 5, 0, 300, 100_000);
+    // climb to a peak
+    let g1 = p.rng.range(12_000, 70_000);
+    let dt = p.rng.pick(&[2i64, 5, 10]);
+    let _r0 = p.rng.range(6, 40);
+    p.run(dt * _r0, dt, g1, 600, 150_000);
+    p.post(false);
+    if p.rng.chance(400_000) {
+        // a second leg up
+        let g = p.rng.range(5_000, 40_000);
+        p.run(dt * 10, dt, g, 400, 100_000);
+    }
+    if sl_tp_noise {
+        p.set_sl_tp(0, 0, 0);
+    }
+    // then fall back through the tight floor: 5.1% to 7.5% of S below the peak (a gap in 15% of the cases)
+    let d = p.rng.range(51_000, 75_000);
+    if p.rng.chance(150_000) {
+        p.gap(-d);
+    } else {
+        let _r0 = p.rng.range(8, 30);
+        p.run(dt * _r0, dt, -d, 500, 100_000);
+    }
+    p.post(false);
+    // a re-entry attempt during the lock, a pending order that survives it
+    p.run(20, 5, 0, 300, 100_000);
+    let q = p.qty_for(0, k / 2);
+    p.market_order(0, long, q, 0, 0);
+    let level = if long { p.scaled(0, -1_000) } else { p.scaled(0, 1_000) };
+    let q2 = p.qty_for(0, 300);
+    p.limit_order(0, long, q2, level, false, 0, 0);
+    if p.rng.chance(500_000) {
+        // the lock (12 h) runs out
+        p.run(13 * 3_600, 900, 0, 4_000, 300_000);
+        p.run(120, 10, 0, 800, 100_000);
+        p.post(false);
+        p.close_order(0, 0);
+        p.run(60, 10, 0, 300, 50_000);
+    } else {
+        p.run(120, 10, 0, 300, 50_000);
+    }
+}
+
+fn static_fail(p: &mut Plot, ctx: &Ctx) {
+    let k = main_k(&mut p.rng, ctx);
+    let long = p.rng.chance(500_000);
+    p.run(20, 5, 0, 600, 100_000);
+    p.open_main(long, k, 0, 0);
+    p.run(30, 5, 0, 500, 100_000);
+    p.post(false);
+    if p.rng.chance(500_000) {
+        // a gap straight through the static floor
+        let d = p.rng.range(82_000, 250_000);
+        p.gap(-d);
+    } else {
+        // a slide through it
+        let d = p.rng.range(85_000, 130_000);
+        let _r0 = p.rng.range(40, 300);
+        p.run(_r0, 5, -d, 500, 100_000);
+    }
+    p.run(30, 5, 0, 300, 100_000);
+}
+
+fn quick_fail(p: &mut Plot, ctx: &Ctx) {
+    let k = main_k(&mut p.rng, ctx);
+    p.run(20, 5, 0, 600, 100_000);
+    let n = p.rng.range(3, 6);
+    for _ in 0..n {
+        let long = p.rng.chance(500_000);
+        p.post(false);
+        p.open_main(long, k, 0, 0);
+        let gain = p.rng.range(18_000, 40_000);
+        let age = p.rng.range(12, 38);
+        p.run(age, 3, gain, 200, 100_000);
+        p.close_order(0, 0);
+        p.run(15, 5, 0, 300, 100_000);
+    }
+    p.run(30, 5, 0, 300, 100_000);
+}
+
+fn tight_clean(p: &mut Plot, ctx: &Ctx) {
+    let k = main_k(&mut p.rng, ctx);
+    let long = p.rng.chance(500_000);
+    p.run(20, 5, 0, 600, 100_000);
+    let use_stops = p.rng.chance(500_000);
+    // protective levels that the profit leg will hit
+    let g = p.rng.range(12_000, 50_000);
+    let lvl_ppb = p.s_to_ppb(g * 6 / 10);
+    let (sl, tp) = if use_stops {
+        let px = p.price(0);
+        let tp = scaled_level(px, i64::try_from(i128::from(lvl_ppb) / 1000).unwrap_or(0));
+        (0, tp)
+    } else {
+        (0, 0)
+    };
+    p.long = long;
+    p.k_milli = k;
+    p.open_main(long, k, sl, tp);
+    p.run(10, 5, 0, 300, 100_000);
+    let dt = p.rng.pick(&[3i64, 5, 10]);
+    p.run(dt * 20, dt, g, 500, 100_000);
+    p.post(false);
+    p.close_order(0, 0);
+    p.run(60, 5, 0, 300, 100_000);
+    // and once more, small, to restart a mode
+    p.open_main(!long, k / 2, 0, 0);
+    let _r0 = p.rng.range(11_000, 25_000);
+    p.run(dt * 10, dt, _r0, 400, 100_000);
+    p.close_order(0, 0);
+    p.run(30, 5, 0, 300, 100_000);
+}
+
+fn pass(p: &mut Plot, ctx: &Ctx) {
+    let k = main_k(&mut p.rng, ctx).max(2_000.min(k_range(ctx).1));
+    let long = p.rng.chance(500_000);
+    p.run(20, 5, 0, 500, 100_000);
+    p.open_main(long, k, 0, 0);
+    p.run(10, 5, 0, 200, 100_000);
+    // +8.4% to +10.5% of S in 5 to 15 minutes, little noise
+    let target = p.rng.range(91_000, 112_000);
+    let secs = p.rng.range(300, 900);
+    p.run(secs, 15, target, 300, 100_000);
+    p.post(false);
+    p.run(70, 5, 0, 200, 100_000);
+    p.close_order(0, 0);
+    p.run(20, 5, 0, 100, 50_000);
+    p.post(false);
+    let r = p.rng.range(0, 99);
+    let plan = match r {
+        0..=69 => PassPlan::Confirm,
+        70..=79 => PassPlan::Unanswered,
+        80..=87 => PassPlan::Veto,
+        88..=93 => PassPlan::JournalBehind,
+        _ => PassPlan::PendingLeft,
+    };
+    match plan {
+        PassPlan::PendingLeft => {
+            let level = p.scaled(0, -20_000);
+            let q = p.qty_for(0, 300);
+            p.limit_order(0, true, q, level, false, 0, 0);
+            p.run(10, 5, 0, 100, 50_000);
+            p.post(false);
+        }
+        PassPlan::JournalBehind => {
+            // a position opened but not yet posted when the button is pressed
+            let q = p.qty_for(0, 300);
+            p.market_order(0, true, q, 0, 0);
+            p.run(10, 5, 0, 100, 50_000);
+        }
+        _ => {}
+    }
+    let sec = p.last + 2;
+    p.steps.push(Step::Pass { sec, plan });
+    p.t = sec;
+    p.last = sec;
+    let _ = ctx.phase;
+}
+
+fn night(p: &mut Plot, ctx: &Ctx) {
+    // a position held through one or more 22:00 UTC rollovers (a weekend when the path starts on a Friday)
+    let k = main_k(&mut p.rng, ctx).min(2_000);
+    let long = p.rng.chance(500_000);
+    p.run(60, 10, 0, 400, 100_000);
+    p.open_main(long, k, 0, 0);
+    p.run(120, 10, 0, 400, 100_000);
+    p.post(false);
+    let hours = p.rng.pick(&[3i64, 5, 8, 14, 26, 50]);
+    // sparse samples through the night (every 15 minutes), no profit story: a mild drift
+    let drift = p.rng.range(-20_000, 25_000);
+    p.run(hours * 3_600, 900, drift, 900, 400_000);
+    p.post(false);
+    if p.rng.chance(700_000) {
+        p.close_order(0, 0);
+        p.run(120, 10, 0, 300, 50_000);
+    }
+}
+
+fn closed(p: &mut Plot, ctx: &Ctx) {
+    // market 1 trades 13:30-20:00 UTC, Monday to Friday; the path starts a little before the Friday close
+    let k = main_k(&mut p.rng, ctx).min(1_500);
+    let has_m1 = p.mk.len() > 1;
+    p.run(60, 10, 0, 400, 100_000);
+    if has_m1 {
+        let q = p.qty_for(1, k / 2);
+        let long = p.rng.chance(500_000);
+        p.market_order(1, long, q, 0, 0);
+    }
+    p.run(300, 10, 0, 400, 100_000);
+    p.post(false);
+    // run through the close: the closed market's price freezes but its samples keep coming
+    for m in 1..p.mk.len() {
+        p.mk[m].frozen = true;
+    }
+    p.run(2 * 3_600, 300, 0, 600, 200_000);
+    // orders into the closed market are refused
+    if has_m1 {
+        let q = p.qty_for(1, 200);
+        p.market_order(1, true, q, 0, 0);
+        p.close_order(1, 0);
+    }
+    p.post(false);
+    // over the weekend (two more days) the frozen samples continue every 15 minutes
+    let weekend = p.rng.chance(500_000);
+    let secs = if weekend { 2 * DAY + 4 * 3_600 } else { 17 * 3_600 };
+    p.run(secs, 900, 0, 800, 300_000);
+    for m in 1..p.mk.len() {
+        p.mk[m].frozen = false;
+        // the reopen gap
+        let g = p.rng.range(-8_000_000, 8_000_000);
+        p.bump(m, g);
+    }
+    p.run(300, 10, 0, 600, 200_000);
+    p.post(false);
+    if has_m1 {
+        p.close_order(1, 0);
+    }
+    p.run(60, 10, 0, 300, 100_000);
+}

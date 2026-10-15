@@ -1593,6 +1593,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "setl8-lev-evaluator"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "proptest",
+ "serde_json",
+ "setl8-lev-engine",
+ "setl8-lev-journal-types",
+ "setl8-lev-verifier",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "setl8-lev-journal-types"
 version = "0.1.0"
 dependencies = [

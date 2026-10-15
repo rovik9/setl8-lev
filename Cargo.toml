@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/engine", "crates/journal-types", "crates/verifier", "programs/*"]
+members = ["crates/engine", "crates/journal-types", "crates/verifier", "crates/evaluator", "programs/*"]
 # tests-rs is its own workspace (own Cargo.lock/target), same pattern as the vault,
 # so litesvm's dependency tree never touches this lockfile.
 exclude = ["tests-rs"]
