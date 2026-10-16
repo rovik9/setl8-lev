@@ -39,7 +39,6 @@ pub fn tx_size(kind: BatchKind, n_markets: usize, batch_len: usize, compute_budg
     };
     let ix_accounts = fixed + n_markets;
     let n_keys = ix_accounts + usize::from(compute_budget_ix);
-    let n_ix = 1 + usize::from(compute_budget_ix);
     let ix = 1 + shortvec_len(ix_accounts) + ix_accounts + shortvec_len(data_len) + data_len;
     // SetComputeUnitLimit: program index, no accounts, 5 data bytes
     let budget = if compute_budget_ix { 1 + 1 + 1 + 5 } else { 0 };
@@ -47,7 +46,7 @@ pub fn tx_size(kind: BatchKind, n_markets: usize, batch_len: usize, compute_budg
         + 3 // message header
         + shortvec_len(n_keys) + 32 * n_keys
         + 32 // recent blockhash
-        + shortvec_len(n_ix) + ix + budget
+        + 1 /* instruction count: one or two, always one byte */ + ix + budget
 }
 
 /// Conservative compute-unit bound of a batch with `n_events` events (the `Meta` included) and `n_proofs` proofs.

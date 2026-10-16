@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use common::runner::*;
 use common::*;
-use evaluator::testkit::generate;
+use evaluator::testkit::{generate, generate_wild};
 use evaluator::*;
 use journal_types::JournalEvent;
 
@@ -50,7 +50,7 @@ impl Cover {
 }
 
 fn run_seed(seed: u64) -> Result<Cover, String> {
-    let spec = generate(seed);
+    let spec = if std::env::var("ENGINE_WILD").is_ok() { generate_wild(seed) } else { generate(seed) };
     let mut chain = SimChain::default();
     let r = run_path(&spec, world_for(&spec), &mut chain);
     let w = &r.world;
@@ -74,6 +74,16 @@ fn run_seed(seed: u64) -> Result<Cover, String> {
     // the reference works on one phase at a time; paths that changed phase are checked up to the phase change by the verifier only
     if r.pass.finalized == 0 && r.pass.confirmed == 0 {
         common::reference::check(w, &batches, &samples).map_err(|e| format!("reference: {e} ({:?})", spec.scenario))?;
+    }
+    // the SPLIT model is exact for every batch of every path: the size follows from the real bytes, the compute bound from the shape
+    for b in &batches {
+        let len = b.batch.to_bytes().expect("encodes").len();
+        if b.tx_bytes != evaluator::batch::tx_size(b.kind, b.markets.len(), len, false) || b.cu != evaluator::batch::cu_estimate(b.kind, b.batch.events.len(), b.batch.proofs.len()) {
+            return Err(format!("batch model off: {} bytes vs {len}-byte batch ({:?})", b.tx_bytes, spec.scenario));
+        }
+        if b.tx_bytes > 1_232 || b.cu > 200_000 || b.batch.events.len() > 8 || b.batch.proofs.len() > 3 {
+            return Err(format!("batch above the chain's limits ({:?})", spec.scenario));
+        }
     }
     let st = w.ev.stats();
     let evs = events(&r.items);
@@ -109,7 +119,7 @@ fn batches_of(items: &[Item]) -> Vec<Batch> {
 fn engine_only_campaign() {
     let n: u64 = std::env::var("ENGINE_PATHS").ok().and_then(|v| v.parse().ok()).unwrap_or(2_000);
     let start: u64 = std::env::var("ENGINE_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
-    let threads = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4).min(16) as u64;
+    let threads = std::env::var("ENGINE_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4).min(16) as u64);
     let next = AtomicU64::new(0);
     let total = Mutex::new(Cover::default());
     let failures = Mutex::new(Vec::<(u64, String)>::new());

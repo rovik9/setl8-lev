@@ -162,6 +162,8 @@ struct Plot {
     k_milli: i64,
     long: bool,
     allow_collide: bool,
+    /// Exploration mode: no guards against the known disagreements (`generate_wild`).
+    wild: bool,
     /// The newest second any emitted sample carries (orders and posts are dated with it).
     last: i64,
     /// Margin the script has committed (every order assumed to fill and never to shrink), micro-USD.
@@ -171,7 +173,7 @@ struct Plot {
 impl Plot {
     fn new(rng: Rng, t0: i64, size: i64, markets: &[MarketSpec], allow_collide: bool) -> Plot {
         let mk = markets.iter().map(|m| MarketGen { spec: m.clone(), price: m.start_price, next_due: t0, frozen: false }).collect();
-        Plot { rng, t: t0, steps: Vec::new(), mk, used: BTreeSet::new(), nonce: 1, size, k_milli: 1_000, long: true, allow_collide, last: t0, committed: 0 }
+        Plot { rng, t: t0, steps: Vec::new(), mk, used: BTreeSet::new(), nonce: 1, size, k_milli: 1_000, long: true, allow_collide, wild: false, last: t0, committed: 0 }
     }
 
     fn emit_sample(&mut self, m: usize, mut sec: i64) {
@@ -401,9 +403,20 @@ pub fn leverage_of(class: u8) -> i64 {
 
 /// Generates the history of `seed`.
 pub fn generate(seed: u64) -> PathSpec {
+    generate_inner(seed, false)
+}
+
+/// Exploration only (not part of any gate): noise histories WITHOUT the guards that keep the campaigns clear of the known
+/// disagreements (pending orders that can reduce, commission with quick closes, collisions, any side on any market). Run it
+/// with `ENGINE_WILD=1` to look for disagreements nobody has written down yet.
+pub fn generate_wild(seed: u64) -> PathSpec {
+    generate_inner(seed, true)
+}
+
+fn generate_inner(seed: u64, wild: bool) -> PathSpec {
     let mut rng = Rng::new(seed);
     // scenario mix (ppm): chosen so that the coverage floors of the gate run are cleared with a wide margin
-    let r = rng.range(0, 999);
+    let r = if wild { 900 } else { rng.range(0, 999) };
     let scenario = match r {
         0..=99 => Scenario::Breach,
         100..=149 => Scenario::StaticFail,
@@ -422,8 +435,9 @@ pub fn generate(seed: u64) -> PathSpec {
     };
     let markets = markets_for(&mut rng, matches!(scenario, Scenario::Closed));
     let mut commission = [0u32; 8];
-    // commission on some paths (never together with a quick-limit story: handover/module-10.md, finding on commission)
-    if !matches!(scenario, Scenario::QuickFail) && rng.chance(250_000) {
+    // commission on some paths. Never where quick profitable closes are common (quick-limit stories and the noise trader):
+    // a quick-limit fail with a commission is unpostable (handover/module-10.md, finding 2)
+    if (wild || !matches!(scenario, Scenario::QuickFail | Scenario::Noise)) && rng.chance(if wild { 600_000 } else { 250_000 }) {
         commission = [rng.range(5, 40) as u32, 30, 30, 30, 40, 50, 60, 80];
     }
     let opened_time = match scenario {
@@ -433,8 +447,9 @@ pub fn generate(seed: u64) -> PathSpec {
     };
     let t0 = opened_time + 600;
     let ctx = Ctx { size, lev0: leverage_of(markets[0].class), phase };
-    let collide = rng.chance(50_000);
+    let collide = rng.chance(if wild { 500_000 } else { 50_000 });
     let mut p = Plot::new(rng.clone(), t0, size, &markets, collide);
+    p.wild = wild;
     p.rng = Rng::new(seed ^ 0xDEAD_BEEF);
     match scenario {
         Scenario::Noise => noise(&mut p, &ctx),
@@ -480,17 +495,20 @@ fn noise(p: &mut Plot, ctx: &Ctx) {
         sprinkle_posts(p);
         match p.rng.range(0, 11) {
             0 => {
-                // a market order on the main market
+                // a market order on the main market (any market in wild mode)
                 let kk = p.rng.range(100, 700);
                 let long = p.rng.chance(500_000);
-                let q = p.qty_for(0, kk);
-                p.market_order(0, long, q, 0, 0);
+                // (wild: not on the market that carries pending orders, so that no pending order can only reduce)
+                let n_mk = p.mk.len() as i64;
+                let m = if p.wild && n_mk > 1 { p.rng.range(0, n_mk - 2) as usize } else { 0 };
+                let q = p.qty_for(m, kk);
+                p.market_order(m, long, q, 0, 0);
             }
             1 | 2 | 8 | 9 => {
                 // a limit or a stop around a SECONDARY market; every pending order of a market has the same side, so a
                 // pending order can only open or add (a pure reduce by a pending order has no Fill event: finding in module-10.md)
                 if p.mk.len() > 1 {
-                    let m = p.rng.range(1, p.mk.len() as i64 - 1) as usize;
+                    let m = if p.wild { p.mk.len() - 1 } else { p.rng.range(1, p.mk.len() as i64 - 1) as usize };
                     let long = m % 2 == 1;
                     let stop = p.rng.chance(400_000);
                     let off = p.rng.range(500, 6_000);

@@ -70,9 +70,7 @@ impl Evaluator {
                 return;
             }
         }
-        if upto > self.processed_through {
-            self.processed_through = upto;
-        }
+        self.processed_through = self.processed_through.max(upto);
     }
 
     pub(crate) fn push_unit(&mut self, events: Vec<QEvent>) {
@@ -132,7 +130,7 @@ impl Evaluator {
             let rate = self.rules.holding(class);
             if rate > 0 {
                 let s = self.mark_at_or_before(market, r).ok_or(EvalError::Invariant("no mark for a holding fee"))?;
-                let mark = if pos.p.qty > 0 { s.bid } else { s.ask };
+                let mark = if pos.p.qty.is_positive() { s.bid } else { s.ask };
                 let fee = engine::holding_fee_micro(pos.p.qty.unsigned_abs(), mark, rate, 1)?;
                 let amount = u64::try_from(fee).map_err(|_| EvalError::Overflow)?;
                 self.debit(fee)?;
@@ -195,9 +193,6 @@ impl Evaluator {
                 self.apply_sl_tp(q, x);
             }
         }
-        if x > self.processed_through {
-            self.processed_through = x;
-        }
         Ok(())
     }
 
@@ -209,7 +204,7 @@ impl Evaluator {
             let s = marks.get(m).and_then(|i| self.samples.get(*i)).ok_or(EvalError::Invariant("a position without a mark"))?;
             list.push((p.p, s.bid, s.ask));
             let class = self.market_cfg(*m).map(|c| c.class).ok_or(EvalError::Invariant("position in an unknown market"))?;
-            let mark = if p.p.qty > 0 { s.bid } else { s.ask };
+            let mark = if p.p.qty.is_positive() { s.bid } else { s.ask };
             comm = comm.checked_add(self.commission_micro(class, p.p.qty.unsigned_abs(), mark)?).ok_or(EvalError::Overflow)?;
         }
         Ok((engine::open_profit_micro(&list)?, comm))
@@ -260,7 +255,7 @@ impl Evaluator {
                 continue;
             }
             if let Some(p) = pos0.get(&m) {
-                let side = if p.p.qty > 0 { ESide::Buy } else { ESide::Sell };
+                let side = if p.p.qty.is_positive() { ESide::Buy } else { ESide::Sell };
                 if let Some(t) = engine::check_protective(side, p.sl, p.tp, s.bid, s.ask, true) {
                     let k = match t.kind {
                         ProtectiveKind::StopLoss => 0u8,
@@ -325,7 +320,7 @@ impl Evaluator {
     fn execute_trigger(&mut self, sec: i64, market: u16, kind: u8, j: usize) -> Result<(), EvalError> {
         let Some(pos) = self.positions.get(&market).copied() else { return Ok(()) };
         let s = *self.samples.get(j).ok_or(EvalError::Invariant("sample index"))?;
-        let long = pos.p.qty > 0;
+        let long = pos.p.qty.is_positive();
         let price = if long { s.bid } else { s.ask };
         let (reason, counter) = if kind == 0 { (CloseReason::StopLoss, &mut self.stats.sl_triggers) } else { (CloseReason::TakeProfit, &mut self.stats.tp_triggers) };
         *counter = counter.saturating_add(1);

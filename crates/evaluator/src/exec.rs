@@ -105,7 +105,7 @@ impl Evaluator {
                 let p = pos.ok_or(OrderReject::NoPosition)?;
                 let j = latest.ok_or(OrderReject::NoFreshPrice)?;
                 let s = self.samples.get(j).ok_or(OrderReject::NoFreshPrice)?;
-                let side = if p.p.qty > 0 { engine::Side::Buy } else { engine::Side::Sell };
+                let side = if p.p.qty.is_positive() { engine::Side::Buy } else { engine::Side::Sell };
                 for (level, kind) in [(it.sl_e12, StopKind::StopLoss), (it.tp_e12, StopKind::TakeProfit)] {
                     if level != 0 {
                         engine::validate_stop_level(side, kind, level, s.bid, s.ask).map_err(|_| OrderReject::InvalidLevel)?;
@@ -181,7 +181,7 @@ impl Evaluator {
             return Ok(());
         }
         let s = *self.samples.get(j).ok_or(EvalError::Invariant("sample index"))?;
-        let price = if pos.p.qty > 0 { s.bid } else { s.ask };
+        let price = if pos.p.qty.is_positive() { s.bid } else { s.ask };
         self.close_checked(t, it.market, qty, price, j, CloseReason::Manual, q.nonce)?;
         Ok(())
     }
@@ -221,7 +221,7 @@ impl Evaluator {
         let long = it.side == 0;
         let existing = self.positions.get(&it.market).copied();
         let (close_qty, open_qty) = match existing {
-            Some(p) if (p.p.qty > 0) != long => {
+            Some(p) if (p.p.qty.is_positive()) != long => {
                 let c = it.qty.min(p.p.qty.unsigned_abs());
                 (c, it.qty.saturating_sub(c))
             }
@@ -291,10 +291,7 @@ impl Evaluator {
         // ---- execution
         if close_qty > 0 && open_qty == 0 {
             // a pure reduce or close
-            let held_qty = existing.map(|p| p.p.qty.unsigned_abs()).unwrap_or(0);
-            let reason = CloseReason::Manual;
-            let _ = held_qty;
-            self.close_checked(t, it.market, close_qty, price, j, reason, nonce)?;
+            self.close_checked(t, it.market, close_qty, price, j, CloseReason::Manual, nonce)?;
             return Ok(Ok(()));
         }
         let mut events: Vec<QEvent> = Vec::new();
@@ -358,7 +355,7 @@ impl Evaluator {
 
     /// (credit, quick-tally delta) of closing `qty` of `pos` at `price` at `t`, without changing anything.
     pub(crate) fn preview_close(&self, pos: &Pos, qty: u64, price: u64, t: i64) -> Result<(i64, i64), EvalError> {
-        let long = pos.p.qty > 0;
+        let long = pos.p.qty.is_positive();
         let out = engine::apply_fill(Some(pos.p), eside(!long), qty, price, t, engine::day_index(t))?;
         Ok((out.balance_delta, out.quick_tally_delta))
     }
@@ -384,7 +381,7 @@ impl Evaluator {
     ) -> Result<(Vec<QEvent>, bool), EvalError> {
         let pos = self.positions.get(&market).copied().ok_or(EvalError::Invariant("close without a position"))?;
         let cfg = self.market_cfg(market).ok_or(EvalError::Invariant("close in an unknown market"))?;
-        let long = pos.p.qty > 0;
+        let long = pos.p.qty.is_positive();
         let out = engine::apply_fill(Some(pos.p), eside(!long), qty, price, t, engine::day_index(t))?;
         let slice = out.closed.ok_or(EvalError::Invariant("a closing fill has a slice"))?;
         engine::check_close(&engine::CloseClaim {
@@ -495,7 +492,7 @@ impl Evaluator {
             }
             let j = *self.marks.get(&m).ok_or(EvalError::Invariant("a position without a mark"))?;
             let s = *self.samples.get(j).ok_or(EvalError::Invariant("sample index"))?;
-            let price = if p.p.qty > 0 { s.bid } else { s.ask };
+            let price = if p.p.qty.is_positive() { s.bid } else { s.ask };
             let (_, tally) = self.preview_close(&p, qty, price, t)?;
             todo.push((tally, m, qty, price, j));
         }

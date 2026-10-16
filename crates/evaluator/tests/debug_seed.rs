@@ -2,12 +2,12 @@
 mod common;
 use common::runner::*;
 use common::*;
-use evaluator::testkit::{generate, Step};
+use evaluator::testkit::{generate, generate_wild, Step};
 
 #[test]
 fn debug_seed() {
     let Some(seed) = std::env::var("DEBUG_SEED").ok().and_then(|v| v.parse::<u64>().ok()) else { return };
-    let spec = generate(seed);
+    let spec = if std::env::var("DEBUG_WILD").is_ok() { generate_wild(seed) } else { generate(seed) };
     println!("scenario {:?} tier {} phase {} markets {:?} commission {:?} batch_max {}", spec.scenario, spec.tier, spec.phase, spec.markets.iter().map(|m| (m.id, m.class, m.start_price)).collect::<Vec<_>>(), spec.commission_e6, spec.batch_max_events);
     if std::env::var("SHOW_STEPS").is_ok() {
         for s in &spec.steps {

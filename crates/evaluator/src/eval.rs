@@ -467,3 +467,61 @@ impl Evaluator {
         self.ended_externally = true;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ev_for_unit_tests() -> Evaluator {
+        let market = MarketCfg {
+            id: 0,
+            class: 0,
+            source: 2,
+            feed_id: [7; 32],
+            max_age_secs: 60,
+            status: 1,
+            qty_step: 1_000,
+            qty_min: 1_000,
+            max_notional_micro: 1_000_000_000_000_000,
+            sessions: vec![(0, 10_080)],
+            half_spread_e6: 30,
+        };
+        let rules = RulesCfg {
+            ruleset_version: 1,
+            leverage_x: [50, 20, 20, 20, 10, 5, 5, 2],
+            holding_fee_e6: [100, 200, 400, 200, 400, 400, 1000, 1600],
+            commission_e6: [0; 8],
+            markets: vec![market],
+        };
+        let acct = AccountParams { account: [1; 32], trader: [2; 32], challenge_id: 0, size_micro: 100_000_000_000, phase: 2, tier_index: 8, opened_time: 1_700_000_000 };
+        Evaluator::new(rules, acct, Box::new(AcceptAll)).unwrap()
+    }
+
+    #[test]
+    fn the_first_internal_failure_is_kept_and_ends_the_account() {
+        let mut ev = ev_for_unit_tests();
+        assert_eq!(ev.fault(), None);
+        ev.fail_internal(EvalError::Overflow);
+        ev.fail_internal(EvalError::Invariant("later"));
+        assert_eq!(ev.fault(), Some(EvalError::Overflow));
+        assert!(ev.is_ended());
+    }
+
+    #[test]
+    fn a_faulted_evaluator_refuses_a_pass() {
+        let mut ev = ev_for_unit_tests();
+        ev.fail_internal(EvalError::Overflow);
+        let chain = ChainView { seq: ev.seq(), journal_hash: ev.head(), b: ev.state().b, flat: true, phase: 2 };
+        assert_eq!(ev.request_pass(1_700_000_001, &chain, ReplayCheck::Skipped), PassDecision::Reject(PassReject::Other));
+    }
+
+    #[test]
+    fn only_the_first_256_refusals_are_kept() {
+        let mut ev = ev_for_unit_tests();
+        for n in 0..300 {
+            ev.refuse(1, n, OrderReject::NoFreshPrice);
+        }
+        assert_eq!(ev.refusals().len(), 256);
+        assert_eq!(ev.stats().exec_refused, 300);
+    }
+}

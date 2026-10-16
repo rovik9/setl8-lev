@@ -307,3 +307,135 @@ fn intent_helper_is_consistent() {
     let i = OrderIntent { kind: IntentKind::Stop, market: 3, side: 1, qty: 5, price_e12: 6, sl_e12: 7, tp_e12: 8, target_nonce: 9, client_time: 10 };
     assert_eq!(OrderIntent::from_bytes(&i.to_bytes()), Some(i));
 }
+
+#[test]
+fn accept_all_takes_any_signature() {
+    use evaluator::{AcceptAll, Evaluator, IntentVerifier, SignedIntent};
+    assert!(AcceptAll.verify(&[0; 32], b"anything", &[0; 64]));
+    let mut ev = Evaluator::new(base_rules(vec![eur_market(0)]), params(S100K, 2, T_1400 - HOUR), Box::new(AcceptAll)).unwrap();
+    ev.on_sample_mid(0, T_1400, p4(10_000)).unwrap();
+    let s = SignedIntent { nonce: 1, order: market_order(0, true, MEUR, T_1400).to_bytes(), sig: [0; 64] };
+    assert_eq!(ev.on_order(&s), Ok(()));
+}
+
+#[test]
+fn a_pending_order_waits_for_the_second_after_its_client_time() {
+    let mut w = w0();
+    // accepted at T_1400 for a price the sample of the SAME second already satisfies: effective strictly after client_time
+    w.order(order(IntentKind::Limit, 0, 0, MEUR / 10, p4(10_000), 0, 0, 0, T_1400)).unwrap();
+    w.sample(0, T_1400 + 5, p4(10_000));
+    w.ev.tick(T_1400 + 6);
+    let bs = w.ev.drain_batches(&evaluator::BatchPolicy::MAX);
+    let fill_time = common::events_of(&bs).iter().find_map(|e| if let journal_types::JournalEvent::Fill { time, .. } = e { Some(*time) } else { None });
+    assert_eq!(fill_time, Some(T_1400 + 5), "the sample at T_1400 itself must not fill it");
+    assert_valid(&w, &bs);
+}
+
+#[test]
+fn a_pending_order_of_another_market_does_not_fill_on_this_markets_sample() {
+    let mut m1 = common::market(1, 0, "OTHER", 0);
+    m1.max_age_secs = 3_600;
+    let mut m0 = eur_market(0);
+    m0.half_spread_e6 = 0;
+    m0.max_age_secs = 3_600;
+    let mut w = World::new(base_rules(vec![m0, m1]), S100K, 2, T_1400 - HOUR);
+    w.sample(0, T_1400, p4(10_000));
+    w.sample(1, T_1400, p4(20_000));
+    // a buy limit on market 1 at 1.9000; market 0 trades at 1.0 (which would satisfy it by number)
+    w.order(order(IntentKind::Limit, 1, 0, MEUR / 10, p4(19_000), 0, 0, 0, T_1400)).unwrap();
+    w.sample(0, T_1400 + 10, p4(10_000));
+    w.sample(0, T_1400 + 20, p4(10_001));
+    w.ev.tick(T_1400 + 30);
+    assert_eq!(w.ev.stats().limit_fills, 0);
+    assert_eq!(w.ev.pending().len(), 1);
+}
+
+#[test]
+fn level_boundaries_are_strict() {
+    let mut w = w0();
+    let buy = |price, sl, tp| order(IntentKind::Limit, 0, 0, MEUR, price, sl, tp, 0, T_1400);
+    let sell = |price, sl, tp| order(IntentKind::Limit, 0, 1, MEUR, price, sl, tp, 0, T_1400);
+    let lv = p4(10_000);
+    // a level equal to the order's own price is on the wrong side, one step either way is the first valid value
+    assert_eq!(w.order(buy(lv, lv, 0)), Err(R::InvalidLevel));
+    assert_eq!(w.order(buy(lv, 0, lv)), Err(R::InvalidLevel));
+    assert_eq!(w.order(sell(lv, lv, 0)), Err(R::InvalidLevel));
+    assert_eq!(w.order(sell(lv, 0, lv)), Err(R::InvalidLevel));
+    assert!(w.order(buy(lv, lv - 1, lv + 1)).is_ok());
+    assert!(w.order(sell(lv, lv + 1, lv - 1)).is_ok());
+}
+
+#[test]
+fn notional_cap_is_inclusive_and_a_close_may_take_the_whole_position() {
+    let notional = engine::units::notional_micro(MEUR, p4(10_000)).unwrap();
+    let mut m = eur_market(0);
+    m.max_notional_micro = u64::try_from(notional).unwrap();
+    let mut w = World::new(base_rules(vec![m.clone()]), S100K, 2, T_1400 - HOUR);
+    w.sample(0, T_1400, p4(10_000));
+    let lim = |price| order(IntentKind::Limit, 0, 0, MEUR, price, 0, 0, 0, T_1400);
+    assert!(w.order(lim(p4(10_000))).is_ok(), "a notional equal to the cap is allowed");
+    assert_eq!(w.order(lim(p4(10_001))), Err(R::NotionalCap));
+    // closing exactly the position is fine, one step more is not
+    let mut w = w0();
+    w.order(market_order(0, true, MEUR, T_1400)).unwrap();
+    w.sample(0, T_1400 + 5, p4(10_000));
+    w.ev.tick(T_1400 + 6);
+    assert_eq!(w.order(close_order(0, MEUR + 1_000, T_1400 + 6)), Err(R::InvalidQuantity));
+    assert!(w.order(close_order(0, MEUR, T_1400 + 6)).is_ok());
+}
+
+#[test]
+fn set_levels_one_at_a_time() {
+    let mut w = w0();
+    w.order(market_order(0, true, MEUR, T_1400)).unwrap();
+    w.sample(0, T_1400 + 5, p4(10_000));
+    w.ev.tick(T_1400 + 6);
+    assert!(w.order(order(IntentKind::SetSlTp, 0, 0, 0, 0, p4(9_900), 0, 0, T_1400 + 6)).is_ok(), "stop-loss only");
+    assert!(w.order(order(IntentKind::SetSlTp, 0, 0, 0, 0, 0, p4(10_100), 0, T_1400 + 6)).is_ok(), "take-profit only");
+    assert!(w.order(order(IntentKind::SetSlTp, 0, 0, 0, 0, 0, 0, 0, T_1400 + 6)).is_ok(), "both cleared");
+}
+
+#[test]
+fn a_price_exactly_max_age_old_is_still_fresh() {
+    let mut m = eur_market(0);
+    m.max_age_secs = 60;
+    let mut w = World::new(base_rules(vec![m]), S100K, 2, T_1400 - HOUR);
+    w.sample(0, T_1400, p4(10_000));
+    w.ev.tick(T_1400 + 60);
+    assert!(w.order(market_order(0, true, MEUR, T_1400 + 60)).is_ok());
+    w.ev.tick(T_1400 + 61);
+    assert_eq!(w.order(market_order(0, true, MEUR, T_1400 + 61)), Err(R::NoFreshPrice));
+}
+
+#[test]
+fn a_sample_may_arrive_in_the_current_second_but_not_before_it() {
+    let mut w = w0();
+    w.ev.tick(T_1400 + 5);
+    assert!(w.ev.on_sample_mid(0, T_1400 + 5, p4(10_001)).is_ok());
+    assert_eq!(w.ev.on_sample_mid(0, T_1400 + 4, p4(10_002)), Err(evaluator::SampleError::OutOfOrder));
+}
+
+#[test]
+fn a_market_order_trades_on_the_newest_sample_that_existed_when_it_arrived() {
+    let mut m = eur_market(0);
+    m.half_spread_e6 = 0;
+    m.max_age_secs = 3_600;
+    let mut w = World::new(base_rules(vec![m]), S100K, 2, T_1400 - HOUR);
+    w.sample(0, T_1400 - 5, p4(10_000));
+    w.order(market_order(0, true, MEUR, T_1400)).unwrap();
+    w.sample(0, T_1400, p4(10_500)); // arrives after the order, same second: the order must not see it
+    w.ev.tick(T_1400 + 2);
+    let bs = w.ev.drain_batches(&evaluator::BatchPolicy::MAX);
+    let price = common::events_of(&bs).iter().find_map(|e| if let journal_types::JournalEvent::Fill { price_e12, .. } = e { Some(*price_e12) } else { None });
+    assert_eq!(price, Some(p4(10_000)));
+}
+
+#[test]
+fn two_updates_with_the_same_source_time_are_both_taken() {
+    let mut w = w0();
+    let t = u64::try_from(T_1400 + 3).unwrap() * 1_000_000_000;
+    let v = |p| i128::from(p4(p)) * 1_000_000;
+    assert!(w.ev.on_sample(0, t + 500, v(10_001), t + 600, [0; 32]).is_ok());
+    assert!(w.ev.on_sample(0, t + 500, v(10_002), t + 700, [0; 32]).is_ok(), "equal source times are not 'backwards'");
+    assert_eq!(w.ev.on_sample(0, t + 499, v(10_003), t + 800, [0; 32]), Err(evaluator::SampleError::MarketTimeBackwards));
+}

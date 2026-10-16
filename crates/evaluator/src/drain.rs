@@ -144,7 +144,7 @@ impl Evaluator {
             let b = self.seal(units, policy);
             out.push(b);
         }
-        if policy.heartbeat && self.processed_through > self.last_meta_time && matches!(self.status, Status::Active) {
+        if policy.heartbeat && self.processed_through > self.last_meta_time && matches!(self.status, Status::Active) && !self.ended_externally {
             out.push(self.seal(Vec::new(), policy));
         }
         out
@@ -196,10 +196,8 @@ impl Evaluator {
             self.samples_hashed += 1;
         }
         let intents_len = self.intents.len();
-        if self.intents_hashed < intents_len {
-            self.intents_hasher.update(&self.intents[self.intents_hashed..]);
-            self.intents_hashed = intents_len;
-        }
+        self.intents_hasher.update(self.intents.get(self.intents_hashed..).unwrap_or(&[]));
+        self.intents_hashed = intents_len;
         events.push(JournalEvent::Meta {
             time: meta_time,
             flat,
