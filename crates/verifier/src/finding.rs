@@ -45,10 +45,12 @@ pub enum FindingClass {
     TriggerMissed,
     TriggerFalse,
     ArchiveDisagreement,
+    // ---- M9b
+    PendingFillWithoutMargin,
 }
 
 impl FindingClass {
-    pub const ALL: [FindingClass; 39] = [
+    pub const ALL: [FindingClass; 40] = [
         FindingClass::HashChain,
         FindingClass::SequenceGap,
         FindingClass::BadGenesis,
@@ -88,6 +90,7 @@ impl FindingClass {
         FindingClass::TriggerMissed,
         FindingClass::TriggerFalse,
         FindingClass::ArchiveDisagreement,
+        FindingClass::PendingFillWithoutMargin,
     ];
 
     pub fn name(self) -> &'static str {
@@ -131,6 +134,7 @@ impl FindingClass {
             FindingClass::TriggerMissed => "TriggerMissed",
             FindingClass::TriggerFalse => "TriggerFalse",
             FindingClass::ArchiveDisagreement => "ArchiveDisagreement",
+            FindingClass::PendingFillWithoutMargin => "PendingFillWithoutMargin",
         }
     }
 }

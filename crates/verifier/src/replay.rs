@@ -737,7 +737,7 @@ impl<'a> Replay<'a> {
             }
         }
         self.check_intent(ctx, intent, market, qty, time, IntentUse::Close { reason, position_side: side });
-        self.walk_close(ctx, market, reason);
+        self.walk_close(ctx, market, reason, intent, qty);
         let Some(pos) = self.positions.get(&market).copied() else {
             self.f.add(FindingClass::PositionMismatch, ctx, "an open position in this market", "none", "Close without a position");
             return;
@@ -783,14 +783,23 @@ impl<'a> Replay<'a> {
             self.f.add(class, ctx, exp, found, format!("close claim: {e:?}"));
         }
         // the balance moves by what the ENGINE computed
+        let mut over = false;
         match engine::apply_closed_slice(&self.st, &self.engine_rules, slice.credit, out.quick_tally_delta) {
             Ok(d) => {
                 self.st = d.state;
                 if d.fail.is_some() {
                     self.quick_fail_due = true;
+                    over = true;
                 }
             }
             Err(_) => self.f.add(FindingClass::StateMismatch, ctx, "a balance that fits i64", "overflow", "credit overflow"),
+        }
+        if over && intent != 0 {
+            // M9b decision D2: the slice that pushes the quick tally over its limit ends the phase. Nothing but the `Fail` may
+            // follow it (DESIGN I-8), so a flip's opening remainder is never executed: the trades under this intent end here.
+            if let Some(e) = self.batch.nonce_qty.get_mut(&intent) {
+                e.1 = None;
+            }
         }
         self.trades_closed = self.trades_closed.saturating_add(1);
         match out.position {
@@ -801,7 +810,10 @@ impl<'a> Replay<'a> {
                 self.positions.remove(&market);
             }
         }
-        self.commission_expectation(market, qty, exit, time, "close");
+        // D2: the overshooting slice carries no commission `Fee` (the program allows only the `Fail` after it)
+        if !over {
+            self.commission_expectation(market, qty, exit, time, "close");
+        }
         self.bump_epoch();
     }
 

@@ -145,8 +145,8 @@ fn a_flip_whose_closing_slice_overshoots_the_quick_limit_fails_the_phase() {
     assert!(!evs.iter().any(|e| matches!(e, JournalEvent::Fill { order_kind: journal_types::OrderKind::Market, qty, .. } if *qty == MEUR)), "the short is void");
     let k = evs.iter().position(|e| matches!(e, JournalEvent::Fail { reason: FailReason::PhaseQuick, .. })).expect("a Fail");
     assert!(matches!(evs[k - 1], JournalEvent::Close { reason: CloseReason::Flip, qty, .. } if qty == 2 * MEUR), "{:?}", evs[k - 1]);
-    // known disagreement (module-10.md, finding 2, the flip variant): the verifier wants the whole 3 M under the intent
-    assert!(verify(&w, &bs).classes().contains(&setl8_verify::FindingClass::ForgedTrade));
+    // M9b decision D2: the trades under the intent end at the Fail, the verifier agrees
+    assert_valid(&w, &bs);
     // a failed account asks for no pass
     let chain = evaluator::ChainView { seq: w.ev.seq(), journal_hash: w.ev.head(), b: S100K, flat: true, phase: 2 };
     assert_eq!(w.ev.request_pass(T_1400 + 23, &chain, evaluator::ReplayCheck::Skipped), PassDecision::Reject(PassReject::Other));

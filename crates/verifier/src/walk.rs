@@ -16,16 +16,42 @@
 //! its `client_time`. An evaluator acts at most once per second and kind: when several samples of one second produce the
 //! same kind of action, the LAST one's numbers are the ones expected.
 //!
+//! M9b (decisions D1 to D4 of handover/design-decisions.md 53): a pending order that only reduces is executed by a `Close`
+//! under its nonce; a triggered pending order whose margin is insufficient (computed here with the evaluator's inputs) is
+//! expected NOT to fill and stays pending; a breach whose forced closes end at or below the static floor, or over the quick
+//! limit, is expected as `Fail` instead of `Breach`.
+//!
 //! The walk runs up to the largest event time or `Meta.time` seen ("Meta.time = the time of the last sample the evaluator
 //! processed for the batch"); an expectation of an earlier second that no event satisfied is a miss.
 use std::collections::{BTreeMap, HashSet};
 
-use engine::{ProtectiveKind, SampleAction};
+use engine::{AccountState, ProtectiveKind, SampleAction};
 use journal_types::{market_open, CloseReason, FailReason, OrderKind};
 
 use crate::finding::FindingClass;
 use crate::intents::{IntentKind, OrderIntent};
-use crate::replay::{Ctx, FloorKind, Replay};
+use crate::replay::{Ctx, FloorKind, Pos, Replay};
+
+/// The margin verdict for a triggered pending order.
+enum Sim {
+    /// The account cannot margin it: it stays pending and no event is expected.
+    Refused,
+    /// It fills; the simulated account afterwards, and whether the phase ended (the quick limit) on the way.
+    Accepted(AccountState, BTreeMap<u16, Pos>, bool),
+    /// Something did not compute: fall back to "it fills" (the pre-M9b expectation).
+    Unknown,
+}
+
+/// What a breach sample leads to once the forced closes are replayed with the engine (decision D4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BreachShape {
+    /// `Breach`: the closes end above the static floor and within the quick limit.
+    Breach,
+    /// `Fail{StaticFloor}`: the closes end at or below the static floor (the program refuses the `Breach`).
+    StaticFloor,
+    /// `Fail{PhaseQuick}`: the closes push the quick tally over its limit (nothing but the `Fail` may follow).
+    PhaseQuick,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExpKind {
@@ -54,6 +80,13 @@ pub struct Walker {
     cancels: Vec<(i64, u32)>,
     sltp: Vec<(i64, OrderIntent)>,
     sltp_cursor: usize,
+    /// Pending orders the samples of the second being walked trigger: (market, nonce) -> (price, sample index). Judged for
+    /// margin when the second is complete (`resolve_second`).
+    cand: BTreeMap<(u16, u32), (u64, usize)>,
+    /// (second, market, nonce) of triggered pending orders refused for margin: the order stays pending, no event expected.
+    refused: Vec<(i64, u16, u32)>,
+    /// (second, nonce) of a pending flip whose `Close` was seen: its opening `Fill` is the other half, not a second execution.
+    flip_open: HashSet<(i64, u32)>,
 }
 
 impl Walker {
@@ -78,7 +111,7 @@ impl Walker {
 
     pub fn new(pending: Vec<(u32, OrderIntent)>, cancels: Vec<(i64, u32)>, mut sltp: Vec<(i64, OrderIntent)>) -> Walker {
         sltp.sort_by_key(|(t, _)| *t);
-        Walker { cursor: 0, marks: BTreeMap::new(), last_change: BTreeMap::new(), last_value: BTreeMap::new(), exp: vec![], filled: HashSet::new(), pending, cancels, sltp, sltp_cursor: 0 }
+        Walker { cursor: 0, marks: BTreeMap::new(), last_change: BTreeMap::new(), last_value: BTreeMap::new(), exp: vec![], filled: HashSet::new(), pending, cancels, sltp, sltp_cursor: 0, cand: BTreeMap::new(), refused: vec![], flip_open: HashSet::new() }
     }
 }
 
@@ -122,19 +155,29 @@ impl<'a> Replay<'a> {
     pub fn walk_advance(&mut self, upto: i64, prev_seq: u64) {
         let Some(mut w) = self.walk.take() else { return };
         let arch = self.arch;
+        let mut cur: Option<i64> = None;
         while let Some(s) = arch.samples.get(w.cursor) {
             if s.ts_sec() > upto {
                 break;
             }
+            if let Some(c) = cur.filter(|c| *c != s.ts_sec()) {
+                self.resolve_second(&mut w, c);
+            }
+            cur = Some(s.ts_sec());
             let si = w.cursor;
             w.cursor += 1;
             self.walk_step(&mut w, si);
+        }
+        if let Some(c) = cur {
+            self.resolve_second(&mut w, c);
         }
         self.expire(&mut w, upto, prev_seq);
         self.walk = Some(w);
     }
 
     fn expire(&mut self, w: &mut Walker, upto: i64, prev_seq: u64) {
+        w.refused.retain(|(s, _, _)| *s >= upto);
+        w.flip_open.retain(|(s, _)| *s >= upto);
         let old = std::mem::take(&mut w.exp);
         for e in old {
             if e.sec < upto {
@@ -196,7 +239,11 @@ impl<'a> Replay<'a> {
                     SampleAction::None => (None, [0; 5]),
                     SampleAction::TightStart { r, l_start, g_peak, l_level } => (Some(FloorKind::TightStart), [p_open, r, l_start, g_peak, l_level]),
                     SampleAction::FloorRaised { g_peak, l_level } => (Some(FloorKind::FloorRaised), [0, 0, 0, g_peak, l_level]),
-                    SampleAction::Breach { .. } => (Some(FloorKind::Breach), [0, 0, 0, 0, l_before]),
+                    SampleAction::Breach { .. } => match self.breach_shape(w, sec) {
+                        BreachShape::Breach => (Some(FloorKind::Breach), [0, 0, 0, 0, l_before]),
+                        BreachShape::StaticFloor => (Some(FloorKind::Fail(FailReason::StaticFloor)), [0; 5]),
+                        BreachShape::PhaseQuick => (Some(FloorKind::Fail(FailReason::PhaseQuick)), [0; 5]),
+                    },
                     SampleAction::Fail(r) => (
                         Some(FloorKind::Fail(match r {
                             engine::FailReason::StaticFloor => FailReason::StaticFloor,
@@ -240,7 +287,8 @@ impl<'a> Replay<'a> {
             let kind = if it.kind == IntentKind::Limit { engine::PendingKind::Limit } else { engine::PendingKind::Stop };
             let side = if it.side == 0 { engine::Side::Buy } else { engine::Side::Sell };
             if let Some(price) = engine::check_pending(side, kind, it.price_e12, bid, ask, true, locked) {
-                w.push(Expect { sec, kind: ExpKind::Pending(m, nonce, price), market: m, sample: si });
+                // the last sample of the second wins (as for every other expectation); margin is judged at the end of the second
+                w.cand.insert((m, nonce), (price, si));
             }
         }
     }
@@ -253,19 +301,227 @@ impl<'a> Replay<'a> {
 
     /// Open profit of all positions and the estimated closing commission at the current marks.
     fn marks_and_profit(&self, w: &Walker) -> Option<(usize, i64, i64)> {
+        let (p, comm) = self.profit_for(w, &self.positions, None)?;
+        Some((self.positions.len(), p, comm))
+    }
+
+    /// Open profit and estimated closing commission of `positions` at the walk's marks; `mark` replaces the bid and ask of
+    /// one market (the trigger sample of a pending order).
+    fn profit_for(&self, w: &Walker, positions: &BTreeMap<u16, Pos>, mark: Option<(u16, u64, u64)>) -> Option<(i64, i64)> {
         let mut list = Vec::new();
         let mut comm = 0i64;
-        for (m, p) in &self.positions {
-            let (bid, ask) = self.bid_ask_of(w, *m)?;
+        for (m, p) in positions {
+            let (bid, ask) = match mark {
+                Some((mm, b, a)) if mm == *m => (b, a),
+                _ => self.bid_ask_of(w, *m)?,
+            };
             list.push((p.p, bid, ask));
-            let class = self.rules.class_of(*m)?;
-            let rate = self.rules.commission_e6.get(class).copied().unwrap_or(0);
-            let mark = if p.p.qty.is_positive() { bid } else { ask };
-            let notional = engine::margin_micro(p.p.qty.unsigned_abs(), mark, 1).ok()?;
-            comm = comm.checked_add(engine::fee_ceil_micro(notional, rate).ok()?)?;
+            let price = if p.p.qty.is_positive() { bid } else { ask };
+            comm = comm.checked_add(self.commission_of(*m, p.p.qty.unsigned_abs(), price)?)?;
         }
-        let p = engine::open_profit_micro(&list).ok()?;
-        Some((list.len(), p, comm))
+        Some((engine::open_profit_micro(&list).ok()?, comm))
+    }
+
+    /// `ceil(rate x margin_micro(qty, price, 1))` of the market's class (0 without a rate).
+    fn commission_of(&self, market: u16, qty: u64, price: u64) -> Option<i64> {
+        let class = self.rules.class_of(market)?;
+        let rate = self.rules.commission_e6.get(class).copied().unwrap_or(0);
+        if rate == 0 {
+            return Some(0);
+        }
+        let notional = engine::margin_micro(qty, price, 1).ok()?;
+        engine::fee_ceil_micro(notional, rate).ok()
+    }
+
+    fn bid_ask_of_sample(&self, si: usize) -> Option<(u64, u64)> {
+        let s = self.arch.samples.get(si)?;
+        crate::replay::mid_pair(s.mid_e12()?, self.rules.spread(s.market))
+    }
+
+    // ------------------------------------------------------------------ D4: what a breach sample leads to
+
+    /// Replays the forced closes of a breach at the current marks the way the evaluator books them (the slice that adds least
+    /// to the quick tally first, a commission after every slice that does not overshoot the limit) and says whether the
+    /// result is a `Breach`, a `Fail{StaticFloor}` (B at or below the static floor) or a `Fail{PhaseQuick}` (tally over the
+    /// limit). The program accepts either `Fail` reason when both conditions hold (`report_fail` checks the reason it is given
+    /// against its own condition); the static floor is named first, as in `check_breach`.
+    fn breach_shape(&self, w: &Walker, sec: i64) -> BreachShape {
+        let mut st = self.st;
+        let mut todo: Vec<(i64, u16, u64, u64)> = Vec::new();
+        for (m, p) in &self.positions {
+            let Some((bid, ask)) = self.bid_ask_of(w, *m) else { return BreachShape::Breach };
+            let long = p.p.qty.is_positive();
+            let price = if long { bid } else { ask };
+            let qty = p.p.qty.unsigned_abs();
+            let side = if long { engine::Side::Sell } else { engine::Side::Buy };
+            let Ok(out) = engine::apply_fill(Some(p.p), side, qty, price, sec, engine::day_index(sec)) else { return BreachShape::Breach };
+            todo.push((out.quick_tally_delta, *m, qty, price));
+        }
+        todo.sort_by_key(|x| (x.0, x.1));
+        let mut over = false;
+        for (_, m, qty, price) in todo {
+            let Some(p) = self.positions.get(&m) else { return BreachShape::Breach };
+            let long = p.p.qty.is_positive();
+            let side = if long { engine::Side::Sell } else { engine::Side::Buy };
+            let Ok(out) = engine::apply_fill(Some(p.p), side, qty, price, sec, engine::day_index(sec)) else { return BreachShape::Breach };
+            let Some(slice) = out.closed else { return BreachShape::Breach };
+            let Ok(d) = engine::apply_closed_slice(&st, &self.engine_rules, slice.credit, out.quick_tally_delta) else { return BreachShape::Breach };
+            st = d.state;
+            if d.fail.is_some() {
+                over = true;
+            } else {
+                let Some(fee) = self.commission_of(m, qty, price) else { return BreachShape::Breach };
+                let Ok(d2) = engine::apply_closed_slice(&st, &self.engine_rules, fee.saturating_neg(), 0) else { return BreachShape::Breach };
+                st = d2.state;
+            }
+        }
+        match engine::static_floor_micro(&st) {
+            Ok(floor) if st.b <= floor => BreachShape::StaticFloor,
+            _ if over => BreachShape::PhaseQuick,
+            _ => BreachShape::Breach,
+        }
+    }
+
+    // ------------------------------------------------------------------ D3: margin of a triggered pending order
+
+    /// The end of a second: the pending orders its samples triggered are judged for margin, in the evaluator's order (the
+    /// stop-loss and take-profit closes of the second first, then the orders by (market, nonce)), each against the account
+    /// as the earlier ones left it. An order the account cannot margin stays pending and nothing is expected for it; the
+    /// others become `Pending` expectations.
+    fn resolve_second(&mut self, w: &mut Walker, sec: i64) {
+        let cands = std::mem::take(&mut w.cand);
+        if cands.is_empty() {
+            return;
+        }
+        let mut st = self.st;
+        let mut pos = self.positions.clone();
+        let mut ended = false;
+        let mut trig: Vec<(u16, u8, u64)> = w
+            .exp
+            .iter()
+            .filter(|e| e.sec == sec)
+            .filter_map(|e| match &e.kind {
+                ExpKind::Trigger(m, k, p) => Some((*m, u8::from(*k == ProtectiveKind::TakeProfit), *p)),
+                _ => None,
+            })
+            .collect();
+        trig.sort();
+        for (m, _, price) in trig {
+            let Some(p) = pos.get(&m).copied() else { continue };
+            match self.sim_close(&mut st, &mut pos, m, p.p.qty.unsigned_abs(), price, sec) {
+                Some(false) => {}
+                // the close pushed the quick tally over its limit (the account fails), or the arithmetic did not fit
+                _ => {
+                    ended = true;
+                    break;
+                }
+            }
+        }
+        for ((m, nonce), (price, si)) in cands {
+            if ended {
+                break;
+            }
+            match self.sim_pending(w, &st, &pos, m, nonce, price, si, sec) {
+                Sim::Refused => w.refused.push((sec, m, nonce)),
+                Sim::Accepted(st2, pos2, over) => {
+                    w.push(Expect { sec, kind: ExpKind::Pending(m, nonce, price), market: m, sample: si });
+                    st = st2;
+                    pos = pos2;
+                    ended = over;
+                }
+                Sim::Unknown => w.push(Expect { sec, kind: ExpKind::Pending(m, nonce, price), market: m, sample: si }),
+            }
+        }
+    }
+
+    /// Books a closing slice of `qty` at `price` on the simulated account; `Some(true)` when it overshoots the quick limit.
+    fn sim_close(&self, st: &mut AccountState, pos: &mut BTreeMap<u16, Pos>, m: u16, qty: u64, price: u64, sec: i64) -> Option<bool> {
+        let p = pos.get(&m).copied()?;
+        let side = if p.p.qty.is_positive() { engine::Side::Sell } else { engine::Side::Buy };
+        let out = engine::apply_fill(Some(p.p), side, qty, price, sec, engine::day_index(sec)).ok()?;
+        let slice = out.closed?;
+        let d = engine::apply_closed_slice(st, &self.engine_rules, slice.credit, out.quick_tally_delta).ok()?;
+        *st = d.state;
+        match out.position {
+            Some(np) => {
+                pos.insert(m, Pos { p: np, ..p });
+            }
+            None => {
+                pos.remove(&m);
+            }
+        }
+        if d.fail.is_some() {
+            return Some(true);
+        }
+        let fee = self.commission_of(m, qty, price)?;
+        *st = engine::apply_closed_slice(st, &self.engine_rules, fee.checked_neg()?, 0).ok()?.state;
+        Some(false)
+    }
+
+    /// The evaluator's check for a triggered limit or stop order (DESIGN 7.3, decision 27): net the order into the position,
+    /// then `b' + P' - closing commission - this fill's commission >= sum of margins` over the positions it leaves behind,
+    /// with the trigger sample as the order's market's mark. Pure reduces skip the check.
+    #[allow(clippy::too_many_arguments)]
+    fn sim_pending(&self, w: &Walker, st: &AccountState, pos: &BTreeMap<u16, Pos>, market: u16, nonce: u32, price: u64, si: usize, sec: i64) -> Sim {
+        let Some((_, it)) = w.pending.iter().find(|(n, _)| *n == nonce) else { return Sim::Unknown };
+        let long = it.side == 0;
+        let side = if long { engine::Side::Buy } else { engine::Side::Sell };
+        let existing = pos.get(&market).copied();
+        let (close_qty, open_qty) = match existing {
+            Some(p) if p.p.qty.is_positive() != long => {
+                let c = it.qty.min(p.p.qty.unsigned_abs());
+                (c, it.qty.saturating_sub(c))
+            }
+            _ => (0, it.qty),
+        };
+        let day = engine::day_index(sec);
+        if open_qty > 0 {
+            let Some((bid, ask)) = self.bid_ask_of_sample(si) else { return Sim::Unknown };
+            let mut b_after = st.b;
+            let mut base = existing.map(|p| p.p);
+            if close_qty > 0 {
+                let Ok(o) = engine::apply_fill(base, side, close_qty, price, sec, day) else { return Sim::Unknown };
+                let Some(b) = b_after.checked_add(o.balance_delta) else { return Sim::Unknown };
+                b_after = b;
+                base = o.position;
+            }
+            let Ok(o) = engine::apply_fill(base, side, open_qty, price, sec, day) else { return Sim::Unknown };
+            let Some(np) = o.position else { return Sim::Unknown };
+            let mut after = pos.clone();
+            after.insert(market, Pos { p: np, sl: 0, tp: 0 });
+            let Some((p_open, comm)) = self.profit_for(w, &after, Some((market, bid, ask))) else { return Sim::Unknown };
+            let Some(fill_comm) = self.commission_of(market, open_qty, price) else { return Sim::Unknown };
+            let equity = i128::from(b_after) + i128::from(p_open) - i128::from(comm) - i128::from(fill_comm);
+            let mut used: i128 = 0;
+            for (m, p) in &after {
+                let Some(lev) = self.rules.class_of(*m).and_then(|c| self.rules.leverage_x.get(c).copied()) else { return Sim::Unknown };
+                let Ok(mg) = engine::margin_micro(p.p.qty.unsigned_abs(), p.p.avg_entry_e12, lev) else { return Sim::Unknown };
+                used += i128::from(mg);
+            }
+            if equity - used < 0 {
+                return Sim::Refused;
+            }
+        }
+        // execution on the simulated account
+        let mut st2 = *st;
+        let mut pos2 = pos.clone();
+        if close_qty > 0 {
+            match self.sim_close(&mut st2, &mut pos2, market, close_qty, price, sec) {
+                Some(false) => {}
+                Some(true) => return Sim::Accepted(st2, pos2, true),
+                None => return Sim::Unknown,
+            }
+        }
+        if open_qty > 0 {
+            let Ok(o) = engine::apply_fill(pos2.get(&market).map(|p| p.p), side, open_qty, price, sec, day) else { return Sim::Unknown };
+            let Some(np) = o.position else { return Sim::Unknown };
+            pos2.insert(market, Pos { p: np, sl: 0, tp: 0 });
+            let Some(fee) = self.commission_of(market, open_qty, price) else { return Sim::Unknown };
+            let Some(neg) = fee.checked_neg() else { return Sim::Unknown };
+            let Ok(d) = engine::apply_closed_slice(&st2, &self.engine_rules, neg, 0) else { return Sim::Unknown };
+            st2 = d.state;
+        }
+        Sim::Accepted(st2, pos2, false)
     }
 
     // ------------------------------------------------------------------ consumption at journal events
@@ -274,29 +530,61 @@ impl<'a> Replay<'a> {
     pub fn walk_fill(&mut self, ctx: Ctx, market: u16, kind: OrderKind, intent: u32) {
         let Some(mut w) = self.walk.take() else { return };
         if matches!(kind, OrderKind::Limit | OrderKind::Stop) {
-            let i = w.exp.iter().position(|e| e.sec == ctx.time && matches!(&e.kind, ExpKind::Pending(m, n, _) if *m == market && *n == intent));
-            match i {
-                Some(i) => {
-                    w.exp.remove(i);
-                }
-                None => self.f.add(
-                    FindingClass::TriggerFalse,
-                    ctx,
-                    "a pending order the samples trigger at this second",
-                    format!("{kind:?} fill of intent {intent}"),
-                    "the fill of a pending order that no sample of this second triggers",
-                ),
+            // the opening half of a pending flip whose `Close` was already taken as the execution
+            if !w.flip_open.remove(&(ctx.time, intent)) {
+                self.consume_pending(&mut w, ctx, market, intent, &format!("{kind:?} fill of intent {intent}"));
             }
-            w.filled.insert(intent);
         }
         self.walk = Some(w);
     }
 
-    /// A stop-loss or take-profit `Close` must be a trigger the samples produce.
-    pub fn walk_close(&mut self, ctx: Ctx, market: u16, reason: CloseReason) {
+    /// The execution of a pending order at this second: its `Pending` expectation is consumed; an execution the margin check
+    /// refused is a `PendingFillWithoutMargin`; one nothing triggers is a `TriggerFalse`.
+    fn consume_pending(&mut self, w: &mut Walker, ctx: Ctx, market: u16, intent: u32, what: &str) {
+        let i = w.exp.iter().position(|e| e.sec == ctx.time && matches!(&e.kind, ExpKind::Pending(m, n, _) if *m == market && *n == intent));
+        match i {
+            Some(i) => {
+                w.exp.remove(i);
+            }
+            None => {
+                if let Some(r) = w.refused.iter().position(|(s, m, n)| *s == ctx.time && *m == market && *n == intent) {
+                    w.refused.remove(r);
+                    self.f.add(
+                        FindingClass::PendingFillWithoutMargin,
+                        ctx,
+                        "no execution: the account cannot margin this pending order, it stays pending",
+                        what.to_string(),
+                        "a pending order was executed although `b + P - commissions` does not cover the margin of the position it leaves",
+                    );
+                } else {
+                    self.f.add(FindingClass::TriggerFalse, ctx, "a pending order the samples trigger at this second", what.to_string(), "the execution of a pending order that no sample of this second triggers");
+                }
+            }
+        }
+        w.filled.insert(intent);
+    }
+
+    /// A stop-loss or take-profit `Close` must be a trigger the samples produce; a `Manual` (or `Flip`) `Close` under the nonce
+    /// of a pending order of that market is the execution of that order (decision D1: a pending order that only reduces a
+    /// position has no `Fill`).
+    pub fn walk_close(&mut self, ctx: Ctx, market: u16, reason: CloseReason, intent: u32, _qty: u64) {
         let want = match reason {
             CloseReason::StopLoss => ProtectiveKind::StopLoss,
             CloseReason::TakeProfit => ProtectiveKind::TakeProfit,
+            CloseReason::Manual | CloseReason::Flip => {
+                if intent == 0 {
+                    return;
+                }
+                let Some(mut w) = self.walk.take() else { return };
+                if w.pending.iter().any(|(n, it)| *n == intent && it.market == market) {
+                    self.consume_pending(&mut w, ctx, market, intent, &format!("{reason:?} close under pending order {intent}"));
+                    if reason == CloseReason::Flip {
+                        w.flip_open.insert((ctx.time, intent));
+                    }
+                }
+                self.walk = Some(w);
+                return;
+            }
             _ => return,
         };
         let Some(mut w) = self.walk.take() else { return };
@@ -507,20 +795,20 @@ mod replay_tests {
     fn a_protective_close_consumes_exactly_its_own_trigger() {
         with_replay(&[], |rp| {
             put(rp, trigger(10, 0, ProtectiveKind::StopLoss));
-            rp.walk_close(at(10), 1, CloseReason::StopLoss); // other market
-            rp.walk_close(at(10), 0, CloseReason::TakeProfit); // other kind
-            rp.walk_close(at(11), 0, CloseReason::StopLoss); // other second
+            rp.walk_close(at(10), 1, CloseReason::StopLoss, 0, 0); // other market
+            rp.walk_close(at(10), 0, CloseReason::TakeProfit, 0, 0); // other kind
+            rp.walk_close(at(11), 0, CloseReason::StopLoss, 0, 0); // other second
             assert_eq!(classes(rp), vec![FindingClass::TriggerFalse; 3]);
             assert_eq!(left(rp), 1);
             // closes that are not protective are not judged here
             for r in [CloseReason::Manual, CloseReason::Flip, CloseReason::Breach, CloseReason::Fail] {
-                rp.walk_close(at(10), 0, r);
+                rp.walk_close(at(10), 0, r, 0, 0);
             }
             assert_eq!((rp.f.list.len(), left(rp)), (3, 1));
-            rp.walk_close(at(10), 0, CloseReason::StopLoss);
+            rp.walk_close(at(10), 0, CloseReason::StopLoss, 0, 0);
             assert_eq!((rp.f.list.len(), left(rp)), (3, 0));
             put(rp, trigger(10, 0, ProtectiveKind::TakeProfit));
-            rp.walk_close(at(10), 0, CloseReason::TakeProfit);
+            rp.walk_close(at(10), 0, CloseReason::TakeProfit, 0, 0);
             assert_eq!((rp.f.list.len(), left(rp)), (3, 0));
         });
     }
@@ -611,6 +899,274 @@ mod replay_tests {
             put(rp, pending(10, 0, 1));
             rp.walk_advance(20, 0);
             assert_eq!((rp.f.list.len(), rp.f.list[0].seq), (1, None));
+        });
+    }
+}
+
+/// M9b (D3): the margin check of triggered pending orders, the stop-loss and take-profit closes that come first in a second, and
+/// the lookup of refused executions. Numbers: S = $100,000, class 0 leverage 50, spread 0; 1 EUR is 1e6 qty units.
+#[cfg(test)]
+mod margin_tests {
+    use super::*;
+    use crate::archive::{Archive, ArchiveWriter, Sample};
+    use crate::intents::{header_line, IntentFile};
+    use crate::log::OpenedRec;
+    use crate::replay::tests::T0;
+    use crate::rules::Rules;
+    use engine::Position;
+    use journal_types::{genesis_hash, NativeSha256};
+
+    const EUR: u64 = 1_000_000;
+    const ONE: u64 = 1_000_000_000_000;
+
+    fn rules_json(commission_e6: u32) -> String {
+        let feed = crate::hexutil::encode(&[7u8; 32]);
+        let feed1 = crate::hexutil::encode(&[8u8; 32]);
+        format!(
+            r#"{{"version":1,"ruleset_version":1,"fee_bps":40,"leverage_x":[50,20,20,20,10,5,5,2],"holding_fee_e6":[0,0,0,0,0,0,0,0],
+"commission_e6":[{commission_e6},0,0,0,0,0,0,0],"tier_sizes":[100000000000],"spread_e6":{{"0":0,"1":0}},
+"markets":[{{"id":0,"class":0,"feed_id":"{feed}","max_age_secs":60,"status":1,"qty_step":1000,"qty_min":1000000,"max_notional_usd":5,"sessions":[[0,10080]]}},
+{{"id":1,"class":0,"feed_id":"{feed1}","max_age_secs":60,"status":1,"qty_step":1000,"qty_min":1000000,"max_notional_usd":5,"sessions":[[0,10080]]}}]}}"#
+        )
+    }
+
+    fn smp(market: u16, mid: u64) -> Sample {
+        let ts_ns = u64::try_from(T0).unwrap() * 1_000_000_000;
+        Sample { market, source: 2, recv_ns: ts_ns, ts_ns, value: i128::from(mid) * 1_000_000, digest: [0; 32] }
+    }
+
+    fn with(commission_e6: u32, samples: &[Sample], f: impl FnOnce(&mut Replay)) {
+        let rules = Rules::parse(rules_json(commission_e6).as_bytes()).unwrap();
+        let mut w = ArchiveWriter::new();
+        for s in samples {
+            w.push(s);
+        }
+        let arch = Archive::parse(&w.into_bytes()).unwrap();
+        let intents = IntentFile::parse(header_line().as_bytes()).unwrap();
+        let account = [1u8; 32];
+        let opened = OpenedRec {
+            account,
+            trader: [2; 32],
+            challenge_id: 0,
+            size_s: 100_000_000_000,
+            tier_index: 8,
+            phase: 2,
+            ruleset_version: 1,
+            genesis_hash: genesis_hash(&NativeSha256, &account),
+            time: T0 - 3_600,
+        };
+        let mut rp = Replay::new(&rules, &arch, &intents, opened, "primary", Default::default(), Default::default()).unwrap();
+        f(&mut rp);
+    }
+
+    fn long(qty_eur: u64, avg: u64, quick_for: i64) -> Pos {
+        Pos { p: Position { qty: i64::try_from(qty_eur * EUR).unwrap(), avg_entry_e12: avg, timer_start: T0 - quick_for, opened_at: T0 - quick_for, fee_day: engine::day_index(T0) }, sl: 0, tp: 0 }
+    }
+
+    fn pending(nonce: u32, market: u16, side: u8, qty_eur: u64) -> (u32, OrderIntent) {
+        (nonce, OrderIntent { kind: IntentKind::Limit, market, side, qty: qty_eur * EUR, price_e12: ONE, sl_e12: 0, tp_e12: 0, target_nonce: 0, client_time: T0 - 10 })
+    }
+
+    /// Runs `resolve_second` for the candidates `(market, nonce, price, sample)` with the marks `(market, sample)` and the extra
+    /// expectations; returns the walker.
+    fn resolve(rp: &mut Replay, orders: Vec<(u32, OrderIntent)>, marks: &[(u16, usize)], cands: &[(u16, u32, u64, usize)], extra: Vec<Expect>) -> Walker {
+        let mut w = Walker::new(orders, vec![], vec![]);
+        for (m, si) in marks {
+            w.marks.insert(*m, *si);
+        }
+        for (m, n, price, si) in cands {
+            w.cand.insert((*m, *n), (*price, *si));
+        }
+        for e in extra {
+            w.exp.push(e);
+        }
+        rp.resolve_second(&mut w, T0);
+        w
+    }
+
+    fn expected(w: &Walker) -> Vec<u32> {
+        let mut v: Vec<u32> = w.exp.iter().filter_map(|e| if let ExpKind::Pending(_, n, _) = e.kind { Some(n) } else { None }).collect();
+        v.sort_unstable();
+        v
+    }
+
+    fn refused(w: &Walker) -> Vec<u32> {
+        let mut v: Vec<u32> = w.refused.iter().map(|r| r.2).collect();
+        v.sort_unstable();
+        v
+    }
+
+    #[test]
+    fn an_order_that_uses_exactly_the_whole_margin_is_expected_and_one_step_more_is_not() {
+        // 5 M EUR at 1.0 needs $100,000 of margin on $100,000: equity - used == 0 is enough
+        with(0, &[smp(0, ONE)], |rp| {
+            let w = resolve(rp, vec![pending(1, 0, 0, 5_000_000)], &[(0, 0)], &[(0, 1, ONE, 0)], vec![]);
+            assert_eq!((expected(&w), refused(&w)), (vec![1], vec![]));
+        });
+        with(0, &[smp(0, ONE)], |rp| {
+            let mut o = pending(1, 0, 0, 5_000_000);
+            o.1.qty += 1_000;
+            let w = resolve(rp, vec![o], &[(0, 0)], &[(0, 1, ONE, 0)], vec![]);
+            assert_eq!((expected(&w), refused(&w)), (vec![], vec![1]));
+        });
+    }
+
+    #[test]
+    fn both_commissions_are_charged_in_the_margin_check() {
+        // 0.1%: equity = 100,000 - 2 x 0.001 N, margin N / 50; N may be at most 4,545,454 EUR
+        for (n, ok) in [(4_545_000u64, true), (4_546_000, false)] {
+            with(1_000, &[smp(0, ONE)], |rp| {
+                let w = resolve(rp, vec![pending(1, 0, 0, n)], &[(0, 0)], &[(0, 1, ONE, 0)], vec![]);
+                assert_eq!(expected(&w) == vec![1], ok, "{n} EUR");
+                assert_eq!(refused(&w) == vec![1], !ok, "{n} EUR");
+            });
+        }
+    }
+
+    #[test]
+    fn open_profit_counts_and_the_trigger_sample_is_the_mark_of_the_orders_market() {
+        // A: long 1 M EUR at 1.0, now 1.01 (+$10,000). Market 1's trigger sample is 1.0000 (sample 1); a later sample of market 1
+        // at 0.99 (sample 2) is its latest mark but must not be used for the new order.
+        let samples = [smp(0, 1_010_000_000_000), smp(1, ONE), smp(1, 990_000_000_000)];
+        // equity 110,000 - used 20,000 - N / 50: N up to 4.5 M EUR
+        for (n, ok) in [(4_400_000u64, true), (4_600_000, false)] {
+            with(0, &samples, |rp| {
+                rp.positions.insert(0, long(1_000_000, ONE, 1_000));
+                let w = resolve(rp, vec![pending(1, 1, 0, n)], &[(0, 0), (1, 2)], &[(1, 1, ONE, 1)], vec![]);
+                assert_eq!(expected(&w) == vec![1], ok, "{n} EUR: expected {:?} refused {:?}", expected(&w), refused(&w));
+            });
+        }
+    }
+
+    #[test]
+    fn open_profit_and_commissions_together() {
+        // as above with 0.1%: closing commission of A = 1,010, then 2 x 0.001 N for the new position
+        // 110,000 - 1,010 - 20,000 - 0.022 N >= 0: N up to 4,045,000 EUR
+        let samples = [smp(0, 1_010_000_000_000), smp(1, ONE)];
+        for (n, ok) in [(4_000_000u64, true), (4_100_000, false)] {
+            with(1_000, &samples, |rp| {
+                rp.positions.insert(0, long(1_000_000, ONE, 1_000));
+                let w = resolve(rp, vec![pending(1, 1, 0, n)], &[(0, 0), (1, 1)], &[(1, 1, ONE, 1)], vec![]);
+                assert_eq!(expected(&w) == vec![1], ok, "{n} EUR");
+            });
+        }
+    }
+
+    #[test]
+    fn a_pure_reduce_needs_no_margin() {
+        // A: long 4 M EUR with a $200,000 loss: the account is far below its margin, a sell of 1 M only reduces
+        let samples = [smp(0, 950_000_000_000)];
+        with(0, &samples, |rp| {
+            rp.positions.insert(0, long(4_000_000, ONE, 1_000));
+            let w = resolve(rp, vec![pending(1, 0, 1, 1_000_000)], &[(0, 0)], &[(0, 1, 950_000_000_000, 0)], vec![]);
+            assert_eq!((expected(&w), refused(&w)), (vec![1], vec![]));
+        });
+    }
+
+    #[test]
+    fn a_flip_credits_its_closing_slice_before_the_margin_check() {
+        // A: long 4 M EUR at 1.0, now 1.02 (+$80,000, not quick); the balance is -$20,000. A sell of 5 M flips: the closing credit
+        // makes the balance $60,000, the remaining short of 1 M needs $20,400
+        let samples = [smp(0, 1_020_000_000_000)];
+        with(0, &samples, |rp| {
+            rp.st.b = -20_000_000_000;
+            rp.positions.insert(0, long(4_000_000, ONE, 1_000));
+            let w = resolve(rp, vec![pending(1, 0, 1, 5_000_000)], &[(0, 0)], &[(0, 1, 1_020_000_000_000, 0)], vec![]);
+            assert_eq!((expected(&w), refused(&w)), (vec![1], vec![]));
+        });
+    }
+
+    #[test]
+    fn the_orders_of_one_second_see_each_other() {
+        let samples = [smp(0, ONE), smp(1, ONE)];
+        // a pure partial reduce of A (4 M -> 3 M EUR) frees $20,000: the next order of 1.5 M EUR (margin $30,000 on a free
+        // $40,000) fits only because the reduce is booked first (1.0 M would fit without it)
+        with(0, &samples, |rp| {
+            rp.positions.insert(0, long(4_000_000, ONE, 1_000));
+            let w = resolve(rp, vec![pending(1, 0, 1, 1_000_000), pending(2, 1, 0, 1_500_000)], &[(0, 0), (1, 1)], &[(0, 1, ONE, 0), (1, 2, ONE, 1)], vec![]);
+            assert_eq!((expected(&w), refused(&w)), (vec![1, 2], vec![]));
+        });
+        // an opening order uses margin that the next one then does not have: 3 M EUR (margin $60,000) then 2.5 M ($50,000)
+        with(0, &samples, |rp| {
+            let w = resolve(rp, vec![pending(1, 0, 0, 3_000_000), pending(2, 1, 0, 2_500_000)], &[(0, 0), (1, 1)], &[(0, 1, ONE, 0), (1, 2, ONE, 1)], vec![]);
+            assert_eq!((expected(&w), refused(&w)), (vec![1], vec![2]));
+        });
+    }
+
+    fn sl(sec: i64, market: u16, price: u64) -> Expect {
+        Expect { sec, kind: ExpKind::Trigger(market, ProtectiveKind::StopLoss, price), market, sample: 0 }
+    }
+
+    #[test]
+    fn the_stop_loss_closes_of_the_second_come_before_its_pending_orders() {
+        // A: long 1 M EUR at 1.0, now 0.97 (-$30,000): equity 70,000 either way, but once the stop-loss has closed A the account
+        // holds no margin for it: a buy of 3 M EUR (margin $60,000) fits only then
+        let samples = [smp(0, 970_000_000_000), smp(1, ONE)];
+        let run = |extra: Vec<Expect>| {
+            let mut out = (vec![], vec![]);
+            with(0, &samples, |rp| {
+                rp.positions.insert(0, long(1_000_000, ONE, 1_000));
+                let w = resolve(rp, vec![pending(1, 1, 0, 3_000_000)], &[(0, 0), (1, 1)], &[(1, 1, ONE, 1)], extra);
+                out = (expected(&w), refused(&w));
+            });
+            out
+        };
+        assert_eq!(run(vec![sl(T0, 0, 970_000_000_000)]), (vec![1], vec![]));
+        assert_eq!(run(vec![]), (vec![], vec![1]), "without the close the margin of A still counts");
+        assert_eq!(run(vec![sl(T0 + 5, 0, 970_000_000_000)]), (vec![], vec![1]), "a trigger of another second is not part of this one");
+        assert_eq!(run(vec![sl(T0, 1, 970_000_000_000)]), (vec![], vec![1]), "nor is one of a market without a position");
+    }
+
+    #[test]
+    fn when_a_stop_loss_and_a_take_profit_of_one_market_both_trigger_the_stop_loss_closes_first() {
+        // the evaluator executes the triggers of a second by (market, kind), stop-loss first; the take-profit then finds no position
+        let samples = [smp(0, ONE), smp(1, ONE)];
+        with(0, &samples, |rp| {
+            rp.positions.insert(0, long(1_000_000, ONE, 1_000));
+            let tp = Expect { sec: T0, kind: ExpKind::Trigger(0, ProtectiveKind::TakeProfit, 1_030_000_000_000), market: 0, sample: 0 };
+            // closed at the stop (-$30,000): equity 70,000, an order with a margin of $100,000 is refused; closed at the take-profit
+            // (+$30,000) it would be accepted
+            let w = resolve(rp, vec![pending(1, 1, 0, 5_000_000)], &[(0, 0), (1, 1)], &[(1, 1, ONE, 1)], vec![tp, sl(T0, 0, 970_000_000_000)]);
+            assert_eq!((expected(&w), refused(&w)), (vec![], vec![1]));
+        });
+    }
+
+    #[test]
+    fn a_stop_loss_that_pushes_the_quick_tally_over_its_limit_ends_the_phase_before_the_orders() {
+        // A: long 1 M EUR opened 10 s ago at 1.0, now 1.06: the close credits $30,000 of a quick profit, over 0.028 S
+        let samples = [smp(0, 1_060_000_000_000), smp(1, ONE)];
+        with(0, &samples, |rp| {
+            rp.positions.insert(0, long(1_000_000, ONE, 10));
+            let w = resolve(rp, vec![pending(1, 1, 0, 1_000_000)], &[(0, 0), (1, 1)], &[(1, 1, ONE, 1)], vec![sl(T0, 0, 1_060_000_000_000)]);
+            assert_eq!((expected(&w), refused(&w)), (vec![], vec![]), "the account failed: no order is expected, none is refused");
+        });
+    }
+
+    #[test]
+    fn an_order_nobody_can_price_is_expected_to_fill_as_before() {
+        // no sample behind the candidate: the walk cannot judge, it keeps the pre-M9b expectation
+        with(0, &[smp(0, ONE)], |rp| {
+            let w = resolve(rp, vec![pending(1, 0, 0, 1_000_000)], &[(0, 0)], &[(0, 1, ONE, 9)], vec![]);
+            assert_eq!((expected(&w), refused(&w)), (vec![1], vec![]));
+        });
+    }
+
+    #[test]
+    fn a_refused_execution_is_matched_on_second_market_and_nonce() {
+        with(0, &[smp(0, ONE)], |rp| {
+            let mut w = Walker::new(vec![pending(1, 0, 0, 1)], vec![], vec![]);
+            w.refused.push((T0, 0, 1));
+            rp.walk = Some(w);
+            let at = |sec: i64| Ctx { seq: Some(3), idx: Some(2), time: sec };
+            // other nonce, other market, other second: each is a TriggerFalse and the refusal stays
+            rp.walk_fill(at(T0), 0, OrderKind::Limit, 2);
+            rp.walk_fill(at(T0), 1, OrderKind::Limit, 1);
+            rp.walk_fill(at(T0 + 1), 0, OrderKind::Limit, 1);
+            assert_eq!(rp.f.list.iter().map(|f| f.class).collect::<Vec<_>>(), vec![FindingClass::TriggerFalse; 3]);
+            // the right one is the margin finding
+            rp.walk_fill(at(T0), 0, OrderKind::Limit, 1);
+            assert_eq!(rp.f.list.last().map(|f| f.class), Some(FindingClass::PendingFillWithoutMargin));
+            assert_eq!(rp.f.list.len(), 4);
         });
     }
 }

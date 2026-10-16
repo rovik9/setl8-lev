@@ -6,7 +6,7 @@ use journal_types::{genesis_hash, JournalEvent, NativeSha256};
 use crate::archive::{self, Archive};
 use crate::finding::*;
 use crate::intents::{self, IntentFile};
-use crate::log::{self, Line, LineAt, OpenedRec};
+use crate::log::{self, Line, LineAt, OpenedRec, PassKind};
 use crate::replay::{Ctx, Findings, Replay};
 use crate::rules::Rules;
 use crate::snapshot::Snapshot;
@@ -135,7 +135,7 @@ pub fn run(p: &Parsed, as_of: Option<u64>) -> Report {
 pub const ARCHIVE_TOLERANCE_E12: u64 = 0;
 
 /// The classes the second recorder can add: what the walk finds on the second archive.
-const WALK_CLASSES: [FindingClass; 10] = [
+const WALK_CLASSES: [FindingClass; 11] = [
     FindingClass::MissedBreach,
     FindingClass::MissedFail,
     FindingClass::FalseBreach,
@@ -146,6 +146,7 @@ const WALK_CLASSES: [FindingClass; 10] = [
     FindingClass::WrongLLevel,
     FindingClass::TriggerMissed,
     FindingClass::TriggerFalse,
+    FindingClass::PendingFillWithoutMargin,
 ];
 
 /// DESIGN 4.5 / 13.2 "dropped sample": replays the walk on the second archive and reports (a) the samples the two archives
@@ -189,7 +190,12 @@ fn second_recorder(p: &Parsed, b: &Archive, as_of: Option<u64>) -> Vec<Finding> 
 /// Feeds the log lines to the replay in file order.
 pub fn drive(rp: &mut Replay, lines: &[LineAt], as_of: Option<u64>) {
     let mut opened_seen = false;
+    // the new phase of the `pass_finalized` line directly before the current line (decision D5)
+    let mut finalized_to: Option<u8> = None;
+    // the phase of the newest `pass_requested` that no later line has resolved: a `phase_advanced` needs one
+    let mut open_pass: Option<u8> = None;
     for l in lines {
+        let just_finalized = finalized_to.take();
         let ctx = Ctx { seq: Some(rp.last_seq), idx: None, time: rp.last_time };
         match &l.line {
             Line::Opened(_) => {
@@ -204,10 +210,29 @@ pub fn drive(rp: &mut Replay, lines: &[LineAt], as_of: Option<u64>) {
                 }
                 rp.on_event_line(*seq, event, proof);
             }
-            Line::Pass { kind, phase, amount, b, seq, journal_hash, time_or_eligible } => rp.on_pass_line(kind, *phase, *amount, *b, *seq, journal_hash, *time_or_eligible),
-            Line::PassRejected { .. } | Line::PassVetoed { .. } => {}
-            Line::PhaseAdvanced { from_phase, to_phase, .. } => rp.on_phase_change(*from_phase, *to_phase, None),
-            Line::PassFinalized { phase, to_phase, amount, .. } => rp.on_phase_change(*phase, *to_phase, Some(*amount)),
+            Line::Pass { kind, phase, amount, b, seq, journal_hash, time_or_eligible } => {
+                if *kind == PassKind::Requested {
+                    open_pass = Some(*phase);
+                }
+                rp.on_pass_line(kind, *phase, *amount, *b, *seq, journal_hash, *time_or_eligible)
+            }
+            Line::PassRejected { .. } | Line::PassVetoed { .. } => open_pass = None,
+            // The program emits `PhaseAdvanced` as well as `PassFinalized` for one `finalize_pass`: the one that directly
+            // follows a `pass_finalized` with the same new phase confirms it and changes nothing (decision D5).
+            Line::PhaseAdvanced { to_phase, .. } if just_finalized == Some(*to_phase) => {}
+            Line::PhaseAdvanced { from_phase, to_phase, .. } => {
+                // any other phase advance is the phase-1 confirmation: it needs the pass request of that phase
+                if open_pass != Some(*from_phase) {
+                    rp.f.add(FindingClass::StateMismatch, ctx, format!("a pass_requested line of phase {from_phase} before the phase change"), "none", "phase_advanced without a pending pass request of that phase");
+                }
+                open_pass = None;
+                rp.on_phase_change(*from_phase, *to_phase, None)
+            }
+            Line::PassFinalized { phase, to_phase, amount, .. } => {
+                open_pass = None;
+                rp.on_phase_change(*phase, *to_phase, Some(*amount));
+                finalized_to = Some(*to_phase);
+            }
             Line::AccountFailed { b, seq, journal_hash, .. } => {
                 if *b != rp.st.b || *seq != rp.last_seq || journal_hash != &rp.head {
                     rp.f.add(FindingClass::StateMismatch, ctx, format!("b {} seq {}", rp.st.b, rp.last_seq), format!("b {b} seq {seq}"), "AccountFailed disagrees with the replay");
