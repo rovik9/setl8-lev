@@ -265,6 +265,21 @@ pub fn parse_iso_ms(s: &str) -> Option<u64> {
     u64::try_from(secs * 1000 + ms).ok()
 }
 
+/// Civil date `YYYY-MM-DD` (UTC) of a Unix time in milliseconds.
+pub fn utc_date(ms: u64) -> String {
+    let days = (ms / 1000 / 86_400) as i64;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +434,14 @@ mod tests {
         assert_eq!(parse_iso_ms("2026-10-10T18:45:57.464Z"), Some(1_791_657_957_464));
         assert_eq!(parse_iso_ms("2026-10-10 18:45:57"), None);
         assert_eq!(parse_iso_ms("nonsense"), None);
+    }
+
+    #[test]
+    fn utc_dates() {
+        assert_eq!(utc_date(0), "1970-01-01");
+        assert_eq!(utc_date(1_791_813_600_000), "2026-10-12");
+        assert_eq!(utc_date(1_791_763_200_000), "2026-10-12");
+        assert_eq!(utc_date(1_791_763_200_000 - 1), "2026-10-11");
+        assert_eq!(utc_date(1_709_164_800_000), "2024-02-29");
     }
 }

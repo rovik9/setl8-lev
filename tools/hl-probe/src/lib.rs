@@ -243,6 +243,145 @@ pub fn fx_direction(coin_base: &str, level: f64) -> &'static str {
     }
 }
 
+// ------------------------------------------------------------------ oracle measurements (P11)
+
+/// One observation of a coin's context: receive time (ms), oracle price, mark price and the book mid when present.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OraclePoint {
+    pub ms: u64,
+    pub oracle: f64,
+    pub mark: f64,
+    pub mid: Option<f64>,
+}
+
+/// `|a - b| / b` in basis points (absolute value of `gap_bps`).
+pub fn abs_gap_bps(a: f64, b: f64) -> f64 {
+    gap_bps(a, b).abs()
+}
+
+/// Receive times at which the oracle price differs from the previous observation (the first observation is not a change).
+pub fn oracle_change_times(series: &[OraclePoint]) -> Vec<u64> {
+    series.windows(2).filter(|w| w[1].oracle != w[0].oracle).map(|w| w[1].ms).collect()
+}
+
+/// Sizes of the oracle jumps in basis points (absolute), one per change.
+pub fn oracle_jumps_bps(series: &[OraclePoint]) -> Vec<f64> {
+    series.windows(2).filter(|w| w[1].oracle != w[0].oracle).map(|w| abs_gap_bps(w[1].oracle, w[0].oracle)).collect()
+}
+
+/// The longest stretch without an oracle change (from the change that started it, or the first observation, to the next
+/// change or the last observation) together with the number of times the book mid changed inside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Frozen {
+    pub start_ms: u64,
+    pub duration_ms: u64,
+    pub mid_changes: u32,
+}
+
+/// Longest oracle-frozen stretch in which the mid changed at least `min_mid_changes` times. `None` if there is none.
+pub fn longest_frozen_while_moving(series: &[OraclePoint], min_mid_changes: u32) -> Option<Frozen> {
+    let first = series.first()?;
+    let mut best: Option<Frozen> = None;
+    let consider = |start: u64, end: u64, mids: u32, best: &mut Option<Frozen>| {
+        if mids >= min_mid_changes && best.map_or(true, |b| end - start > b.duration_ms) {
+            *best = Some(Frozen { start_ms: start, duration_ms: end - start, mid_changes: mids });
+        }
+    };
+    let (mut start, mut mids) = (first.ms, 0u32);
+    for w in series.windows(2) {
+        if w[1].oracle != w[0].oracle {
+            consider(start, w[1].ms, mids, &mut best);
+            start = w[1].ms;
+            mids = 0;
+        } else if let (Some(a), Some(b)) = (w[0].mid, w[1].mid) {
+            if a != b {
+                mids += 1;
+            }
+        }
+    }
+    if let Some(last) = series.last() {
+        consider(start, last.ms, mids, &mut best);
+    }
+    best
+}
+
+/// Episodes (start ms, duration ms) during which the book mid is more than `threshold_bp` away from the oracle price: the
+/// time the oracle "lags" the book. An episode ends at the first observation back inside the threshold (its duration runs to
+/// that observation); an episode still open at the last observation is closed there. Observations without a mid are skipped.
+pub fn lag_episodes(series: &[OraclePoint], threshold_bp: f64) -> Vec<(u64, u64)> {
+    let mut out = Vec::new();
+    let mut open: Option<u64> = None;
+    for p in series {
+        // an observation without a mid says nothing about the book: it neither opens nor closes an episode
+        let Some(m) = p.mid else { continue };
+        let off = abs_gap_bps(m, p.oracle) > threshold_bp;
+        match (open, off) {
+            (None, true) => open = Some(p.ms),
+            (Some(s), false) => {
+                out.push((s, p.ms - s));
+                open = None;
+            }
+            _ => {}
+        }
+    }
+    if let (Some(s), Some(last)) = (open, series.last()) {
+        out.push((s, last.ms - s));
+    }
+    out
+}
+
+/// The value of the latest observation at or before `t_ms` (`None` if there is none yet).
+pub fn value_at(series: &[OraclePoint], t_ms: u64) -> Option<&OraclePoint> {
+    let idx = series.partition_point(|p| p.ms <= t_ms);
+    idx.checked_sub(1).and_then(|i| series.get(i))
+}
+
+/// Reporting class used in the oracle report: crypto (no dex prefix), stock, ETF, index, FX, metal, energy, other.
+pub fn report_class(name: &str) -> &'static str {
+    let (_, base) = split_coin(name);
+    match classify(name) {
+        Class::Commodity => {
+            if ["CL", "BRENTOIL", "NATGAS", "HO", "TTF"].contains(&base) {
+                "energy"
+            } else {
+                "metal"
+            }
+        }
+        Class::Stock => "stock",
+        Class::Etf => "ETF",
+        Class::Index => "index",
+        Class::Fx => "FX",
+        Class::Crypto => "crypto",
+        Class::Other => "other",
+    }
+}
+
+/// Civil date `YYYY-MM-DD` (UTC) of a Unix time in milliseconds.
+pub fn utc_date(ms: u64) -> String {
+    let days = (ms / 1000 / 86_400) as i64;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Statistics of a list of values: (median, 95th percentile nearest-rank, max). `None` if empty.
+pub fn med_p95_max(values: &[f64]) -> Option<(f64, f64, f64)> {
+    let mut v: Vec<f64> = values.iter().copied().filter(|x| x.is_finite()).collect();
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let rank = ((0.95 * v.len() as f64).ceil() as usize).clamp(1, v.len());
+    Some((median(&v)?, v[rank - 1], *v.last()?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +483,94 @@ mod tests {
         assert_eq!(fx_direction("KRW", 0.0007), "USD per 1 foreign unit");
         assert_eq!(fx_direction("KRW", 1400.0), "foreign units per 1 USD");
         assert_eq!(fx_direction("XXX", 1.0), "unclear");
+    }
+
+    fn pt(ms: u64, oracle: f64, mid: Option<f64>) -> OraclePoint {
+        OraclePoint { ms, oracle, mark: oracle, mid }
+    }
+
+    #[test]
+    fn oracle_changes_and_jumps() {
+        let s = [pt(0, 100.0, None), pt(1_000, 100.0, None), pt(2_000, 101.0, None), pt(3_000, 101.0, None), pt(9_000, 100.0, None)];
+        assert_eq!(oracle_change_times(&s), vec![2_000, 9_000]);
+        let j = oracle_jumps_bps(&s);
+        assert_eq!(j.len(), 2);
+        assert!((j[0] - 100.0).abs() < 1e-9);
+        assert!((j[1] - 99.0099009901).abs() < 1e-6, "{}", j[1]);
+        assert!(oracle_change_times(&[]).is_empty());
+        assert!(oracle_change_times(&s[..1]).is_empty());
+        assert_eq!(gap_stats(&oracle_change_times(&s)).map(|g| g.max), Some(7_000));
+    }
+
+    #[test]
+    fn frozen_oracle_while_the_mid_moves() {
+        // oracle changes at 5 s and 65 s; between them the mid changes 3 times; after 65 s it moves once until 70 s
+        let s = [
+            pt(0, 10.0, Some(10.0)),
+            pt(5_000, 10.5, Some(10.0)),
+            pt(20_000, 10.5, Some(10.1)),
+            pt(30_000, 10.5, Some(10.2)),
+            pt(31_000, 10.5, Some(10.2)),
+            pt(60_000, 10.5, Some(10.3)),
+            pt(65_000, 10.6, Some(10.3)),
+            pt(70_000, 10.6, Some(10.4)),
+        ];
+        let f = longest_frozen_while_moving(&s, 1).unwrap();
+        assert_eq!(f, Frozen { start_ms: 5_000, duration_ms: 60_000, mid_changes: 3 });
+        // demanding four mid changes leaves nothing
+        assert_eq!(longest_frozen_while_moving(&s, 4), None);
+        // a frozen oracle with a still mid is not "while moving"
+        let still = [pt(0, 1.0, Some(5.0)), pt(100_000, 1.0, Some(5.0))];
+        assert_eq!(longest_frozen_while_moving(&still, 1), None);
+        assert_eq!(longest_frozen_while_moving(&still, 0), Some(Frozen { start_ms: 0, duration_ms: 100_000, mid_changes: 0 }));
+        assert_eq!(longest_frozen_while_moving(&[], 0), None);
+    }
+
+    #[test]
+    fn lag_episodes_of_the_oracle() {
+        // 10 bp of 100.0 is 0.1: the mid at 100.2 is 20 bp away
+        let s = [
+            pt(0, 100.0, Some(100.0)),
+            pt(1_000, 100.0, Some(100.2)),
+            pt(4_000, 100.0, Some(100.3)),
+            pt(6_000, 100.25, Some(100.3)),
+            pt(8_000, 100.25, Some(100.0)),
+            pt(9_000, 100.25, None),
+            pt(10_000, 100.25, Some(100.0)),
+        ];
+        // episode 1: from 1 s until the oracle moved at 6 s (back inside 10 bp), 5 s; episode 2: from 8 s (25 bp) until 10 s
+        assert_eq!(lag_episodes(&s, 10.0), vec![(1_000, 5_000), (8_000, 2_000)]);
+        // an episode open at the end is closed at the last observation
+        let open = [pt(0, 1.0, Some(1.0)), pt(1_000, 1.0, Some(1.1)), pt(4_000, 1.0, Some(1.1))];
+        assert_eq!(lag_episodes(&open, 10.0), vec![(1_000, 3_000)]);
+        assert!(lag_episodes(&open, 2_000.0).is_empty());
+    }
+
+    #[test]
+    fn value_lookup_and_stats() {
+        let s = [pt(10, 1.0, None), pt(20, 2.0, None), pt(30, 3.0, None)];
+        assert_eq!(value_at(&s, 9), None);
+        assert_eq!(value_at(&s, 10).map(|p| p.oracle), Some(1.0));
+        assert_eq!(value_at(&s, 25).map(|p| p.oracle), Some(2.0));
+        assert_eq!(value_at(&s, 99).map(|p| p.oracle), Some(3.0));
+        assert_eq!(med_p95_max(&[1.0, 2.0, 3.0, 4.0, 100.0]), Some((3.0, 100.0, 100.0)));
+        assert_eq!(med_p95_max(&[]), None);
+        assert!((abs_gap_bps(99.0, 100.0) - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn report_classes_and_dates() {
+        assert_eq!(report_class("xyz:GOLD"), "metal");
+        assert_eq!(report_class("xyz:PALLADIUM"), "metal");
+        assert_eq!(report_class("xyz:CL"), "energy");
+        assert_eq!(report_class("xyz:NATGAS"), "energy");
+        assert_eq!(report_class("xyz:SP500"), "index");
+        assert_eq!(report_class("xyz:EUR"), "FX");
+        assert_eq!(report_class("xyz:AAPL"), "stock");
+        assert_eq!(report_class("BTC"), "crypto");
+        assert_eq!(utc_date(0), "1970-01-01");
+        assert_eq!(utc_date(1_791_813_600_000), "2026-10-12");
+        assert_eq!(utc_date(1_791_813_600_000 - 1), "2026-10-12");
+        assert_eq!(utc_date(1_791_763_200_000 - 1), "2026-10-11");
     }
 }

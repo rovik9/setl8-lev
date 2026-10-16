@@ -18,6 +18,7 @@ const FALLBACKS: [&str; 2] = ["arbitrum-api-fallback.gmxinfra.io", "arbitrum-api
 const SYMS13: [&str; 13] =
     ["BTC", "ETH", "SOL", "XRP", "DOGE", "LINK", "GOLD", "SILVER", "WTIOIL", "BRENTOIL", "NATGAS", "SPY", "QQQ"];
 const TRACKED: [&str; 6] = ["BTC", "ETH", "SOL", "GOLD", "SPY", "WTIOIL"];
+const CRYPTO3: [&str; 3] = ["BTC", "ETH", "SOL"];
 const CLOSED7: [&str; 7] = ["GOLD", "SILVER", "WTIOIL", "BRENTOIL", "NATGAS", "SPY", "QQQ"];
 const MIN_INTERVAL: Duration = Duration::from_millis(100); // 10 requests per second in total
 const UA: &str = "setl8-probe/0.1";
@@ -212,8 +213,14 @@ fn f(v: f64, d: usize) -> String {
     }
 }
 
+/// `PROBE_WEEKDAY=1`: the weekday re-run (prompt P11): output goes to `data/weekday-<UTC date>/`, the candle and storage steps are skipped.
+fn weekday() -> bool {
+    std::env::var("PROBE_WEEKDAY").is_ok()
+}
+
 fn dir() -> PathBuf {
-    let p = PathBuf::from("data");
+    static DAY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let p = if weekday() { PathBuf::from("data").join(format!("weekday-{}", DAY.get_or_init(|| utc_date(now_ms())))) } else { PathBuf::from("data") };
     let _ = fs::create_dir_all(p.join("raw"));
     p
 }
@@ -558,6 +565,7 @@ fn main() {
         let minutes = (ok.last().map(|(p, _)| p.recv_ms).unwrap_or(0).saturating_sub(ok.first().map(|(p, _)| p.recv_ms).unwrap_or(0))) as f64 / 60_000.0;
         let mut rows = Vec::new();
         let mut closed_rows = Vec::new();
+        let mut crypto_rows = Vec::new();
         let mut bin: Vec<u8> = Vec::new();
         let mut bin_price: Vec<u8> = Vec::new();
         let mut stored_price_syms = 0usize;
@@ -638,6 +646,9 @@ fn main() {
             if TRACKED.contains(&sym.as_str()) {
                 rows.push(row.clone());
             }
+            if CRYPTO3.contains(&sym.as_str()) {
+                crypto_rows.push(row.clone());
+            }
             if CLOSED7.contains(&sym.as_str()) {
                 closed_rows.push(row);
             }
@@ -665,59 +676,63 @@ fn main() {
         // closed-market behaviour (data only, status table in phase 5)
         s.push_str("### Closed-market symbols: do their prices still change? (same window)\n\n");
         s.push_str(&table(&["symbol", "price changes / min", "distinct updatedAt / min", "gap median ms", "gap p95 ms", "gap max ms", "out-of-order (send / receive order)", "dup updatedAt"], &closed_rows));
-        // storage
-        let bin_path = dir().join("samples-changes.bin");
-        let csv_path = dir().join("samples-tracked-all-polls.csv");
-        let binp_path = dir().join("samples-price-changes.bin");
-        fs::write(&binp_path, &bin_price).map_err(|e| e.to_string())?;
-        fs::write(&bin_path, &bin).map_err(|e| e.to_string())?;
-        fs::write(&csv_path, &csv).map_err(|e| e.to_string())?;
-        let mut sums = String::new();
-        for p in [&bin_path, &binp_path, &csv_path] {
-            let bytes = fs::read(p).map_err(|e| e.to_string())?;
-            sums.push_str(&format!("{}  {}\n", hex(&Sha256::digest(&bytes)), p.file_name().and_then(|x| x.to_str()).unwrap_or("?")));
+        s.push_str("### Crypto majors (BTC, ETH, SOL): distinct price changes per minute and gaps (same window)\n\n");
+        s.push_str(&table(&["symbol", "price changes / min", "distinct updatedAt / min", "gap median ms", "gap p95 ms", "gap max ms", "out-of-order (send / receive order)", "dup updatedAt"], &crypto_rows));
+        // storage (skipped in the weekday re-run: done on Saturday)
+        if !weekday() {
+            let bin_path = dir().join("samples-changes.bin");
+            let csv_path = dir().join("samples-tracked-all-polls.csv");
+            let binp_path = dir().join("samples-price-changes.bin");
+            fs::write(&binp_path, &bin_price).map_err(|e| e.to_string())?;
+            fs::write(&bin_path, &bin).map_err(|e| e.to_string())?;
+            fs::write(&csv_path, &csv).map_err(|e| e.to_string())?;
+            let mut sums = String::new();
+            for p in [&bin_path, &binp_path, &csv_path] {
+                let bytes = fs::read(p).map_err(|e| e.to_string())?;
+                sums.push_str(&format!("{}  {}\n", hex(&Sha256::digest(&bytes)), p.file_name().and_then(|x| x.to_str()).unwrap_or("?")));
+            }
+            let _ = fs::write(dir().join("SHA256SUMS"), &sums);
+            let window_min = (secs as f64 / 60.0).max(0.001);
+            let scale = 10.0 / window_min;
+            let bin_per10 = bin.len() as f64 * scale;
+            let csv_per10 = csv.len() as f64 * scale;
+            let binp_per10 = bin_price.len() as f64 * scale;
+            let binp_per_market_month = binp_per10 / stored_price_syms.max(1) as f64 * 4320.0;
+            let months_blocks = 4320.0; // 144 x 30 // 10-minute blocks in 30 days
+            let bin_per_market_month = bin_per10 / stored_syms.max(1) as f64 * months_blocks;
+            let csv_per_market_month = csv_per10 / TRACKED.len() as f64 * months_blocks;
+            s.push_str("\n### Sample files (DESIGN 4.5 shape: market, timestamp, bid = minPrice, ask = maxPrice, median)\n\n");
+            s.push_str(&table(
+                &["file", "bytes", "rows", "bytes per 10 min", "per market per month (30 d)", "x 100 markets per month"],
+                &[
+                    vec![
+                        "samples-changes.bin (64-byte records, ALL tickers, only when (updatedAt, min, max) changes)".into(),
+                        bin.len().to_string(),
+                        (bin.len() / RECORD_BYTES).to_string(),
+                        f(bin_per10, 0),
+                        format!("{} MB", f(bin_per_market_month / 1e6, 2)),
+                        format!("{} GB", f(bin_per_market_month * 100.0 / 1e9, 2)),
+                    ],
+                    vec![
+                        "samples-price-changes.bin (64-byte records, ALL tickers, only when (minPrice, maxPrice) changes)".into(),
+                        bin_price.len().to_string(),
+                        (bin_price.len() / RECORD_BYTES).to_string(),
+                        f(binp_per10, 0),
+                        format!("{} MB", f(binp_per_market_month / 1e6, 2)),
+                        format!("{} GB", f(binp_per_market_month * 100.0 / 1e9, 2)),
+                    ],
+                    vec![
+                        "samples-tracked-all-polls.csv (6 tracked symbols, EVERY poll)".into(),
+                        csv.len().to_string(),
+                        csv.lines().count().saturating_sub(1).to_string(),
+                        f(csv_per10, 0),
+                        format!("{} MB", f(csv_per_market_month / 1e6, 2)),
+                        format!("{} GB", f(csv_per_market_month * 100.0 / 1e9, 2)),
+                    ],
+                ],
+            ));
+            s.push_str(&format!("sha256 of both files is in data/SHA256SUMS:\n\n```\n{sums}```\n\n"));
         }
-        let _ = fs::write(dir().join("SHA256SUMS"), &sums);
-        let window_min = (secs as f64 / 60.0).max(0.001);
-        let scale = 10.0 / window_min;
-        let bin_per10 = bin.len() as f64 * scale;
-        let csv_per10 = csv.len() as f64 * scale;
-        let binp_per10 = bin_price.len() as f64 * scale;
-        let binp_per_market_month = binp_per10 / stored_price_syms.max(1) as f64 * 4320.0;
-        let months_blocks = 4320.0; // 144 x 30 // 10-minute blocks in 30 days
-        let bin_per_market_month = bin_per10 / stored_syms.max(1) as f64 * months_blocks;
-        let csv_per_market_month = csv_per10 / TRACKED.len() as f64 * months_blocks;
-        s.push_str("\n### Sample files (DESIGN 4.5 shape: market, timestamp, bid = minPrice, ask = maxPrice, median)\n\n");
-        s.push_str(&table(
-            &["file", "bytes", "rows", "bytes per 10 min", "per market per month (30 d)", "x 100 markets per month"],
-            &[
-                vec![
-                    "samples-changes.bin (64-byte records, ALL tickers, only when (updatedAt, min, max) changes)".into(),
-                    bin.len().to_string(),
-                    (bin.len() / RECORD_BYTES).to_string(),
-                    f(bin_per10, 0),
-                    format!("{} MB", f(bin_per_market_month / 1e6, 2)),
-                    format!("{} GB", f(bin_per_market_month * 100.0 / 1e9, 2)),
-                ],
-                vec![
-                    "samples-price-changes.bin (64-byte records, ALL tickers, only when (minPrice, maxPrice) changes)".into(),
-                    bin_price.len().to_string(),
-                    (bin_price.len() / RECORD_BYTES).to_string(),
-                    f(binp_per10, 0),
-                    format!("{} MB", f(binp_per_market_month / 1e6, 2)),
-                    format!("{} GB", f(binp_per_market_month * 100.0 / 1e9, 2)),
-                ],
-                vec![
-                    "samples-tracked-all-polls.csv (6 tracked symbols, EVERY poll)".into(),
-                    csv.len().to_string(),
-                    csv.lines().count().saturating_sub(1).to_string(),
-                    f(csv_per10, 0),
-                    format!("{} MB", f(csv_per_market_month / 1e6, 2)),
-                    format!("{} GB", f(csv_per_market_month * 100.0 / 1e9, 2)),
-                ],
-            ],
-        ));
-        s.push_str(&format!("sha256 of both files is in data/SHA256SUMS:\n\n```\n{sums}```\n\n"));
         if let Ok(mut g) = ticker_series.lock() {
             *g = ok.iter().map(|(p, r)| (p.recv_ms, r.clone())).collect();
         }
@@ -941,6 +956,9 @@ fn main() {
 
     // ---------------------------------------------------------------- 7. candles
     phase!("7 candles", {
+        if weekday() {
+            return Ok("## 7. Candle backfill\n\nSkipped in the weekday re-run (done on Saturday).\n\n".to_string());
+        }
         let mut rows = Vec::new();
         for sym in ["BTC", "ETH", "SOL", "GOLD", "SPY"] {
             let r = http.get(PRIMARY, &format!("/prices/candles?tokenSymbol={sym}&period=1m&limit=10000"))?;

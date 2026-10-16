@@ -16,6 +16,8 @@ use tungstenite::client::IntoClientRequest;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
+mod oracle;
+
 const INFO: &str = "https://api.hyperliquid.xyz/info";
 const WS_URL: &str = "wss://api.hyperliquid.xyz/ws";
 const UA: &str = "setl8-probe/0.1";
@@ -361,6 +363,15 @@ struct Bbo {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--oracle-analyze") {
+        oracle::analyze(args.get(i + 1).map_or("data", |x| x.as_str()));
+        return;
+    }
+    if args.iter().any(|a| a == "--oracle") {
+        oracle::run();
+        return;
+    }
     let t_run = Instant::now();
     let started_ms = now_ms();
     let rest = Arc::new(Rest::new());
