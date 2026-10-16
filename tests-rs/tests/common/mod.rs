@@ -4,6 +4,7 @@
 //! verification is ON, so a signer that did not sign makes the transaction fail like on a real cluster.
 #![allow(dead_code)]
 
+pub mod evaluator;
 pub mod journal;
 pub mod lifecycle;
 pub mod pass;

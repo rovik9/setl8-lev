@@ -2683,6 +2683,14 @@ name = "setl8-lev-engine"
 version = "0.1.0"
 
 [[package]]
+name = "setl8-lev-evaluator"
+version = "0.1.0"
+dependencies = [
+ "setl8-lev-engine",
+ "setl8-lev-journal-types",
+]
+
+[[package]]
 name = "setl8-lev-journal-types"
 version = "0.1.0"
 dependencies = [
@@ -2699,6 +2707,19 @@ dependencies = [
  "setl8-lev-journal-types",
  "setl8-shared-interfaces",
  "solana-sha256-hasher",
+]
+
+[[package]]
+name = "setl8-lev-verifier"
+version = "0.1.0"
+dependencies = [
+ "bs58",
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+ "setl8-lev-engine",
+ "setl8-lev-journal-types",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -4632,10 +4653,15 @@ dependencies = [
  "anchor-lang",
  "anchor-spl",
  "base64 0.21.7",
+ "bincode",
+ "ed25519-dalek",
  "litesvm",
+ "serde_json",
  "setl8-lev-engine",
+ "setl8-lev-evaluator",
  "setl8-lev-journal-types",
  "setl8-lev-trading",
+ "setl8-lev-verifier",
  "setl8-shared-interfaces",
  "sha2 0.10.9",
  "solana-account",
