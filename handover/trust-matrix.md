@@ -1,6 +1,6 @@
 # Trust matrix (M10)
 
-Input of the M12 audit report. Generated from `tests-rs/tests/trust_matrix.rs` (the test asserts every row: who catches it, the program's error code, the verifier's finding class; `TRUST_MATRIX_PRINT=1 cargo test --release --test trust_matrix -- --nocapture` prints the table). **54 batch/log tamper classes + 4 chain-level classes = 58 classes.**
+Input of the M12 audit report. Generated from `tests-rs/tests/trust_matrix.rs` (the test asserts every row: who catches it, the program's error code, the verifier's finding class; `TRUST_MATRIX_PRINT=1 cargo test --release --test trust_matrix -- --nocapture` prints the table). **68 batch/log tamper classes + 4 chain-level classes = 72 classes.**
 
 ## Method
 
@@ -12,7 +12,7 @@ An honest history is scripted (samples and signed orders), run through the refer
 
 Honest outputs of all ten base scenarios are accepted by both (`honest_outputs_are_accepted_by_both`).
 
-Summary: BOTH 20, PROGRAM 6, VERIFIER 25, NEITHER 3, plus 4 chain-level PROGRAM rows.
+Summary: BOTH 25, PROGRAM 6, VERIFIER 33, NEITHER 4, plus 4 chain-level PROGRAM rows. M9b (decisions D1 to D5 of design decision 53) added 14 rows: 5 BOTH, 8 VERIFIER, 1 NEITHER; the NEITHER row is NOT a row that moved: it is a limit the work on D3 made visible (below). No existing row changed class.
 
 ## Caught by the program, and also by the verifier (BOTH)
 
@@ -38,6 +38,11 @@ Summary: BOTH 20, PROGRAM 6, VERIFIER 25, NEITHER 3, plus 4 chain-level PROGRAM 
 | static-floor fail on an account above the floor | Both | FailStaticFloorNotReached (6097) | [FalseFail] |  |
 | quick-limit fail on an account below the limit | Both | FailQuickNotExceeded (6098) | [FalseFail] |  |
 | fill on an account that already failed | Both | AccountNotActive (6004) | [StateMismatch] | Program: `AccountNotActive`. The verifier reports events after the account ended. |
+| pending order that only reduces: its Close at a price altered by one unit | Both | EventPriceMismatch (6055) | [PriceMismatch] | D1: the Close that executes a pending order is checked like any close. |
+| commission fee posted after the slice that overshoots the quick limit | Both | QuickLimitExceeded (6018) | [FeeMismatch] | D2: the program allows nothing but the `Fail` after the overshoot; since M9b the verifier no longer expects the fee and flags it too. |
+| breach posted where its closes end at or below the static floor | Both | BreachBelowStaticFloor (6077) | [FalseBreach] | D4 (static floor). The verifier expects `Fail(StaticFloor)` at that sample. |
+| Fail omitted (a TightEnd instead) where a breach's closes end at or below the static floor | Both | MustReportFail (6089) | [MissedFail] | D4: a flat batch at or below the static floor must be `report_fail`; the verifier reports the missing `Fail`. |
+| breach posted where its closes overshoot the quick limit | Both | QuickLimitExceeded (6018) | [FalseBreach] | D4 (quick limit). |
 
 ## Caught by the program only (PROGRAM)
 
@@ -81,6 +86,14 @@ These are the classes the chain cannot see (DESIGN 1.6 right-hand column): price
 | limit order triggered but never filled | Verifier | - | [TriggerMissed] |  |
 | stop-loss close with no trigger | Verifier | - | [TriggerFalse] | An evaluator-originated close needs no intent; only the walk knows no sample triggered it. |
 | the same, with an independent second recorder | Verifier | - | [MissedBreach] |  |
+| pending order that only reduces: the Close that executes it is missing | Verifier | - | [TriggerMissed] | D1: the trigger passes and nothing executes the order. |
+| Close under the nonce of a pending order that no sample triggers | Verifier | - | [TriggerFalse] | D1: nothing triggered that order at that second. |
+| Close under the nonce of a set_sl_tp | Verifier | - | [ForgedTrade] | D1: not an order of the trader that can be executed by a close. |
+| flip that drops its opening remainder although its closing slice did not overshoot | Verifier | - | [ForgedTrade] | D2: the trades under the intent do not add up. |
+| pending order the account could not margin is filled anyway | Verifier | - | [PendingFillWithoutMargin] | D3: the program does not check margin at all (DESIGN 7.3 puts it off-chain). The same order with enough margin and no fill is the existing row "limit order triggered but never filled". |
+| phase_advanced to another phase after pass_finalized | Verifier | - | [StateMismatch] | D5: log lines are indexer output; the program never sees them. |
+| phase_advanced repeated after pass_finalized | Verifier | - | [StateMismatch] | D5. |
+| phase_advanced with no pass line before it | Verifier | - | [StateMismatch] | D5. |
 
 ## Chain-level rows (the pass flow; PROGRAM)
 
@@ -98,6 +111,7 @@ These are the classes the chain cannot see (DESIGN 1.6 right-hand column): price
 | a sample that caused a breach dropped from the archive, breach omitted (no second recorder) | Neither | - | - |  |
 | market order executed at an older sample inside max_age (worse price) | Neither | - | - |  |
 | a trader's market order ignored (no fill, intent on file) | Neither | - | - |  |
+| a market fill the account cannot margin | Neither | - | - |  |
 
 ## Residual trust
 
@@ -106,5 +120,7 @@ Every NEITHER row, with the reason it stays open. These are what a user of optio
 * **a sample that caused a breach dropped from the archive, breach omitted (no second recorder)**: A malicious evaluator that rewrites its own sample stream and its own journal consistently leaves nothing to contradict (DESIGN 4.5 "Honest limit", R-2): only an independent second recorder (next row) exposes it.
 * **market order executed at an older sample inside max_age (worse price)**: The proof only has to be a real sample no older than `max_age_secs` (A-1, A-7); nothing says it must be the NEWEST one at the order's time, so the evaluator can pick the worst price of the window (up to 900 s in this test's markets). Bounded by `max_age_secs` and the spread; shorten it per market to shrink the slack.
 * **a trader's market order ignored (no fill, intent on file)**: A signed market or close intent with no trade under it is indistinguishable from an order the evaluator never received or that was rejected for margin; the intents file proves what was signed, not that it was executed (censorship). Pending orders are different: those are checked (`TriggerMissed`).
+
+* **a market fill the account cannot margin**: neither the program (DESIGN 7.3 puts margin sufficiency off-chain; it checks the margin FIELD of a fill, not that the account can carry it) nor the verifier (module 9 decision 12; D3 checks only the triggered PENDING orders, whose absence of an event needs a ruling) says no. A malicious evaluator can post a market fill for an account that cannot margin it; the signed intent on file shows the trader asked for the trade, the loss from the leverage follows from the formulas, and the account breaches or fails normally. Closing it would be one more verifier check (the same function D3 uses, applied to market fills). Found while writing the D3 rows; not caused by D1 to D5.
 
 Two more limits follow from the table without being separate rows: a verifier that is not run catches nothing (the watchdog is an operational duty, DESIGN 13.3), and the unsigned price sources (decision 46: GMX tickers, Hyperliquid) prove only what the evaluator saw, not what was true.

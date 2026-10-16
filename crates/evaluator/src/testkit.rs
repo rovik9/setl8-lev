@@ -108,6 +108,11 @@ pub enum Scenario {
     Night,
     Closed,
     TightClean,
+    /// M9b: a breach whose forced closes end at or below the static floor or over the quick limit, and a flip whose
+    /// closing slice overshoots the quick limit (decisions D2 and D4).
+    Convert,
+    /// M9b: the margin of a triggered pending order is short (decision D3); the order stays pending and may fill later.
+    Margin,
 }
 
 /// A complete history.
@@ -162,8 +167,6 @@ struct Plot {
     k_milli: i64,
     long: bool,
     allow_collide: bool,
-    /// Exploration mode: no guards against the known disagreements (`generate_wild`).
-    wild: bool,
     /// The newest second any emitted sample carries (orders and posts are dated with it).
     last: i64,
     /// Margin the script has committed (every order assumed to fill and never to shrink), micro-USD.
@@ -173,7 +176,7 @@ struct Plot {
 impl Plot {
     fn new(rng: Rng, t0: i64, size: i64, markets: &[MarketSpec], allow_collide: bool) -> Plot {
         let mk = markets.iter().map(|m| MarketGen { spec: m.clone(), price: m.start_price, next_due: t0, frozen: false }).collect();
-        Plot { rng, t: t0, steps: Vec::new(), mk, used: BTreeSet::new(), nonce: 1, size, k_milli: 1_000, long: true, allow_collide, wild: false, last: t0, committed: 0 }
+        Plot { rng, t: t0, steps: Vec::new(), mk, used: BTreeSet::new(), nonce: 1, size, k_milli: 1_000, long: true, allow_collide, last: t0, committed: 0 }
     }
 
     fn emit_sample(&mut self, m: usize, mut sec: i64) {
@@ -367,8 +370,8 @@ fn pick_source(rng: &mut Rng) -> u8 {
     }
 }
 
-fn markets_for(rng: &mut Rng, closed_scenario: bool) -> Vec<MarketSpec> {
-    let n = rng.range(1, 3);
+fn markets_for(rng: &mut Rng, closed_scenario: bool, two: bool) -> Vec<MarketSpec> {
+    let n = if two { rng.range(2, 3) } else { rng.range(1, 3) };
     let mut v = Vec::new();
     // primary: FX major 65%, crypto major 15%, metal 10%, index 10%
     let r = rng.range(0, 99);
@@ -406,9 +409,9 @@ pub fn generate(seed: u64) -> PathSpec {
     generate_inner(seed, false)
 }
 
-/// Exploration only (not part of any gate): noise histories WITHOUT the guards that keep the campaigns clear of the known
-/// disagreements (pending orders that can reduce, commission with quick closes, collisions, any side on any market). Run it
-/// with `ENGINE_WILD=1` to look for disagreements nobody has written down yet.
+/// Exploration only (not part of any gate): noise histories only, with commissions and collisions (two markets sampled in the
+/// same second) much more often than in `generate`. Run it with `ENGINE_WILD=1` to look for disagreements nobody has written
+/// down yet.
 pub fn generate_wild(seed: u64) -> PathSpec {
     generate_inner(seed, true)
 }
@@ -416,7 +419,7 @@ pub fn generate_wild(seed: u64) -> PathSpec {
 fn generate_inner(seed: u64, wild: bool) -> PathSpec {
     let mut rng = Rng::new(seed);
     // scenario mix (ppm): chosen so that the coverage floors of the gate run are cleared with a wide margin
-    let r = if wild { 900 } else { rng.range(0, 999) };
+    let r = if wild { 800 } else { rng.range(0, 999) };
     let scenario = match r {
         0..=99 => Scenario::Breach,
         100..=149 => Scenario::StaticFail,
@@ -425,6 +428,8 @@ fn generate_inner(seed: u64, wild: bool) -> PathSpec {
         270..=429 => Scenario::Night,
         430..=489 => Scenario::Closed,
         490..=599 => Scenario::TightClean,
+        940..=999 => Scenario::Convert,
+        900..=939 => Scenario::Margin,
         _ => Scenario::Noise,
     };
     let tier = if matches!(scenario, Scenario::Pass) { rng.range(3, 9) as usize } else { rng.range(0, 9) as usize };
@@ -433,11 +438,11 @@ fn generate_inner(seed: u64, wild: bool) -> PathSpec {
         Scenario::Pass => rng.range(1, 5) as u8,
         _ => rng.range(1, 5) as u8,
     };
-    let markets = markets_for(&mut rng, matches!(scenario, Scenario::Closed));
+    let markets = markets_for(&mut rng, matches!(scenario, Scenario::Closed), matches!(scenario, Scenario::Convert));
     let mut commission = [0u32; 8];
-    // commission on some paths. Never where quick profitable closes are common (quick-limit stories and the noise trader):
-    // a quick-limit fail with a commission is unpostable (handover/module-10.md, finding 2)
-    if (wild || !matches!(scenario, Scenario::QuickFail | Scenario::Noise)) && rng.chance(if wild { 600_000 } else { 250_000 }) {
+    // commission on some paths; more often on the quick-limit stories, where the overshooting slice has no fee (decision D2)
+    let comm_ppm = if wild { 600_000 } else if matches!(scenario, Scenario::QuickFail | Scenario::Convert) { 500_000 } else { 250_000 };
+    if rng.chance(comm_ppm) {
         commission = [rng.range(5, 40) as u32, 30, 30, 30, 40, 50, 60, 80];
     }
     let opened_time = match scenario {
@@ -449,7 +454,6 @@ fn generate_inner(seed: u64, wild: bool) -> PathSpec {
     let ctx = Ctx { size, lev0: leverage_of(markets[0].class), phase };
     let collide = rng.chance(if wild { 500_000 } else { 50_000 });
     let mut p = Plot::new(rng.clone(), t0, size, &markets, collide);
-    p.wild = wild;
     p.rng = Rng::new(seed ^ 0xDEAD_BEEF);
     match scenario {
         Scenario::Noise => noise(&mut p, &ctx),
@@ -460,6 +464,8 @@ fn generate_inner(seed: u64, wild: bool) -> PathSpec {
         Scenario::Night => night(&mut p, &ctx),
         Scenario::Closed => closed(&mut p, &ctx),
         Scenario::TightClean => tight_clean(&mut p, &ctx),
+        Scenario::Convert => convert(&mut p, &ctx),
+        Scenario::Margin => margin(&mut p, &ctx),
     }
     // a final tick one second after the last input closes the last second
     let end = p.last + 2;
@@ -495,26 +501,24 @@ fn noise(p: &mut Plot, ctx: &Ctx) {
         sprinkle_posts(p);
         match p.rng.range(0, 11) {
             0 => {
-                // a market order on the main market (any market in wild mode)
+                // a market order on any market: it can leave a position that a pending order of that market only reduces (D1)
                 let kk = p.rng.range(100, 700);
                 let long = p.rng.chance(500_000);
-                // (wild: not on the market that carries pending orders, so that no pending order can only reduce)
-                let n_mk = p.mk.len() as i64;
-                let m = if p.wild && n_mk > 1 { p.rng.range(0, n_mk - 2) as usize } else { 0 };
+                let m = p.rng.range(0, p.mk.len() as i64 - 1) as usize;
                 let q = p.qty_for(m, kk);
                 p.market_order(m, long, q, 0, 0);
             }
             1 | 2 | 8 | 9 => {
-                // a limit or a stop around a SECONDARY market; every pending order of a market has the same side, so a
-                // pending order can only open or add (a pure reduce by a pending order has no Fill event: finding in module-10.md)
-                if p.mk.len() > 1 {
-                    let m = if p.wild { p.mk.len() - 1 } else { p.rng.range(1, p.mk.len() as i64 - 1) as usize };
-                    let long = m % 2 == 1;
+                // a limit or a stop around any market, either side: it can open, add, reduce or flip (D1); its margin is
+                // checked when it fills and an order the account cannot margin stays pending (D3)
+                {
+                    let m = p.rng.range(0, p.mk.len() as i64 - 1) as usize;
+                    let long = p.rng.chance(500_000);
                     let stop = p.rng.chance(400_000);
                     let off = p.rng.range(500, 6_000);
                     let below = long != stop;
                     let level = p.scaled(m, if below { -off } else { off });
-                    let kk = p.rng.range(80, 500);
+                    let kk = if p.rng.chance(250_000) { p.rng.range(800, 2_500) } else { p.rng.range(80, 500) };
                     let q = p.qty_for(m, kk);
                     let (sl, tp) = if p.rng.chance(400_000) {
                         let w1 = p.rng.range(1_000, 6_000);
@@ -527,7 +531,7 @@ fn noise(p: &mut Plot, ctx: &Ctx) {
                     } else {
                         (0, 0)
                     };
-                    if p.committed + margin_of(p, m, kk) < ctx.size * 45 / 100 {
+                    if p.committed + margin_of(p, m, kk) < ctx.size * 130 / 100 {
                         p.committed += margin_of(p, m, kk);
                         let n = p.limit_order(m, long, q, level, stop, sl, tp);
                         pend.push((n, m));
@@ -569,6 +573,127 @@ fn noise(p: &mut Plot, ctx: &Ctx) {
     p.run(60, 5, 0, 500, 100_000);
     p.close_order(0, 0);
     p.run(30, 5, 0, 300, 50_000);
+}
+
+/// M9b stories (decisions D2 and D4): what a breach turns into when its forced closes are booked, and a flip whose closing
+/// slice overshoots the quick limit. Percentages are of S, in ppm.
+fn convert(p: &mut Plot, ctx: &Ctx) {
+    let r = p.rng.range(0, 99);
+    if r < 40 && p.mk.len() >= 2 {
+        convert_static(p, ctx);
+    } else if r < 75 {
+        convert_quick_breach(p, ctx);
+    } else {
+        convert_flip(p, ctx);
+    }
+}
+
+/// A realized loss of 7.4% to 7.8% of S (the balance sits 0.2% to 0.6% above the static floor), then in under 45 s: position A
+/// gains `g` (tight mode starts), position B loses `d`, the equity touches the tight floor (a breach), and the closes
+/// (A's profit halved as a quick slice, B's loss in full) end at or below the static floor: `Fail(StaticFloor)`.
+fn convert_static(p: &mut Plot, ctx: &Ctx) {
+    let k0 = (ctx.lev0 * 150).clamp(400, 2_000);
+    let long = p.rng.chance(500_000);
+    p.run(20, 5, 0, 300, 50_000);
+    p.open_main(long, k0, 0, 0);
+    p.run(10, 5, 0, 100, 50_000);
+    let l = p.rng.range(74_000, 78_000);
+    p.run(30, 5, -l, 100, 50_000);
+    p.close_order(0, 0);
+    p.run(15, 5, 0, 100, 50_000);
+    p.post(false);
+    let delta = 80_000 - l; // B minus the static floor, ppm of S
+    let lev1 = leverage_of(p.mk[1].spec.class);
+    let k1 = (lev1 * 150).clamp(300, 2_000);
+    p.long = true;
+    p.k_milli = k0;
+    let qa = p.qty_for(0, k0);
+    p.market_order(0, true, qa, 0, 0);
+    let qb = p.qty_for(1, k1);
+    p.market_order(1, true, qb, 0, 0);
+    p.run(5, 5, 0, 50, 20_000);
+    let g = p.rng.range(12_000, 25_000);
+    let d_min = (delta + g / 2 + 500).max(10_200);
+    let d_max = delta + g - 500;
+    let d = if d_min < d_max { p.rng.range(d_min, d_max) } else { d_max };
+    // A gains g: the primary market moves
+    p.long = true;
+    p.t += 5;
+    let ppb = p.s_to_ppb(g);
+    p.bump(0, ppb);
+    p.tick(5);
+    p.run(5, 5, 0, 20, 0);
+    // B loses d: the secondary market moves and is sampled now
+    p.t += 5;
+    let ppb_b = -(i64::try_from(i128::from(d) * 1_000_000 / i128::from(k1)).unwrap_or(i64::MAX));
+    p.bump(1, ppb_b);
+    p.mk[1].next_due = p.t;
+    p.tick(5);
+    p.run(15, 5, 0, 10, 0);
+    p.post(false);
+}
+
+/// Open a large position, gain `a` (11% to 16% of S) within seconds (tight mode), fall back to a profit `pb` of 5.7% of S or more:
+/// the equity touches the tight floor, the quick slice is credited half, which is over the 2.8% limit: `Fail(PhaseQuick)`.
+fn convert_quick_breach(p: &mut Plot, ctx: &Ctx) {
+    let k = main_k(&mut p.rng, ctx).max(1_000.min(k_range(ctx).1));
+    let long = p.rng.chance(500_000);
+    p.run(20, 5, 0, 300, 50_000);
+    p.open_main(long, k, 0, 0);
+    p.run(5, 5, 0, 100, 20_000);
+    let a = p.rng.range(110_000, 160_000);
+    let pb = p.rng.range(57_500, a - 51_000);
+    p.gap(a);
+    p.gap(-(a - pb));
+    p.run(20, 5, 0, 20, 20_000);
+    p.post(false);
+}
+
+/// A quick profit of 6% to 11% of S in about 20 s, then a flip: the closing slice alone is credited more than 2.8% of S, so the
+/// account fails before the opening remainder.
+fn convert_flip(p: &mut Plot, ctx: &Ctx) {
+    let k = main_k(&mut p.rng, ctx).max(1_000.min(k_range(ctx).1));
+    let long = p.rng.chance(500_000);
+    p.run(20, 5, 0, 300, 50_000);
+    p.open_main(long, k, 0, 0);
+    p.run(5, 5, 0, 100, 20_000);
+    let g = p.rng.range(60_000, 110_000);
+    p.run(15, 5, g, 50, 20_000);
+    p.run(5, 5, 0, 20, 20_000);
+    let q = p.qty_for(0, k * 3 / 2);
+    p.market_order(0, !long, q, 0, 0);
+    p.long = !long;
+    p.run(20, 5, 0, 100, 20_000);
+    p.post(false);
+}
+
+/// The main position uses 78% to 88% of the margin capacity; a pending order of the same side asking for 25% to 40% more is
+/// triggered by a small move and cannot be margined (D3): it stays pending, nothing is journalled for it. In 60% of the
+/// stories the trader then closes the main position and the order, still triggered, fills at the next sample.
+fn margin(p: &mut Plot, ctx: &Ctx) {
+    let lev = ctx.lev0;
+    let k = p.rng.range(lev * 780, lev * 880);
+    let long = p.rng.chance(500_000);
+    p.run(20, 5, 0, 100, 20_000);
+    p.open_main(long, k, 0, 0);
+    p.run(10, 5, 0, 50, 20_000);
+    let off = p.rng.range(200, 500);
+    let level = p.scaled(0, if long { -off } else { off });
+    let kk = p.rng.range(lev * 250, lev * 400);
+    let q = p.qty_for(0, kk);
+    p.limit_order(0, long, q, level, false, 0, 0);
+    // the main position loses about `off` of the price: the pending order triggers
+    let loss = i64::try_from(i128::from(k) * i128::from(off) / 1000).unwrap_or(0) + 1_500;
+    p.run(20, 5, -loss, 50, 20_000);
+    p.post(false);
+    p.run(15, 5, 0, 50, 20_000);
+    if p.rng.chance(600_000) {
+        p.close_order(0, 0);
+        p.run(20, 5, 0, 50, 20_000);
+        p.post(false);
+        p.close_order(0, 0);
+    }
+    p.run(20, 5, 0, 50, 20_000);
 }
 
 fn scaled_level(level: u64, ppm: i64) -> u64 {

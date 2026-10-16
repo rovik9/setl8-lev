@@ -315,18 +315,15 @@ impl LiteChain {
             self.lines.push(pass_confirmed_line(&self.account, e.phase, e.amount, &v, e.eligible_at));
             self.pass_events += 1;
         }
-        let finalized = cpi_events::<PassFinalized>(meta);
-        for e in &finalized {
+        for e in &cpi_events::<PassFinalized>(meta) {
             self.lines.push(pass_finalized_line(&self.account, e.phase, e.to_phase, e.amount, e.request_id, e.time));
             self.pass_events += 1;
         }
-        // a `PhaseAdvanced` that follows a `PassFinalized` would be a second phase change for the verifier: only the
-        // phase-1 confirmation (no `PassFinalized`) is logged as `phase_advanced`
-        if finalized.is_empty() || std::env::var("DIFF_BOTH_LINES").is_ok() {
-            for e in cpi_events::<PhaseAdvanced>(meta) {
-                self.lines.push(phase_advanced_line(&self.account, e.from_phase, e.to_phase, e.time));
-                self.pass_events += 1;
-            }
+        // the program emits `PhaseAdvanced` as well as `PassFinalized` for one `finalize_pass`; the verifier takes the one that
+        // directly follows a `pass_finalized` with the same new phase as a confirmation (M9b decision D5)
+        for e in cpi_events::<PhaseAdvanced>(meta) {
+            self.lines.push(phase_advanced_line(&self.account, e.from_phase, e.to_phase, e.time));
+            self.pass_events += 1;
         }
     }
 

@@ -27,6 +27,7 @@ struct Cover {
     pass_reject_cancel: u64,
     closed_market: u64,
     verifier_invalid: u64,
+    m9b: M9bCover,
 }
 
 impl Cover {
@@ -46,6 +47,7 @@ impl Cover {
         self.pass_reject_cancel += o.pass_reject_cancel;
         self.closed_market += o.closed_market;
         self.verifier_invalid += o.verifier_invalid;
+        self.m9b.add(&o.m9b);
     }
 }
 
@@ -102,12 +104,8 @@ fn run_seed(seed: u64) -> Result<Cover, String> {
     c.pass_reject_cancel = u64::from(r.pass.rejected + r.pass.cancelled > 0);
     c.closed_market = u64::from(st.closed_market_rejects > 0 || st.closed_with_position > 0);
     let _ = evs.iter().filter(|e| matches!(e, JournalEvent::Meta { .. })).count();
-    if st.unpostable > 0 {
-        return Err(format!("unpostable sequence ({:?})", spec.scenario));
-    }
-    if st.refused_fills > 0 {
-        return Err(format!("a triggered pending order was refused ({:?})", spec.scenario));
-    }
+    let lines: Vec<String> = r.items.iter().filter_map(|i| if let Item::Line(l) = i { Some(l.clone()) } else { None }).collect();
+    c.m9b = m9b_cover(&spec, w, &r.items, &lines);
     Ok(c)
 }
 
@@ -148,6 +146,9 @@ fn engine_only_campaign() {
     let f = failures.lock().unwrap();
     println!("engine-only: {n} paths from seed {start} in {:.1}s on {threads} threads", t0.elapsed().as_secs_f64());
     println!("{c:#?}");
+    // the M9b stories must be exercised (floors scale with the number of paths; 100 each at 10,000, 150 for the margin refusal)
+    let short: Vec<String> = M9bCover::floors(n).into_iter().filter(|(name, floor)| c.m9b.value_of(name) < *floor).map(|(name, floor)| format!("{name} {} < {floor}", c.m9b.value_of(name))).collect();
+    assert!(short.is_empty() || !f.is_empty() || std::env::var("ENGINE_WILD").is_ok(), "under-exercised: {short:?}");
     if !f.is_empty() {
         let mut fs: Vec<_> = f.iter().collect();
         fs.sort_by_key(|x| x.0);

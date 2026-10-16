@@ -59,6 +59,10 @@ impl Script {
         self.steps.push(Step::Post { sec, heartbeat: false });
         self
     }
+    fn tick(&mut self, sec: i64) -> &mut Self {
+        self.steps.push(Step::Tick { sec });
+        self
+    }
     fn end(&mut self, sec: i64) {
         self.steps.push(Step::Tick { sec });
         self.steps.push(Step::Post { sec, heartbeat: true });
@@ -239,6 +243,121 @@ fn sc_session() -> ::evaluator::testkit::PathSpec {
     s.s(0, T_1400 + 29 * 60 + 20, p4(10_000));
     s.end(T_1400 + 29 * 60 + 25);
     base_spec(vec![eur_spec(0, "EURUSD", 0, 60, vec![(0, 14 * 60 + 30)])], 0, 2, s.steps)
+}
+
+// ---- M9b scenarios (decisions D1 to D5)
+
+/// D1. A long 100,000 EUR (own batch), then a sell limit of 25,000 at 1.0050 that triggers at +120 s and only reduces (no tight mode:
+/// the open profit stays under 1% of S). Spread 0.
+fn sc_pend_reduce() -> ::evaluator::testkit::PathSpec {
+    let mut s = Script::new();
+    s.s(0, T_1400, p4(10_000));
+    s.o(market_order(0, true, MEUR / 10, T_1400));
+    s.o(order(IntentKind::Limit, 0, 1, MEUR / 40, p4(10_050), 0, 0, 0, T_1400));
+    s.s(0, T_1400 + 10, p4(10_000));
+    s.post(T_1400 + 11);
+    s.s(0, T_1400 + 120, p4(10_060));
+    s.post(T_1400 + 121);
+    s.end(T_1400 + 130);
+    base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+}
+
+/// D1. A long 1 M EUR; a sell limit that no sample reaches (nonce 2); a set_sl_tp (nonce 3); the trader's close (nonce 4).
+fn sc_pend_untriggered() -> ::evaluator::testkit::PathSpec {
+    let mut s = Script::new();
+    s.s(0, T_1400, p4(10_000));
+    s.o(market_order(0, true, MEUR, T_1400));
+    s.o(order(IntentKind::Limit, 0, 1, MEUR / 4, p4(10_500), 0, 0, 0, T_1400));
+    s.s(0, T_1400 + 10, p4(10_000));
+    s.tick(T_1400 + 11);
+    s.o(order(IntentKind::SetSlTp, 0, 0, 0, 0, p4(9_000), 0, 0, T_1400 + 11));
+    s.o(close_order(0, T_1400 + 12));
+    s.s(0, T_1400 + 20, p4(10_001));
+    s.end(T_1400 + 30);
+    base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+}
+
+/// D2. A long 1 M EUR with a commission of 20 ppm; +5,602 raw in 30 s: the closing slice's credit 2,801 is over 0.028 S.
+fn sc_overshoot() -> ::evaluator::testkit::PathSpec {
+    let mut s = Script::new();
+    s.s(0, T_1400, p4(10_000));
+    s.o(market_order(0, true, MEUR, T_1400));
+    s.post(T_1400 + 1);
+    s.s(0, T_1400 + 30, 1_005_602_000_000);
+    s.o(close_order(0, T_1400 + 30));
+    s.s(0, T_1400 + 40, 1_005_602_000_000);
+    s.end(T_1400 + 45);
+    base_spec(vec![eur_spec(0, "EURUSD", 0, 60, vec![(0, 10_080)])], 20, 2, s.steps)
+}
+
+/// D2. A long 400,000 EUR, +0.20% in 20 s (credit 400, no overshoot, no tight mode), then a market sell of 1.2 M: a flip, `Close(Flip)`
+/// and a `Fill` of the remaining 800,000.
+fn sc_flip() -> ::evaluator::testkit::PathSpec {
+    let mut s = Script::new();
+    s.s(0, T_1400, p4(10_000));
+    s.o(market_order(0, true, 4 * MEUR / 10, T_1400));
+    s.s(0, T_1400 + 5, p4(10_000));
+    s.s(0, T_1400 + 20, p4(10_020));
+    s.post(T_1400 + 21);
+    s.tick(T_1400 + 21);
+    s.o(market_order(0, false, 12 * MEUR / 10, T_1400 + 21));
+    s.s(0, T_1400 + 25, p4(10_020));
+    s.end(T_1400 + 30);
+    base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+}
+
+/// D3. A long 4.9 M EUR in market 0 (margin $98,000 of $100,000); a buy limit of 1 M in market 1 (flat) triggers at +21 s and cannot be
+/// margined. The last batch is a heartbeat `Meta` dated +21 s, so a Fill dated +21 s can be put before it.
+fn sc_margin_short() -> ::evaluator::testkit::PathSpec {
+    let mut s = Script::new();
+    let t = T_1400;
+    s.s(0, t, p4(10_000)).s(1, t + 1, p4(10_000));
+    s.o(market_order(0, true, 4_900 * MEUR / 1000, t + 1));
+    s.o(order(IntentKind::Limit, 1, 0, MEUR, p4(9_990), 0, 0, 0, t + 1));
+    s.s(0, t + 10, p4(10_000)).s(1, t + 11, p4(10_000));
+    s.s(0, t + 20, p4(10_000)).s(1, t + 21, p4(9_985));
+    s.end(t + 22);
+    base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+}
+
+/// D4, static floor. B = 92,500 after a realized loss; two positions; A +1,500 (tight mode), B -1,500 (the breach); the closes end at 91,750.
+fn sc_conv_static() -> ::evaluator::testkit::PathSpec {
+    let mut s = Script::new();
+    let t0 = T_1400;
+    s.s(0, t0, p4(10_000)).s(1, t0 + 1, p4(10_000));
+    s.o(market_order(0, true, MEUR, t0 + 1));
+    s.s(0, t0 + 100, p4(9_925)).s(1, t0 + 101, p4(10_000));
+    s.o(close_order(0, t0 + 101));
+    s.s(0, t0 + 110, p4(9_925)).s(1, t0 + 111, p4(10_000));
+    s.post(t0 + 112);
+    s.s(0, t0 + 113, p4(10_000)).s(1, t0 + 114, p4(10_000));
+    s.o(market_order(0, true, MEUR, t0 + 114));
+    s.o(market_order(1, true, MEUR, t0 + 114));
+    s.s(0, t0 + 123, p4(10_015)).s(1, t0 + 124, p4(10_000));
+    s.s(1, t0 + 153, p4(9_985));
+    s.end(t0 + 160);
+    base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+}
+
+/// D4, quick limit. A long 1 M EUR, +10.7% in 20 s (tight mode), back to +5.7% (the breach); the quick slice credits 2,850 > 2,800.
+fn sc_conv_quick() -> ::evaluator::testkit::PathSpec {
+    let mut s = Script::new();
+    s.s(0, T_1400, p4(10_000));
+    s.o(market_order(0, true, MEUR, T_1400));
+    s.post(T_1400 + 1);
+    s.s(0, T_1400 + 20, p4(11_070));
+    s.s(0, T_1400 + 40, p4(10_570));
+    s.end(T_1400 + 45);
+    base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+}
+
+/// Two flat markets and nothing else: a place to put a fill the evaluator should not have posted.
+fn sc_flat_two() -> ::evaluator::testkit::PathSpec {
+    let mut s = Script::new();
+    s.s(0, T_1400, p4(10_000)).s(1, T_1400 + 1, p4(10_000));
+    s.s(0, T_1400 + 10, p4(10_000)).s(1, T_1400 + 11, p4(10_000));
+    s.end(T_1400 + 15);
+    base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 // ------------------------------------------------------------------------------------------------- the tampering view
@@ -608,6 +727,23 @@ fn sc_win() -> ::evaluator::testkit::PathSpec {
 }
 
 // ------------------------------------------------------------------------------------------------- the rows
+
+enum D5 {
+    Finalized,
+    Advanced(u8, u8),
+}
+
+/// Appends the pass lines of a finalization of phase 2 (the story `sc_win` ends flat at +8.5%) as an indexer would write them.
+fn d5_lines(t: &mut T, lines: &[D5]) {
+    use common::evaluator::shared::runner::{pass_finalized_line, phase_advanced_line};
+    let time = T_1400 + 200_000;
+    for l in lines {
+        t.extra_lines.push(match l {
+            D5::Finalized => pass_finalized_line(&t.params.account, 2, 3, 8_000_000_000, 1, time),
+            D5::Advanced(from, to) => phase_advanced_line(&t.params.account, *from, *to, time),
+        });
+    }
+}
 
 type Tamper = fn(&mut T);
 
@@ -1454,6 +1590,210 @@ fn rows() -> Vec<Row> {
             program: None,
             verifier: &[],
         },
+
+        // ---------------------------------------------------------------- M9b: the relaxed expectations (decisions D1 to D5)
+        Row {
+            name: "pending order that only reduces: the Close that executes it is missing",
+            sc: sc_pend_reduce,
+            tamper: |t| {
+                let at = t.find(|e| matches!(e, JournalEvent::Close { .. }));
+                t.batches[at.0].batch.events.remove(at.1);
+                t.batches[at.0].batch.proofs.clear();
+                t.batches[at.0].markets.clear();
+                t.set_meta_flat(at.0, false);
+                t.fix();
+            },
+            who: Verifier,
+            program: None,
+            verifier: &[F::TriggerMissed],
+        },
+        Row {
+            name: "pending order that only reduces: its Close at a price altered by one unit",
+            sc: sc_pend_reduce,
+            tamper: |t| {
+                let at = t.find(|e| matches!(e, JournalEvent::Close { .. }));
+                if let JournalEvent::Close { side, qty, entry_e12, exit_e12, pnl, credited, quick, .. } = t.ev(at) {
+                    *exit_e12 += 1;
+                    *pnl = engine::pnl_micro(*side == Side::Long, *qty, *entry_e12, *exit_e12).unwrap();
+                    *credited = engine::slice_credit(*pnl, *quick).0;
+                }
+                t.fix();
+            },
+            who: Both,
+            program: Some(Setl8Error::EventPriceMismatch),
+            verifier: &[F::PriceMismatch],
+        },
+        Row {
+            name: "Close under the nonce of a pending order that no sample triggers",
+            sc: sc_pend_untriggered,
+            tamper: |t| {
+                let at = t.find(|e| matches!(e, JournalEvent::Close { .. }));
+                if let JournalEvent::Close { intent_id, .. } = t.ev(at) {
+                    *intent_id = 2;
+                }
+                t.fix();
+            },
+            who: Verifier,
+            program: None,
+            verifier: &[F::TriggerFalse],
+        },
+        Row {
+            name: "Close under the nonce of a set_sl_tp",
+            sc: sc_pend_untriggered,
+            tamper: |t| {
+                let at = t.find(|e| matches!(e, JournalEvent::Close { .. }));
+                if let JournalEvent::Close { intent_id, .. } = t.ev(at) {
+                    *intent_id = 3;
+                }
+                t.fix();
+            },
+            who: Verifier,
+            program: None,
+            verifier: &[F::ForgedTrade],
+        },
+        Row {
+            name: "commission fee posted after the slice that overshoots the quick limit",
+            sc: sc_overshoot,
+            tamper: |t| {
+                let at = t.find(|e| matches!(e, JournalEvent::Close { .. }));
+                let JournalEvent::Close { qty, exit_e12, time, .. } = t.batches[at.0].batch.events[at.1].clone() else { unreachable!() };
+                let fee = engine::fee_ceil_micro(engine::margin_micro(qty, exit_e12, 1).unwrap(), 20).unwrap();
+                let fee_ev = JournalEvent::Fee { kind: FeeKind::Commission, market: 0, amount: u64::try_from(fee).unwrap(), time };
+                t.batches[at.0].batch.events.insert(at.1 + 1, fee_ev);
+                t.batches[at.0].markets = vec![0];
+                t.fix();
+            },
+            who: Both,
+            program: Some(Setl8Error::QuickLimitExceeded),
+            verifier: &[F::FeeMismatch],
+        },
+        Row {
+            name: "flip that drops its opening remainder although its closing slice did not overshoot",
+            sc: sc_flip,
+            tamper: |t| {
+                let at = t.find(|e| matches!(e, JournalEvent::Fill { qty, .. } if *qty == 8 * MEUR / 10));
+                t.batches[at.0].batch.events.remove(at.1);
+                t.set_meta_flat(at.0, true);
+                t.fix();
+            },
+            who: Verifier,
+            program: None,
+            verifier: &[F::ForgedTrade],
+        },
+        Row {
+            name: "pending order the account could not margin is filled anyway",
+            sc: sc_margin_short,
+            tamper: |t| {
+                let i = t.sample_at(1, T_1400 + 21);
+                let time = T_1400 + 21;
+                let mut fill = t.hand_fill(i, true, MEUR, time, 2, 0);
+                if let JournalEvent::Fill { order_kind, .. } = &mut fill {
+                    *order_kind = ::journal_types::OrderKind::Limit;
+                }
+                let proofs = vec![t.proof_of_sample(i)];
+                t.append(::evaluator::BatchKind::PostJournal, vec![fill], proofs, time, false, vec![1]);
+                t.fix();
+            },
+            who: Verifier,
+            program: None,
+            verifier: &[F::PendingFillWithoutMargin],
+        },
+        Row {
+            name: "breach posted where its closes end at or below the static floor",
+            sc: sc_conv_static,
+            tamper: |t| {
+                let at = t.find(|e| matches!(e, JournalEvent::Fail { .. }));
+                let JournalEvent::Fail { time, b_after, proof, .. } = t.batches[at.0].batch.events[at.1].clone() else { unreachable!() };
+                let l = t.account_after(at.0 - 1).l_level;
+                t.batches[at.0].batch.events[at.1] = JournalEvent::Breach { time, l_level: l, b_after, proof };
+                t.batches[at.0].kind = ::evaluator::BatchKind::PostJournal;
+                t.fix();
+            },
+            who: Both,
+            program: Some(Setl8Error::BreachBelowStaticFloor),
+            verifier: &[F::FalseBreach],
+        },
+        Row {
+            name: "Fail omitted (a TightEnd instead) where a breach's closes end at or below the static floor",
+            sc: sc_conv_static,
+            tamper: |t| {
+                let at = t.find(|e| matches!(e, JournalEvent::Fail { .. }));
+                let JournalEvent::Fail { time, .. } = t.batches[at.0].batch.events[at.1].clone() else { unreachable!() };
+                t.batches[at.0].batch.events[at.1] = JournalEvent::TightEnd { time };
+                t.batches[at.0].kind = ::evaluator::BatchKind::PostJournal;
+                t.fix();
+            },
+            who: Both,
+            program: Some(Setl8Error::MustReportFail),
+            verifier: &[F::MissedFail],
+        },
+        Row {
+            name: "breach posted where its closes overshoot the quick limit",
+            sc: sc_conv_quick,
+            tamper: |t| {
+                let at = t.find(|e| matches!(e, JournalEvent::Fail { .. }));
+                let JournalEvent::Fail { time, b_after, proof, .. } = t.batches[at.0].batch.events[at.1].clone() else { unreachable!() };
+                let l = t.account_after(at.0 - 1).l_level;
+                t.batches[at.0].batch.events[at.1] = JournalEvent::Breach { time, l_level: l, b_after, proof };
+                t.batches[at.0].kind = ::evaluator::BatchKind::PostJournal;
+                t.fix();
+            },
+            who: Both,
+            program: Some(Setl8Error::QuickLimitExceeded),
+            verifier: &[F::FalseBreach],
+        },
+        Row {
+            name: "phase_advanced to another phase after pass_finalized",
+            sc: sc_win,
+            tamper: |t| {
+                d5_lines(t, &[D5::Finalized, D5::Advanced(2, 4)]);
+            },
+            who: Verifier,
+            program: None,
+            verifier: &[F::StateMismatch],
+        },
+        Row {
+            name: "phase_advanced repeated after pass_finalized",
+            sc: sc_win,
+            tamper: |t| {
+                d5_lines(t, &[D5::Finalized, D5::Advanced(2, 3), D5::Advanced(2, 3)]);
+            },
+            who: Verifier,
+            program: None,
+            verifier: &[F::StateMismatch],
+        },
+        Row {
+            name: "phase_advanced with no pass line before it",
+            sc: sc_win,
+            tamper: |t| {
+                d5_lines(t, &[D5::Advanced(2, 3)]);
+            },
+            who: Verifier,
+            program: None,
+            verifier: &[F::StateMismatch],
+        },
+        // ---------------------------------------------------------------- the honest limit M9b made visible
+        Row {
+            name: "a market fill the account cannot margin",
+            sc: sc_flat_two,
+            tamper: |t| {
+                let i = t.samples.len() - 1;
+                let time = t.samples[i].ts_sec() + 20;
+                // 6 M EUR needs $120,000 of margin on an account of $100,000: nothing on the chain or in the verifier says no
+                let qty = 6 * MEUR;
+                let intent = market_order(0, true, qty, time);
+                let line = t.trader_sign(99, &intent);
+                t.intents.push(line);
+                let j = t.sample_at(0, T_1400 + 10);
+                let fill = t.hand_fill(j, true, qty, time, 99, 0);
+                let proofs = vec![t.proof_of_sample(j)];
+                t.append(::evaluator::BatchKind::PostJournal, vec![fill], proofs, time, false, vec![0]);
+                t.fix();
+            },
+            who: Neither,
+            program: None,
+            verifier: &[],
+        },
     ]
 }
 
@@ -1462,6 +1802,9 @@ fn trust_matrix() {
     let mut table = Vec::new();
     let mut bad = Vec::new();
     for row in rows() {
+        if std::env::var("TRUST_MATRIX_TRACE").is_ok() {
+            eprintln!("row: {}", row.name);
+        }
         let (mut t, mut chain) = honest(&(row.sc)());
         (row.tamper)(&mut t);
         let o = run_case(&t, &mut chain);
@@ -1640,9 +1983,9 @@ fn finding_2_the_program_refuses_a_fee_between_the_overshooting_close_and_the_fa
     }
     let e = chain.try_post(&t.batches[at.0], None).expect_err("the program must refuse a Fee after the overshoot");
     assert_eq!(e.code, Some(u32::from(Setl8Error::QuickLimitExceeded)), "{}", e.text);
-    // and the verifier is content with exactly that variant
+    // and since M9b (decision D2) the verifier flags that variant too: the overshooting slice carries no fee
     let o = run_case(&t, &mut LiteChain::new(&spec));
-    assert!(!o.classes.contains(&F::FeeMismatch), "the verifier expects the fee: {}", o.text);
+    assert!(o.classes.contains(&F::FeeMismatch), "the verifier must flag a fee after the overshoot: {}", o.text);
 }
 
 /// FINDING 4, program side: `Breach` with `b_after` at or below the static floor is refused (I-10); the same sample as a
@@ -1684,10 +2027,10 @@ fn finding_4_the_program_wants_a_fail_when_the_breach_closes_end_below_the_stati
     assert_eq!(e.code, Some(u32::from(Setl8Error::BreachBelowStaticFloor)), "{}", e.text);
 }
 
-/// FINDING 5. The program emits `PassFinalized` and then `PhaseAdvanced` for one finalization; the verifier's log format has
-/// a line for each and each one starts the next phase, so an indexer that mirrors both double counts the phase change.
+/// FINDING 5, resolved by M9b decision D5. The program emits `PassFinalized` and then `PhaseAdvanced` for one finalization; the
+/// verifier takes the `phase_advanced` that directly follows a `pass_finalized` with the same new phase as its confirmation.
 #[test]
-fn finding_5_phase_advanced_after_pass_finalized_is_a_second_phase_change() {
+fn finding_5_phase_advanced_after_pass_finalized_is_an_idempotent_confirmation() {
     let (t, mut chain) = honest(&sc_win());
     post_all_ok(&t, &mut chain);
     let w = World::base();
@@ -1697,21 +2040,19 @@ fn finding_5_phase_advanced_after_pass_finalized_is_a_second_phase_change() {
     let at = chain.j.account();
     let _ = at;
     chain.finalize_pass(&w, tf);
-    // the lines as `LiteChain` writes them (PassFinalized only): VALID
+    // the lines as `LiteChain` writes them from the program's own events: `pass_finalized`, then `phase_advanced` of the same
+    // transaction (M9b decision D5): VALID
     let mut items: Vec<Item> = t.order.iter().map(|&i| Item::Batch(t.batches[i].clone())).collect();
     for l in chain.lines.iter() {
         items.push(Item::Line(l.clone()));
     }
-    let ok = {
-        let events = items_text(&t.params, &items);
-        verify_events(&t, &events)
-    };
+    assert!(chain.lines.iter().any(|l| l.contains("\"phase_advanced\"")) && chain.lines.iter().any(|l| l.contains("\"pass_finalized\"")));
+    let ok = verify_events(&t, &items_text(&t.params, &items));
     assert!(ok.is_empty(), "{ok:?}");
-    // an indexer that also mirrors the PhaseAdvanced of the same transaction
-    let mut both = items;
-    both.push(Item::Line(common::evaluator::shared::runner::phase_advanced_line(&t.params.account, 2, 3, tf)));
-    let events = items_text(&t.params, &both);
-    let bad = verify_events(&t, &events);
+    // an indexer that also mirrors the event a second time, or one to another phase, is not content
+    let line = |from, to| Item::Line(common::evaluator::shared::runner::phase_advanced_line(&t.params.account, from, to, tf));
+    items.push(line(2, 3));
+    let bad = verify_events(&t, &items_text(&t.params, &items));
     assert!(bad.contains(&F::StateMismatch), "{bad:?}");
 }
 

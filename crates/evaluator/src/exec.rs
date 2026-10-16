@@ -187,7 +187,7 @@ impl Evaluator {
     }
 
     /// A triggered limit or stop order, filled at the sample's price. Refused (and kept pending) when the account cannot
-    /// take it any more; the verifier expects such a fill anyway (handover/module-10.md, finding on pending fills).
+    /// margin it; the verifier expects no event for such an order (M9b decision D3).
     pub(crate) fn execute_pending_fill(&mut self, sec: i64, market: u16, nonce: u32, price: u64, j: usize) -> Result<(), EvalError> {
         let Some(idx) = self.pending.iter().position(|p| p.nonce == nonce && p.intent.market == market) else { return Ok(()) };
         let it = self.pending[idx].intent;

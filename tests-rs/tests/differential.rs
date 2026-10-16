@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use common::evaluator::shared::runner::{run_path, spec_rules};
+use common::evaluator::shared::runner::{m9b_cover, run_path, spec_rules, M9bCover};
 use common::evaluator::shared::{self, World};
 use common::evaluator::*;
 use ::evaluator::testkit::generate;
@@ -37,6 +37,7 @@ struct Cover {
     transactions: u64,
     passes_vetoed: u64,
     graduated: u64,
+    m9b: M9bCover,
 }
 
 impl Cover {
@@ -58,6 +59,7 @@ impl Cover {
         self.transactions += o.transactions;
         self.passes_vetoed += o.passes_vetoed;
         self.graduated += o.graduated;
+        self.m9b.add(&o.m9b);
     }
 }
 
@@ -79,9 +81,6 @@ fn run_seed(seed: u64) -> Result<Outcome, String> {
         return Err(format!("runner notes: {:?} ({:?})", r.notes, spec.scenario));
     }
     let st = w.ev.stats();
-    if st.unpostable > 0 || st.refused_fills > 0 {
-        return Err(format!("unpostable {} / refused pending fills {} ({:?})", st.unpostable, st.refused_fills, spec.scenario));
-    }
     // the public verifier on what the program emitted
     let events = chain.events_text();
     let rules = shared::rules_json(&w.rules, w.opened.size_micro);
@@ -127,6 +126,7 @@ fn run_seed(seed: u64) -> Result<Outcome, String> {
     c.closed_market = u64::from(st.closed_market_rejects > 0 || st.closed_with_position > 0);
     c.passes_vetoed = u64::from(r.pass.vetoed > 0);
     c.graduated = u64::from(r.pass.graduated);
+    c.m9b = m9b_cover(&spec, w, &r.items, &chain.lines);
     Ok(Outcome { cover: c, shapes: chain.shapes })
 }
 
@@ -243,6 +243,13 @@ fn differential_campaign() {
         let mut short = Vec::new();
         for (name, floor) in floors(n) {
             let v = value_of(&c, name);
+            println!("coverage {name}: {v} (floor {floor})");
+            if v < floor {
+                short.push(format!("{name} {v} < {floor}"));
+            }
+        }
+        for (name, floor) in M9bCover::floors(n) {
+            let v = c.m9b.value_of(name);
             println!("coverage {name}: {v} (floor {floor})");
             if v < floor {
                 short.push(format!("{name} {v} < {floor}"));

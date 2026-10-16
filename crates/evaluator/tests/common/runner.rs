@@ -245,6 +245,10 @@ pub fn run_path<C: Chain>(spec: &PathSpec, w0: World, chain: &mut C) -> RunResul
                                 r.pass.finalized += 1;
                                 let next = if phase_now == 5 { 0 } else { phase_now + 1 };
                                 r.items.push(Item::Line(pass_finalized_line(&account, phase_now, next, amount, 1, tf)));
+                                if next != 0 {
+                                    // the program emits `PhaseAdvanced` as well as `PassFinalized` (decision D5)
+                                    r.items.push(Item::Line(phase_advanced_line(&account, phase_now, next, tf)));
+                                }
                                 if next == 0 {
                                     r.pass.graduated = true;
                                     w.ev.end_externally();
@@ -327,3 +331,124 @@ impl Chain for SimChain {
     fn finalize_pass(&mut self, _w: &World, _t: i64) {}
 }
 
+
+
+// ---------------------------------------------------------------------------------------------- M9b coverage
+
+/// What the 10,000-path gate counts for the M9b decisions (paths in which it happened at least once).
+#[derive(Default, Debug, Clone, Copy)]
+pub struct M9bCover {
+    /// D1: a pending order that only reduces a position (a `Close(Manual)` under the nonce of a limit or stop order).
+    pub pending_reduce: u64,
+    /// D2: a quick-limit `Fail` whose overshooting close sits in a class with a non-zero commission.
+    pub quick_fail_commission: u64,
+    /// D2: a flip whose closing slice overshoots (`Close(Flip)` directly followed by `Fail(PhaseQuick)`).
+    pub flip_overshoot: u64,
+    /// D3: a triggered pending order refused for margin.
+    pub margin_refused: u64,
+    /// D3: ... and executed at a later trigger.
+    pub margin_refused_then_filled: u64,
+    /// D4: a breach that became `Fail(StaticFloor)`.
+    pub breach_to_static: u64,
+    /// D4: a breach that became `Fail(PhaseQuick)`.
+    pub breach_to_quick: u64,
+    /// D5: a `pass_finalized` line directly followed by `phase_advanced`.
+    pub finalize_both: u64,
+}
+
+impl M9bCover {
+    pub fn add(&mut self, o: &M9bCover) {
+        self.pending_reduce += o.pending_reduce;
+        self.quick_fail_commission += o.quick_fail_commission;
+        self.flip_overshoot += o.flip_overshoot;
+        self.margin_refused += o.margin_refused;
+        self.margin_refused_then_filled += o.margin_refused_then_filled;
+        self.breach_to_static += o.breach_to_static;
+        self.breach_to_quick += o.breach_to_quick;
+        self.finalize_both += o.finalize_both;
+    }
+
+    /// Floors of the gate run over `n` paths (100 each, 150 for the margin refusal at 10,000 paths; scaled down, never below 1).
+    pub fn floors(n: u64) -> Vec<(&'static str, u64)> {
+        let scale = |x: u64| ((x * n).div_ceil(10_000)).max(1);
+        vec![
+            ("pending_reduce", scale(100)),
+            ("quick_fail_commission", scale(100)),
+            ("flip_overshoot", scale(100)),
+            ("margin_refused", scale(150)),
+            ("margin_refused_then_filled", scale(100)),
+            ("breach_to_static", scale(100)),
+            ("breach_to_quick", scale(100)),
+            ("finalize_both", scale(100)),
+        ]
+    }
+
+    pub fn value_of(&self, name: &str) -> u64 {
+        match name {
+            "pending_reduce" => self.pending_reduce,
+            "quick_fail_commission" => self.quick_fail_commission,
+            "flip_overshoot" => self.flip_overshoot,
+            "margin_refused" => self.margin_refused,
+            "margin_refused_then_filled" => self.margin_refused_then_filled,
+            "breach_to_static" => self.breach_to_static,
+            "breach_to_quick" => self.breach_to_quick,
+            "finalize_both" => self.finalize_both,
+            _ => 0,
+        }
+    }
+}
+
+/// The M9b counters of one finished path. `lines` are the pass lines in file order (the chain's own, for the LiteSVM campaign).
+pub fn m9b_cover(spec: &PathSpec, w: &World, items: &[Item], lines: &[String]) -> M9bCover {
+    use journal_types::{CloseReason, FailReason};
+    let evs: Vec<JournalEvent> = items
+        .iter()
+        .filter_map(|i| if let Item::Batch(b) = i { Some(b.batch.events.to_vec()) } else { None })
+        .flatten()
+        .collect();
+    // nonces of the pending orders (limit and stop) in the intents file
+    let pending: std::collections::HashSet<u32> = setl8_verify::intents::IntentFile::parse(w.ev.intents_bytes())
+        .map(|f| {
+            f.lines
+                .iter()
+                .filter_map(|l| match &l.intent {
+                    Ok(it) if matches!(it.kind, setl8_verify::intents::IntentKind::Limit | setl8_verify::intents::IntentKind::Stop) => Some(l.nonce),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut c = M9bCover { pending_reduce: u64::from(evs.iter().any(|e| matches!(e, JournalEvent::Close { reason: CloseReason::Manual, intent_id, .. } if pending.contains(intent_id)))), ..Default::default() };
+    // the event before each Fail, skipping commission fees
+    for (k, e) in evs.iter().enumerate() {
+        let JournalEvent::Fail { reason, .. } = e else { continue };
+        let prev = evs[..k].iter().rev().find(|x| !matches!(x, JournalEvent::Fee { .. }));
+        match (reason, prev) {
+            (FailReason::PhaseQuick, Some(JournalEvent::Close { market, reason: cr, .. })) => {
+                let class = spec.markets.iter().find(|m| m.id == *market).map(|m| usize::from(m.class)).unwrap_or(0);
+                if spec.commission_e6.get(class).copied().unwrap_or(0) > 0 {
+                    c.quick_fail_commission = 1;
+                }
+                if *cr == CloseReason::Flip {
+                    c.flip_overshoot = 1;
+                }
+                if *cr == CloseReason::Breach {
+                    c.breach_to_quick = 1;
+                }
+            }
+            (FailReason::StaticFloor, Some(JournalEvent::Close { reason: CloseReason::Breach, .. })) => c.breach_to_static = 1,
+            _ => {}
+        }
+    }
+    let refused: Vec<u32> = w.ev.refusals().iter().filter(|r| r.reason == OrderReject::InsufficientMargin && pending.contains(&r.nonce)).map(|r| r.nonce).collect();
+    c.margin_refused = u64::from(!refused.is_empty());
+    c.margin_refused_then_filled = u64::from(refused.iter().any(|n| {
+        evs.iter().any(|e| match e {
+            JournalEvent::Fill { intent_id, order_kind, .. } => intent_id == n && matches!(order_kind, journal_types::OrderKind::Limit | journal_types::OrderKind::Stop),
+            JournalEvent::Close { intent_id, .. } => intent_id == n,
+            _ => false,
+        })
+    }));
+    c.finalize_both = u64::from(lines.windows(2).any(|w| w[0].contains("\"type\":\"pass_finalized\"") && w[1].contains("\"type\":\"phase_advanced\"")));
+    c
+}
