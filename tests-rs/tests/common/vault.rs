@@ -564,6 +564,26 @@ impl VaultEnv {
         self.e.svm.set_account(addr, acc).unwrap();
     }
 
+    /// `update_product_config` replacing the tiers AND the reset ladder (both vault admins, signature verification off).
+    pub fn vault_set_config(&mut self, tiers: Vec<(u64, u64)>, ladder: Vec<u16>) -> TransactionResult {
+        let cur = self.registry();
+        let ix = si::update_product_config(
+            VAULT_ID,
+            VAULT_SL8_ADMIN,
+            VAULT_ROV_ADMIN,
+            registry_pda(),
+            &[],
+            si::UpdateProductConfigArgs {
+                product_program_id: PROGRAM_ID,
+                challenge_sizes: tiers.into_iter().map(|(size, cost)| si::ChallengeSize { size, cost }).collect(),
+                fee_split_bps: cur.fee_split_bps,
+                max_payout_count: cur.max_payout_count,
+                reset_price_bps: ladder,
+            },
+        );
+        self.send_plain(ix)
+    }
+
     /// `update_product_config` by both vault admins (signature verification is off), keeping everything but the tiers.
     pub fn vault_set_tiers(&mut self, tiers: Vec<(u64, u64)>) -> TransactionResult {
         let cur = self.registry();

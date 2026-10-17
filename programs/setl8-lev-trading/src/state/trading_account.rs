@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 use engine::{AccountState, EngineError};
 
+use crate::constants::{PASS_NONE, STATUS_ACTIVE};
 use crate::errors::Setl8Error;
 
 /// DESIGN 5.1. PDA `["acct", trader, challenge_id u64 LE]`; 207 bytes including the discriminator, plain Borsh,
@@ -45,7 +46,64 @@ pub struct TradingAccount {
     pub pass_proposed_at: i64,
 }
 
+/// The parts of a brand-new account that differ between `open_account` (phase 1, first payout) and `reset_account` (the
+/// failed phase, the payouts the vault carried over). Everything else of a fresh account is the same for both.
+pub struct FreshAccount {
+    pub trader: Pubkey,
+    pub challenge_id: u64,
+    pub size_s: u64,
+    pub now: i64,
+    pub genesis_hash: [u8; 32],
+    pub ruleset_version: u16,
+    pub phase: u8,
+    /// The vault's `payout_count + 1` of this challenge (1 for a purchase).
+    pub next_request_id: u64,
+    pub bump: u8,
+}
+
 impl TradingAccount {
+    /// Writes a fresh account (`init`ed, all zero): B = S, nothing open, tight off, floors as at the start of a phase,
+    /// `seq` 0 with the genesis hash, status Active, nothing pending, not held.
+    pub fn init_fresh(&mut self, f: &FreshAccount) -> Result<()> {
+        let size_i = i64::try_from(f.size_s).map_err(|_| error!(Setl8Error::MathOverflow))?;
+        self.trader = f.trader;
+        self.challenge_id = f.challenge_id;
+        self.size_s = f.size_s;
+        self.created_at = f.now;
+        self.b = size_i;
+        self.q_tally = 0;
+        self.lock_until = 0;
+        self.last_batch_time = f.now;
+        self.last_activity_pushed = f.now;
+        self.next_request_id = f.next_request_id;
+        self.seq = 0;
+        self.journal_hash = f.genesis_hash;
+        self.trades_closed = 0;
+        self.ruleset_version = f.ruleset_version;
+        self.status = STATUS_ACTIVE;
+        self.phase = f.phase;
+        self.latch = 0;
+        self.flat = 1;
+        self.pass_pending = PASS_NONE;
+        self.vetoes = 0;
+        self.bump = f.bump;
+        self.tight_on = 0;
+        self.held = 0;
+        self.r = 0;
+        self.g_peak = 0;
+        self.l_level = 0;
+        self.pass_requested_at = 0;
+        self.pass_proposed_at = 0;
+        Ok(())
+    }
+
+    /// `reset_at`: when a Failed account was reset by `reset_account` (0 = not reset). Stored in `pass_requested_at`, which
+    /// `end_account` zeroes and which nothing reads once the account is terminal, exactly like `terminal_at` in
+    /// `pass_proposed_at`. A second reset of the same record is refused locally before any CPI.
+    pub fn reset_at(&self) -> i64 {
+        self.pass_requested_at
+    }
+
     /// `terminal_at`: when the account became Failed, Abandoned or Graduated (M7, RESOLVE (b)). Stored in `pass_proposed_at`,
     /// which is meaningless once nothing can be pending; every transition into a terminal state sets it (`end_account`).
     pub fn terminal_at(&self) -> i64 {
@@ -221,6 +279,82 @@ mod tests {
         assert_eq!(le(183, 8), 43i64.to_le_bytes());
         assert_eq!(le(191, 8), 44i64.to_le_bytes());
         assert_eq!(le(199, 8), 45i64.to_le_bytes());
+    }
+
+    fn zeroed() -> TradingAccount {
+        let mut d = vec![0u8; TradingAccount::LEN];
+        d[..8].copy_from_slice(<TradingAccount as anchor_lang::Discriminator>::DISCRIMINATOR);
+        TradingAccount::try_deserialize(&mut d.as_slice()).unwrap()
+    }
+
+    /// `init_fresh` writes every field: a dirty account (all fields set) comes out as exactly the fresh account of the arguments.
+    #[test]
+    fn init_fresh_writes_every_field_of_a_fresh_account() {
+        let f = FreshAccount {
+            trader: Pubkey::new_from_array([7; 32]),
+            challenge_id: 9,
+            size_s: S100K,
+            now: 1_700_000_123,
+            genesis_hash: [0xEE; 32],
+            ruleset_version: 3,
+            phase: 4,
+            next_request_id: 3,
+            bump: 251,
+        };
+        let mut a = full();
+        a.status = 1;
+        a.held = 1;
+        a.latch = 1;
+        a.tight_on = 1;
+        a.pass_pending = 2;
+        a.vetoes = 6;
+        a.flat = 0;
+        a.init_fresh(&f).unwrap();
+        let want = TradingAccount {
+            trader: f.trader,
+            challenge_id: 9,
+            size_s: S100K,
+            created_at: f.now,
+            b: S100K as i64,
+            q_tally: 0,
+            lock_until: 0,
+            last_batch_time: f.now,
+            last_activity_pushed: f.now,
+            next_request_id: 3,
+            seq: 0,
+            journal_hash: [0xEE; 32],
+            trades_closed: 0,
+            ruleset_version: 3,
+            status: 0,
+            phase: 4,
+            latch: 0,
+            flat: 1,
+            pass_pending: 0,
+            vetoes: 0,
+            bump: 251,
+            tight_on: 0,
+            held: 0,
+            r: 0,
+            g_peak: 0,
+            l_level: 0,
+            pass_requested_at: 0,
+            pass_proposed_at: 0,
+        };
+        let (mut got, mut exp) = (Vec::new(), Vec::new());
+        a.try_serialize(&mut got).unwrap();
+        want.try_serialize(&mut exp).unwrap();
+        assert_eq!(got, exp);
+        // a size that does not fit i64 is refused
+        let mut z = zeroed();
+        assert!(z.init_fresh(&FreshAccount { size_s: u64::MAX, ..f }).is_err());
+    }
+
+    #[test]
+    fn reset_at_is_the_pass_requested_at_field() {
+        let mut a = full();
+        assert_eq!(a.reset_at(), 44);
+        a.pass_requested_at = 0;
+        assert_eq!(a.reset_at(), 0);
     }
 
     #[test]

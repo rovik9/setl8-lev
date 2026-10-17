@@ -291,3 +291,180 @@ pub fn hash(n: u8) -> [u8; 32] {
 pub fn some_key() -> Keypair {
     Keypair::new()
 }
+
+// ====================================================================== M8: reset_account
+
+/// Account indexes of the `reset_account` instruction (for swap attacks).
+pub mod ra {
+    pub const TRADER: usize = 0;
+    pub const PAYER: usize = 1;
+    pub const CONFIG: usize = 2;
+    pub const RULESET: usize = 3;
+    pub const WALLET: usize = 4;
+    pub const PREV_ACCOUNT: usize = 5;
+    pub const NEW_ACCOUNT: usize = 6;
+    pub const SECTOR_AUTHORITY: usize = 7;
+    pub const VAULT_PROGRAM: usize = 8;
+    pub const REGISTRY: usize = 9;
+    pub const VAULT_TRADER_STATE: usize = 10;
+    pub const PREV_VAULT_TRADER_STATE: usize = 11;
+    pub const VAULT_STATE: usize = 12;
+    pub const TRADER_TOKEN: usize = 13;
+    pub const MINT: usize = 14;
+    pub const POOL: usize = 15;
+    pub const VAULT_SL8: usize = 16;
+    pub const FEE_TOKEN: usize = 17;
+    pub const TOKEN_PROGRAM: usize = 18;
+    pub const SYSTEM_PROGRAM: usize = 19;
+}
+
+/// Every account of `reset_account`, with the defaults a correct call uses; tests override single fields.
+#[derive(Clone)]
+pub struct ResetAccts {
+    pub trader: Pubkey,
+    pub payer: Pubkey,
+    pub config: Pubkey,
+    pub ruleset: Pubkey,
+    pub wallet: Pubkey,
+    pub prev_trading_account: Pubkey,
+    pub trading_account: Pubkey,
+    pub sector_authority: Pubkey,
+    pub vault_program: Pubkey,
+    pub product_registry: Pubkey,
+    pub vault_trader_state: Pubkey,
+    pub prev_vault_trader_state: Pubkey,
+    pub vault_state: Pubkey,
+    pub trader_token_account: Pubkey,
+    pub mint: Pubkey,
+    pub pool_token_account: Pubkey,
+    pub vault_sl8_token_account: Pubkey,
+    pub fee_token_account: Pubkey,
+    pub token_program: Pubkey,
+    pub system_program: Pubkey,
+    pub trader_signs: bool,
+    pub payer_signs: bool,
+}
+
+impl ResetAccts {
+    pub fn to_ix(&self, prev_challenge_id: u64) -> Instruction {
+        let mut metas = accounts::ResetAccount {
+            trader: self.trader,
+            payer: self.payer,
+            config: self.config,
+            ruleset: self.ruleset,
+            wallet: self.wallet,
+            prev_trading_account: self.prev_trading_account,
+            trading_account: self.trading_account,
+            sector_authority: self.sector_authority,
+            vault_program: self.vault_program,
+            product_registry: self.product_registry,
+            vault_trader_state: self.vault_trader_state,
+            prev_vault_trader_state: self.prev_vault_trader_state,
+            vault_state: self.vault_state,
+            trader_token_account: self.trader_token_account,
+            mint: self.mint,
+            pool_token_account: self.pool_token_account,
+            vault_sl8_token_account: self.vault_sl8_token_account,
+            fee_token_account: self.fee_token_account,
+            token_program: self.token_program,
+            system_program: self.system_program,
+            event_authority: event_authority(),
+            program: PROGRAM_ID,
+        }
+        .to_account_metas(None);
+        for (i, signs) in [(ra::TRADER, self.trader_signs), (ra::PAYER, self.payer_signs)] {
+            metas[i] = anchor_lang::solana_program::instruction::AccountMeta { is_signer: signs, ..metas[i].clone() };
+        }
+        Instruction { program_id: PROGRAM_ID, accounts: metas, data: instruction::ResetAccount { prev_challenge_id }.data() }
+    }
+}
+
+/// 100,000 USDC for every pass-through test: the trader starts with `TRADER_START`.
+impl JEnv {
+    /// The accounts of a correct `reset_account` of the CURRENT account (`self.acct`), which must be Failed.
+    pub fn reset_accts(&self) -> ResetAccts {
+        let prev = self.account();
+        let trader = prev.trader;
+        let next_id = self.v.wallet_opt(&trader).map_or(0, |w| w.next_challenge_id);
+        ResetAccts {
+            trader,
+            payer: trader,
+            config: config_pda(),
+            ruleset: ruleset_pda(1),
+            wallet: wallet_pda(&trader),
+            prev_trading_account: self.acct,
+            trading_account: acct_pda(&trader, next_id),
+            sector_authority: sector_authority_pda(),
+            vault_program: VAULT_ID,
+            product_registry: registry_pda(),
+            vault_trader_state: vault_trader_state_pda(&trader, next_id),
+            prev_vault_trader_state: vault_trader_state_pda(&trader, prev.challenge_id),
+            vault_state: self.v.vault_state,
+            trader_token_account: self.v.trader_token(&trader),
+            mint: self.v.usdc,
+            pool_token_account: self.v.usdc_pool,
+            vault_sl8_token_account: self.v.vault_sl8_usdc,
+            fee_token_account: self.v.fee_usdc,
+            token_program: anchor_spl::token::spl_token::ID,
+            system_program: anchor_lang::solana_program::system_program::ID,
+            trader_signs: true,
+            payer_signs: true,
+        }
+    }
+
+    /// Sends `reset_account` for `prev_challenge_id` at clock `t`, signed by the trader.
+    pub fn send_reset(&mut self, t: i64, ra: &ResetAccts, prev_challenge_id: u64) -> TransactionResult {
+        self.set_time(t);
+        let ix = ra.to_ix(prev_challenge_id);
+        let tr = dup(&self.trader);
+        self.v.e.send(&[ix], &[&tr])
+    }
+
+    /// A correct `reset_account` of `self.acct` at clock `t`.
+    pub fn reset(&mut self, t: i64) -> TransactionResult {
+        let ra = self.reset_accts();
+        let prev_id = self.account().challenge_id;
+        self.send_reset(t, &ra, prev_id)
+    }
+
+    /// A correct reset that must succeed; `self.acct` becomes the NEW account. Returns the transaction metadata.
+    pub fn reset_ok(&mut self, t: i64) -> litesvm::types::TransactionMetadata {
+        let ra = self.reset_accts();
+        let m = self.ok(|w| w.reset(t));
+        self.acct = ra.trading_account;
+        m
+    }
+
+    /// Fails the account in `phase` through the real `report_fail` at the static floor (`b` is set to the floor first; the
+    /// phase is edited in, as the other lifecycle tests do). `t` is the batch time; the clock is `t + 1`.
+    pub fn fail_in(&mut self, phase: u8, t: i64) {
+        // F_s = 0.92 S of THIS account (the $2.5K tier has a different floor than the $100K one)
+        let floor = i64::try_from(self.account().size_s / 100 * 92).unwrap();
+        self.edit_account(|a| {
+            a.phase = phase;
+            a.b = floor;
+        });
+        let b = self.fail_batch(t, vec![], FailReason::StaticFloor, floor, true);
+        let m = self.report_fail(t + 1, &b, 0, &[MARKET_EUR]);
+        assert_ok(m);
+        assert_eq!(self.account().status, setl8_lev_trading::constants::STATUS_FAILED);
+    }
+
+    /// Moves a fresh account to the start of `phase` with REAL instructions: for every phase before it the account is made
+    /// to meet the pass condition (`ready`), requested, confirmed and (phases 2 to 5) finalized after the delay, so the vault
+    /// really pays and counts each payout. Returns the clock after the last step.
+    pub fn advance_to(&mut self, phase: u8, mut t: i64, payer: &Keypair, delay: i64) -> i64 {
+        for p in 1..phase {
+            self.ready(p);
+            self.ok(|w| w.request(t));
+            self.ok(|w| w.confirm(t + 1));
+            if p >= 2 {
+                t += 1 + delay;
+                self.ok(|w| w.finalize(t, payer));
+            }
+            t += 100;
+        }
+        assert_eq!(self.account().phase, phase);
+        t
+    }
+}

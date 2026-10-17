@@ -9,7 +9,7 @@ use setl8_shared_interfaces::{deposit_fee, DepositFeeArgs};
 use crate::constants::*;
 use crate::errors::Setl8Error;
 use crate::events::Opened;
-use crate::state::{RuleSet, SectorConfig, TradingAccount, WalletProfile};
+use crate::state::{FreshAccount, RuleSet, SectorConfig, TradingAccount, WalletProfile};
 
 /// DESIGN 6.2 `open_account`. Account order is the order of the fields below.
 #[event_cpi]
@@ -183,37 +183,19 @@ pub fn handle_open_account(ctx: Context<OpenAccount>, tier_index: u8) -> Result<
     // initialise the account: B = S, phase 1, seq 0, journal_hash = h_0 (sol_sha256 through the Sha256 trait)
     let account_key = ctx.accounts.trading_account.key();
     let h0 = genesis_hash(&|parts: &[&[u8]]| hashv(parts).to_bytes(), &account_key.to_bytes());
-    let size_i = i64::try_from(size_s).map_err(|_| error!(Setl8Error::MathOverflow))?;
     let ruleset_version = rs.version;
     let acct = &mut ctx.accounts.trading_account;
-    acct.trader = ctx.accounts.trader.key();
-    acct.challenge_id = challenge_id;
-    acct.size_s = size_s;
-    acct.created_at = now;
-    acct.b = size_i;
-    acct.q_tally = 0;
-    acct.lock_until = 0;
-    acct.last_batch_time = now;
-    acct.last_activity_pushed = now;
-    acct.next_request_id = 1;
-    acct.seq = 0;
-    acct.journal_hash = h0;
-    acct.trades_closed = 0;
-    acct.ruleset_version = ruleset_version;
-    acct.status = STATUS_ACTIVE;
-    acct.phase = 1;
-    acct.latch = 0;
-    acct.flat = 1;
-    acct.pass_pending = PASS_NONE;
-    acct.vetoes = 0;
-    acct.bump = ctx.bumps.trading_account;
-    acct.tight_on = 0;
-    acct.held = 0;
-    acct.r = 0;
-    acct.g_peak = 0;
-    acct.l_level = 0;
-    acct.pass_requested_at = 0;
-    acct.pass_proposed_at = 0;
+    acct.init_fresh(&FreshAccount {
+        trader: ctx.accounts.trader.key(),
+        challenge_id,
+        size_s,
+        now,
+        genesis_hash: h0,
+        ruleset_version,
+        phase: 1,
+        next_request_id: 1,
+        bump: ctx.bumps.trading_account,
+    })?;
 
     emit_cpi!(Opened {
         account: account_key,

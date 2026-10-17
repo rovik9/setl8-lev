@@ -223,6 +223,8 @@ pub enum Setl8Error {
     ResetPhaseOutOfRange,
     #[msg("reset price: the price does not fit in a u64")]
     ResetPriceOverflow,
+    #[msg("the previous account was already reset")]
+    AccountAlreadyReset,
 }
 
 #[cfg(test)]
@@ -303,5 +305,6 @@ mod tests {
         assert_eq!(u32::from(Setl8Error::ResetTierInvalid), 6104);
         assert_eq!(u32::from(Setl8Error::ResetPhaseOutOfRange), 6105);
         assert_eq!(u32::from(Setl8Error::ResetPriceOverflow), 6106);
+        assert_eq!(u32::from(Setl8Error::AccountAlreadyReset), 6107);
     }
 }

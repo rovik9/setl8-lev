@@ -26,6 +26,7 @@ pub mod events;
 pub mod instructions;
 pub mod reset_price;
 pub mod state;
+pub mod vault_view;
 
 use instructions::*;
 
@@ -78,6 +79,10 @@ pub mod setl8_lev_trading {
 
     pub fn open_account(ctx: Context<OpenAccount>, tier_index: u8) -> Result<()> {
         instructions::open_account::handle_open_account(ctx, tier_index)
+    }
+
+    pub fn reset_account(ctx: Context<ResetAccount>, prev_challenge_id: u64) -> Result<()> {
+        instructions::reset_account::handle_reset_account(ctx, prev_challenge_id)
     }
 
     pub fn post_journal<'info>(ctx: Context<'_, '_, 'info, 'info, PostJournal<'info>>, batch_bytes: Vec<u8>) -> Result<()> {

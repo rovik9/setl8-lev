@@ -72,6 +72,23 @@ pub struct Opened {
     pub time: i64,
 }
 
+/// Emitted by `reset_account` through `emit_cpi!`, right after the `Opened` event of the new account (which carries the
+/// same fields as any purchase, with `phase` = the failed phase). NOT part of the hash chain. `price` is the vault's reset
+/// price and `fee` the 0.4% on top of it (micro-USD); `payout_count` is the number of payouts the vault carried over.
+#[event]
+pub struct AccountReset {
+    pub prev_account: Pubkey,
+    pub account: Pubkey,
+    pub trader: Pubkey,
+    pub prev_challenge_id: u64,
+    pub challenge_id: u64,
+    pub phase: u8,
+    pub price: u64,
+    pub fee: u64,
+    pub payout_count: u64,
+    pub time: i64,
+}
+
 /// One journal event as posted, emitted through `emit_cpi!` by `post_journal` (an inner instruction, not a text log).
 /// `event_bytes` and `proof_bytes` are the canonical Borsh bytes that went into the hash chain (`proof_bytes` is empty
 /// when the event references no proof), so a verifier recomputes the chain from these alone.
