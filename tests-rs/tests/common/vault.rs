@@ -387,7 +387,10 @@ impl VaultEnv {
 
     /// `open_account` for `trader`, tier `tier_index`, USDC.
     pub fn open(&mut self, trader: &Keypair, tier_index: u8) -> TransactionResult {
-        let oa = self.open_accounts(&trader.pubkey());
+        let mut oa = self.open_accounts(&trader.pubkey());
+        // an account is opened under the CURRENT rule set (P21: a test of rule set version 2 needs it; `open_accounts` itself keeps
+        // version 1, which the stale-version test relies on)
+        oa.ruleset = super::ruleset_pda(self.e.config().current_ruleset.max(1));
         self.send_open(&oa, tier_index, trader)
     }
 

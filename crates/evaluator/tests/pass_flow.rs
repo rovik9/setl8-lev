@@ -3,9 +3,14 @@ mod common;
 use common::*;
 use evaluator::*;
 
-/// A zero-spread world whose account closed a +8.5% trade (non-quick) and is flat with B = 1.085 S.
+/// B after `winner()`: the long fills at the ask of mid 1.0 (`ASK_AT_ONE`), the close sells at the bid of mid 1.0085,
+/// `floor(1_008_500_000_000 x (1e6 - 1) / 1e6) = 1_008_500_000_000 - 1_008_500 = 1_008_498_991_500`; qty = 1 MEUR makes the
+/// pnl in micro-USD the price difference: 1_008_498_991_500 - 1_000_001_000_000 = 8_497_991_500 (no commission, no rollover).
+const WINNER_B: i64 = S100K + 8_497_991_500;
+
+/// A world (the smallest priced spread) whose account closed a +8.5% mid trade (non-quick) and is flat with B = `WINNER_B`.
 fn winner() -> (World, i64) {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, MEUR, t)).unwrap();
@@ -25,7 +30,7 @@ fn view(w: &World, batches: &[Batch]) -> ChainView {
 fn confirm_when_everything_agrees() {
     let (mut w, t) = winner();
     let bs = w.ev.drain_batches(&BatchPolicy::MAX);
-    assert_eq!(w.ev.state().b, 108_500_000_000);
+    assert_eq!(w.ev.state().b, WINNER_B);
     let v = view(&w, &bs);
     assert_eq!(w.ev.request_pass(t, &v, ReplayCheck::Valid), PassDecision::Confirm);
     assert!(w.ev.is_frozen(), "the account is frozen from the request on");
@@ -40,12 +45,17 @@ fn confirm_when_everything_agrees() {
 
 #[test]
 fn a_new_phase_keeps_the_breach_lock() {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, MEUR, t)).unwrap();
-    for (dt, p) in [(30, 10_006), (60, 10_012), (90, 10_030), (150, 9_980)] {
-        w.sample(0, t + dt, p4(p));
+    // fills at ASK_AT_ONE; marks at the bid floor(mid x 0.999999): P(10_012) = 1_001_198_998_800 - ASK_AT_ONE = 1_197_998_800 > 0.01 S
+    // starts tight mode (R = 100_000_000_000, L_start = 96_000_000_000); the peak at 10_030 is P = 1_002_998_997_000 - ASK_AT_ONE =
+    // 2_997_997_000, so L = L_start + P - 0.01 S = 97_997_997_000. The breach needs equity <= L, i.e. P <= -2_002_003_000, i.e. a bid
+    // of 997_998_997_000: the mid 997_999_995_000 (x 0.999999 = 997_998_997_000.005, floored). (At mid 0.998 the loss is only
+    // 2_001_998_000: the spread costs 5_000 more than the old exact -2_000_000_000 against L = 98_000_000_000, so it would not breach.)
+    for (dt, mid) in [(30, p4(10_006)), (60, p4(10_012)), (90, p4(10_030)), (150, 997_999_995_000)] {
+        w.sample(0, t + dt, mid);
     }
     w.ev.tick(t + 151);
     let lock = w.ev.state().lock_until;
@@ -90,7 +100,7 @@ fn every_rejection() {
 #[test]
 fn not_flat_and_target() {
     // an open position (events posted): NotFlat
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, MEUR, t)).unwrap();
@@ -100,16 +110,19 @@ fn not_flat_and_target() {
     let v = view(&w, &bs);
     assert!(!v.flat);
     assert_eq!(w.ev.request_pass(t + 11, &v, ReplayCheck::Valid), PassDecision::Reject(PassReject::NotFlat));
-    // the target: 1.08 S exactly passes, one micro less does not
-    for (profit, ok) in [(8_000_000_000i64, true), (7_999_999_999, false)] {
-        let mut w = fx_world(0);
+    // the target: 1.08 S exactly passes, one micro less does not. The entry mid 1.0 fills at ASK_AT_ONE; the exit takes the bid
+    // floor(exit x 0.999999). A bid of ASK_AT_ONE + 8_000_000_000 = 1_008_001_000_000 needs the mid 1_008_002_008_003
+    // (x 0.999999 = 1_008_001_000_000.99, floored); the mid one below gives 1_008_000_999_999.99, floored: one micro less.
+    for (exit, profit, ok) in [(1_008_002_008_003u64, 8_000_000_000i64, true), (1_008_002_008_002, 7_999_999_999, false)] {
+        let mut w = fx_world(TEST_HALF_SPREAD_E6);
         let entry = 1_000_000_000_000u64;
         w.sample(0, t, entry);
         w.order(market_order(0, true, MEUR, t)).unwrap();
-        w.sample(0, t + 100, entry + u64::try_from(profit).unwrap());
+        w.sample(0, t + 100, exit);
         w.order(close_order(0, 0, t + 100)).unwrap();
-        w.sample(0, t + 110, entry + u64::try_from(profit).unwrap());
+        w.sample(0, t + 110, exit);
         w.ev.tick(t + 111);
+        assert_eq!(w.ev.state().b, S100K + profit, "profit {profit}");
         let bs = w.ev.drain_batches(&BatchPolicy::MAX);
         let v = view(&w, &bs);
         let d = w.ev.request_pass(t + 111, &v, ReplayCheck::Valid);
@@ -120,7 +133,7 @@ fn not_flat_and_target() {
 #[test]
 fn a_failed_phase_or_ended_account_is_rejected() {
     // a quick-limit fail
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, MEUR, t)).unwrap();
@@ -136,7 +149,7 @@ fn a_failed_phase_or_ended_account_is_rejected() {
 
 #[test]
 fn request_pass_closes_the_seconds_before_now() {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, MEUR, t)).unwrap();

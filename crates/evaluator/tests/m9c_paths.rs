@@ -1,4 +1,4 @@
-//! M9c on the generator's own stories: each story that produces an evaluator refusal (`Edge`, `Cap`, `Remainder`, `Hold`) is VALID
+//! M9c on the generator's own stories: each story that produces an evaluator refusal (`Edge`, `Cap`, `Remainder`, `Hold`, `Unpriced`) is VALID
 //! as generated, and the nearest dishonest history is caught: the same journal judged under rules or a log that make the refusal
 //! unjustified (a higher cap, a lower minimum, no hold lines) misses the fill the order would have got; a hold the log does not
 //! have is a `TriggerMissed`, an `Edge` fill one step too large is a `FillWithoutMargin`.
@@ -62,7 +62,7 @@ fn judge(x: &Run, rules: Option<(&str, &str)>, drop_lines: &[&str]) -> setl8_ver
 
 #[test]
 fn every_story_is_valid_as_generated() {
-    for scenario in [Scenario::Edge, Scenario::Cap, Scenario::Remainder, Scenario::Hold] {
+    for scenario in [Scenario::Edge, Scenario::Cap, Scenario::Remainder, Scenario::Hold, Scenario::Unpriced] {
         for seed in seeds_of(scenario, 25) {
             let x = run(seed);
             let rep = judge(&x, None, &[]);
@@ -136,4 +136,52 @@ fn an_edge_story_fills_exactly_at_the_margin_and_a_lower_leverage_makes_it_a_fil
         assert!(rep.classes().contains(&C::FillWithoutMargin), "seed {seed}:\n{}", describe(&rep));
     }
     assert!(exact >= 20, "{exact} stories at the margin limit");
+}
+
+/// Decision 64 on the generator's story: the trader tries a market order, a limit order and a stop order in the market the rule
+/// set does not price (market 1, half-spread 0). The evaluator refuses each at arrival and leaves no trace of it: no line in the
+/// intents file, no event; the priced market goes on trading and the whole history is VALID (the walk expects no fill there).
+#[test]
+fn an_unpriced_attempt_is_refused_at_arrival_and_leaves_no_trace() {
+    let mut checked = 0;
+    for seed in seeds_of(Scenario::Unpriced, 25) {
+        let x = run(seed);
+        let w = &x.r.world;
+        assert_eq!(x.spec.markets[1].spread_e6, 0, "seed {seed}: the second market is the unpriced one");
+        assert_eq!(w.ev.stats().unpriced_rejects, 3, "seed {seed}: market, limit and stop order");
+        let file = setl8_verify::intents::IntentFile::parse(w.ev.intents_bytes()).expect("intents parse");
+        assert!(file.lines.iter().all(|l| l.intent.as_ref().map(|it| it.market != 1).unwrap_or(true)), "seed {seed}: an order of the unpriced market is on file");
+        assert!(w.ev.refusals().iter().all(|r| r.reason != evaluator::OrderReject::MarketUnpriced), "seed {seed}: nothing is refused later");
+        // the priced market traded: the story is not trivially empty
+        assert!(w.ev.stats().orders_accepted >= 3, "seed {seed}");
+        let rep = judge(&x, None, &[]);
+        assert!(rep.verdict == setl8_verify::Verdict::Valid, "seed {seed}:\n{}", describe(&rep));
+        checked += 1;
+    }
+    assert!(checked >= 20, "{checked} unpriced stories");
+}
+
+/// The `Edge` story has three shapes (a single order, an add to a smaller position, a flip) and in every one of them the order that
+/// uses the whole margin is accepted with `equity - margin == 0` exactly and the one unit more is refused for margin. The generator
+/// finds the exact size by search (`edge_max_order`), so this pins that it does, for all three shapes, on every story.
+#[test]
+fn every_edge_story_ends_exactly_at_the_margin_in_each_of_its_three_shapes() {
+    use journal_types::{CloseReason, JournalEvent};
+    let (mut single, mut add, mut flip) = (0, 0, 0);
+    for seed in seeds_of(Scenario::Edge, 90) {
+        let x = run(seed);
+        let evs = events(&x.r.items);
+        let flips = evs.iter().any(|e| matches!(e, JournalEvent::Close { reason: CloseReason::Flip, .. }));
+        let fills = evs.iter().filter(|e| matches!(e, JournalEvent::Fill { .. })).count();
+        match (flips, fills) {
+            (true, 2) => flip += 1,
+            (false, 2) => add += 1,
+            (false, 1) => single += 1,
+            other => panic!("seed {seed}: {other:?} is none of the three shapes"),
+        }
+        assert_eq!(x.r.world.ev.stats().margin_exact, 1, "seed {seed}: the whole margin is used exactly, once");
+        let refused: Vec<_> = x.r.world.ev.refusals().iter().filter(|r| r.reason == evaluator::OrderReject::InsufficientMargin).collect();
+        assert_eq!(refused.len(), 1, "seed {seed}: the unit more is refused for margin, once");
+    }
+    assert!(single >= 10 && add >= 10 && flip >= 10, "shapes: single {single}, add {add}, flip {flip}");
 }

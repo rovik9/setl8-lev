@@ -6,11 +6,15 @@ use evaluator::codec::IntentKind;
 use evaluator::{OrderReject as R, PassDecision, PassReject, Status};
 use journal_types::{CloseReason, FailReason, JournalEvent};
 
-/// Class 0, no spread, a long price memory; `commission_e6` is the rate of class 0.
+/// Class 0, half-spread `TEST_HALF_SPREAD_E6` (1e-6), a long price memory; `commission_e6` is the rate of class 0.
 fn world(commission_e6: u32, max_notional_micro: u64, markets: usize) -> World {
+    world_with_size(S100K, commission_e6, max_notional_micro, markets)
+}
+
+fn world_with_size(size: i64, commission_e6: u32, max_notional_micro: u64, markets: usize) -> World {
     let ms: Vec<_> = (0..markets as u16)
         .map(|i| {
-            let mut m = market(i, 0, &format!("PAIR{i}"), 0);
+            let mut m = market(i, 0, &format!("PAIR{i}"), TEST_HALF_SPREAD_E6);
             m.max_age_secs = 3_600;
             m.max_notional_micro = max_notional_micro;
             m
@@ -18,7 +22,7 @@ fn world(commission_e6: u32, max_notional_micro: u64, markets: usize) -> World {
         .collect();
     let mut rules = base_rules(ms);
     rules.commission_e6[0] = commission_e6;
-    World::new(rules, S100K, 2, T_1400 - HOUR)
+    World::new(rules, size, 2, T_1400 - HOUR)
 }
 
 #[test]
@@ -44,13 +48,19 @@ fn queued_closes_see_the_position_the_earlier_ones_left() {
     assert_valid(&w, &bs);
 }
 
-/// The quantity whose margin at 1.0000 is exactly the whole balance: 5 M EUR at leverage 50 is $100,000.
-const FULL_MARGIN: u64 = 5 * MEUR;
+/// The quantity filled at the ask of mid 1.0000 (ASK_AT_ONE = 1.000001): 50 M EUR at leverage 50 is $1,000,001 of margin.
+const FULL_MARGIN: u64 = 50 * MEUR;
+/// The account size that makes equity exactly the margin of FULL_MARGIN: the margin $1,000,001 plus the open loss the long carries
+/// at once (marked at the bid, 2 x 1e-6 below the ask: 50 M x 0.000002 = $100). At S = $100,000 no quantity on the 0.001 EUR step
+/// lands exactly on the boundary (5 M EUR leaves 19 micro-USD over at the best, the next step is 1 short), and a size is a whole
+/// number of dollars, so the quantity is scaled by ten (the smallest one for which the sum is a whole number of dollars).
+const FULL_MARGIN_SIZE: i64 = 1_000_101 * USD;
 
 #[test]
 fn a_market_order_may_use_all_of_the_free_margin_but_not_one_step_more() {
-    assert_eq!(engine::margin_micro(FULL_MARGIN, p4(10_000), 50).unwrap(), S100K);
-    let mut w = world(0, 1_000_000_000_000_000, 1);
+    assert_eq!(engine::margin_micro(FULL_MARGIN, ASK_AT_ONE, 50).unwrap(), 1_000_001 * USD);
+    assert_eq!(engine::position::pnl_micro(true, FULL_MARGIN, ASK_AT_ONE, BID_AT_ONE).unwrap(), -100 * USD);
+    let mut w = world_with_size(FULL_MARGIN_SIZE, 0, 1_000_000_000_000_000, 1);
     w.sample(0, T_1400, p4(10_000));
     w.order(market_order(0, true, FULL_MARGIN + 1_000, T_1400)).unwrap();
     w.order(market_order(0, true, FULL_MARGIN, T_1400)).unwrap();
@@ -62,7 +72,8 @@ fn a_market_order_may_use_all_of_the_free_margin_but_not_one_step_more() {
 
 #[test]
 fn the_notional_cap_is_inclusive_for_a_market_order() {
-    let notional = engine::units::notional_micro(MEUR, p4(10_000)).unwrap();
+    // the cap is checked on the fill (the ask): 1 M EUR x 1.000001 = $1,000,001
+    let notional = engine::units::notional_micro(MEUR, ASK_AT_ONE).unwrap();
     for (cap, taken) in [(notional, true), (notional - 1, false)] {
         let mut w = world(0, u64::try_from(cap).unwrap(), 1);
         w.sample(0, T_1400, p4(10_000));
@@ -78,9 +89,10 @@ fn the_notional_cap_is_inclusive_for_a_market_order() {
 
 #[test]
 fn commissions_count_twice_in_the_margin_check() {
-    // rate 0.005%: paid on the fill and reserved again for the close, so equity = 100,000 - 2 x 0.00005 N and margin N / 50:
-    // N may be at most $4,975,124. 4.9 M EUR passes (equity 99,510 against margin 98,000); 4.99 M does not (99,501 against 99,800),
-    // although it would if either commission were added back (the two cancel: 100,000 against 99,800).
+    // rate 0.005%: paid on the fill and reserved again for the close, and the long is marked at the bid (2e-6 under the ask), so
+    // equity = 100,000 - 2 x 0.00005 N - 0.000002 N and margin = 1.000001 N / 50: N may be at most $4,974,624.
+    // 4.9 M EUR passes (equity 99,500.2 against margin 98,000.1); 4.99 M does not (99,491.0 against 99,800.1),
+    // although it would if the two commissions were added back (99,990.0 against 99,800.1).
     for (qty, taken) in [(4_900_000u64, true), (4_990_000, false)] {
         let mut w = world(50, 1_000_000_000_000_000, 1);
         w.sample(0, T_1400, p4(10_000));
@@ -96,9 +108,11 @@ fn commissions_count_twice_in_the_margin_check() {
 
 #[test]
 fn open_profit_counts_for_the_margin_of_the_next_order() {
-    // 1 M EUR bought at 1.0000 with commission 0.05% ($500 paid), then the price goes to 1.0050: open profit $5,000.
-    // A second order of n M EUR: equity = 99,500 + 5,000 - 502.5 (closing commission, first) - 1,005 n (closing commission and
-    // fill commission, second) and margin = 20,000 + 20,100 n. With the profit counted n may reach 3.98; with it subtracted only 3.51.
+    // 1 M EUR bought at 1.0000 (filled at the ask 1.000001) with commission 0.05% ($500.0005 paid), then the mid goes to 1.0050
+    // (bid 1.004999, ask 1.005001): open profit 1 M x (1.004998995 - 1.000001) = $4,998.
+    // A second order of n M EUR: equity = 99,500 + 4,998 - 502.5 (closing commission, first) - 1,005 n (closing commission and
+    // fill commission, second) and margin = 20,000 + 20,100 n. With the profit counted n may reach 3.98 (3,979,881 EUR); with it
+    // subtracted only 3.51 (3,506,250 EUR); the spread moves these by less than a thousandth.
     let mut w = world(500, 1_000_000_000_000_000, 1);
     w.sample(0, T_1400, p4(10_000));
     w.order(market_order(0, true, MEUR, T_1400)).unwrap();
@@ -131,7 +145,7 @@ fn quick_profit_world(markets: usize, qtys: &[u64]) -> World {
 
 #[test]
 fn a_flip_whose_closing_slice_overshoots_the_quick_limit_fails_the_phase() {
-    // 2 M EUR, +0.30% in 20 s: profit $6,000, the quick credit $3,000 is over 0.028 S = $2,800.
+    // 2 M EUR, +0.30% in 20 s: profit $5,996 (ask in, bid out), the quick credit $2,998 is over 0.028 S = $2,800.
     let mut w = quick_profit_world(1, &[2 * MEUR]);
     w.sample(0, T_1400 + 20, p4(10_030));
     w.ev.tick(T_1400 + 21);
@@ -154,7 +168,7 @@ fn a_flip_whose_closing_slice_overshoots_the_quick_limit_fails_the_phase() {
 
 #[test]
 fn a_flip_that_stays_under_the_quick_limit_books_the_close_and_the_new_position() {
-    // the same, +0.20%: profit $4,000, credit $2,000 < $2,800
+    // the same, +0.20%: profit $3,996, credit $1,998 < $2,800
     let mut w = quick_profit_world(1, &[2 * MEUR]);
     w.sample(0, T_1400 + 20, p4(10_020));
     w.ev.tick(T_1400 + 21);
@@ -169,7 +183,7 @@ fn a_flip_that_stays_under_the_quick_limit_books_the_close_and_the_new_position(
     assert_valid(&w, &bs);
 }
 
-/// `others` positions of 0.5 M EUR (+0.6% = $3,000 profit, a $1,500 quick credit each) and a 1 M EUR one (+0.6% = $6,000) in the last
+/// `others` positions of 0.5 M EUR (+0.6% = $2,999 profit, a $1,499 quick credit each) and a 1 M EUR one (+0.6% = $5,998) in the last
 /// market; closing the big one by hand overshoots the quick limit, so the others are closed first with reason Fail.
 fn forced_close(others: usize) -> World {
     let mut qtys = vec![MEUR / 2; others];
@@ -198,7 +212,7 @@ fn a_manual_close_over_the_quick_limit_closes_every_other_position_first() {
         want.push(CloseReason::Manual);
         assert_eq!(reasons, want, "{others}");
         assert!(matches!(evs.last(), Some(JournalEvent::Fail { reason: FailReason::PhaseQuick, .. }) | Some(JournalEvent::Meta { .. })));
-        // the credits of the others run 1,500 / 3,000 / 4,500 against the limit 2,800: the slices after the first overshoot are
+        // the credits of the others run 1,499 / 2,999 / 4,498 against the limit 2,800: the slices after the first overshoot are
         // counted as unpostable, except the last one of the group
         let want_unpostable = if others == 2 { 0 } else { 1 };
         assert_eq!(w.ev.stats().unpostable, want_unpostable, "{others} others");

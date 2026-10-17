@@ -65,6 +65,8 @@ pub struct Stats {
     pub exec_refused: u32,
     pub orders_accepted: u32,
     pub orders_rejected: u32,
+    /// Orders refused at arrival because they would open exposure in a market whose half-spread is 0 (decision 64).
+    pub unpriced_rejects: u32,
 }
 
 /// An accepted order (or a triggered pending order) that could not execute when its second closed.
@@ -400,7 +402,12 @@ impl Evaluator {
         let r = self.accept_order(s);
         match r {
             Ok(()) => self.stats.orders_accepted = self.stats.orders_accepted.saturating_add(1),
-            Err(_) => self.stats.orders_rejected = self.stats.orders_rejected.saturating_add(1),
+            Err(why) => {
+                self.stats.orders_rejected = self.stats.orders_rejected.saturating_add(1);
+                if why == OrderReject::MarketUnpriced {
+                    self.stats.unpriced_rejects = self.stats.unpriced_rejects.saturating_add(1);
+                }
+            }
         }
         r
     }

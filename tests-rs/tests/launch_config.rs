@@ -16,12 +16,13 @@ use common::vault::*;
 use common::*;
 use ::evaluator::codec::{IntentKind, OrderIntent};
 use ::evaluator::testkit::{MarketSpec, PathSpec, Scenario, Step};
-use journal_types::JournalEvent;
+use journal_types::{FailReason, JournalEvent};
 use serde_json::Value;
 use solana_signer::Signer;
 use setl8_lev_trading::{
     constants as c,
     instructions::{CreateMarketArgs, MarketParams, RuleSetArgs},
+    errors::Setl8Error as E,
     state::Session,
 };
 
@@ -302,41 +303,20 @@ fn the_sessions_of_the_file_decide_open_and_closed_with_the_programs_own_functio
     assert!(!open(gold, MONDAY + 5 * day) && !open(gold, MONDAY + 6 * day + 22 * 3_600));
 }
 
-/// THE FINDING behind "Adding a market after launch" in launch.md (P19 point 7), as an executable path: an account of rule set
-/// v1 trades a market created AFTER v1, at a ZERO half-spread, and nothing refuses it: the program accepts the fills (the market
-/// account is global; `spread_e6[id]` of v1 is 0 for an id that did not exist), the evaluator trades what it is configured with, and
-/// the verifier reads the missing spread as 0, so all three agree.
-#[test]
-fn an_old_account_trades_a_market_created_after_its_rule_set_at_zero_spread() {
-    let (markets, ruleset) = load();
-    let mut v = fresh(&ruleset);
-    for m in &markets {
-        v.e.create_market_ok(&m.args);
-    }
-    v.e.create_ruleset_ok(&ruleset);
-    let new_id = 21u16;
-    assert_eq!(ruleset.spread_e6[usize::from(new_id)], 0, "rule set v1 knows no market 21");
+// ------------------------------------------------------------------------------------------------------------------------------------
+// Decision 64 (P21): unpriced markets are untradable. The finding of P19 (an account of rule set v1 traded a market created AFTER v1 at
+// a zero half-spread, and all three components agreed) is now a refusal in all three. The rule set is immutable and `spread_e6` is
+// indexed by market id, so a market added after a version has a half-spread of 0 for every older account.
 
-    let mut spec = PathSpec {
-        seed: 0,
-        scenario: Scenario::Noise,
-        tier: 8,
-        size_micro: 100_000_000_000,
-        phase: 1,
-        opened_time: MONDAY + 300,
-        markets: vec![],
-        commission_e6: [0; 8],
-        steps: vec![],
-        batch_max_events: 8,
-        end: 0,
-    };
-    // the account is opened under v1 BEFORE the market exists
-    let mut chain = LiteChain::from_vault(&spec, v);
-    // then an admin adds market 21 (nothing needs a new rule set for that)
+const NEW_ID: u16 = 21;
+/// The half-spread rule set v2 gives the new market in the tests that price it (any non-zero value would do).
+const NEW_HALF_SPREAD_E6: u16 = 30;
+
+fn new_market_args() -> CreateMarketArgs {
     let mut sessions = [Session::default(); 6];
     sessions[0] = Session { start_min: 0, end_min: 10_080 };
-    chain.j.v.e.create_market_ok(&CreateMarketArgs {
-        market_id: new_id,
+    CreateMarketArgs {
+        market_id: NEW_ID,
         class: 6,
         params: MarketParams {
             status: 1,
@@ -349,24 +329,310 @@ fn an_old_account_trades_a_market_created_after_its_rule_set_at_zero_spread() {
             sessions,
             quote_conv_market: c::NO_QUOTE_CONV,
         },
-    });
+    }
+}
+
+fn new_coin_spec(half_spread_e6: u32) -> MarketSpec {
+    MarketSpec::plain(NEW_ID, 6, "NEWCOIN".into(), 2, price(100.0), 15, half_spread_e6, vec![(0, 10_080)])
+}
+
+/// A path with no steps yet: the tier-8 account opened at Monday 00:05, phase 1.
+fn empty_spec(markets: Vec<MarketSpec>) -> PathSpec {
+    PathSpec {
+        seed: 0,
+        scenario: Scenario::Noise,
+        tier: 8,
+        size_micro: 100_000_000_000,
+        phase: 1,
+        opened_time: MONDAY + 300,
+        markets,
+        commission_e6: [0; 8],
+        steps: vec![],
+        batch_max_events: 8,
+        end: 0,
+    }
+}
+
+/// The deploy order of handover/launch-config.md: the 21 markets, then rule set v1.
+fn launched(markets: &[Entry], ruleset: &RuleSetArgs) -> VaultEnv {
+    let mut v = fresh(ruleset);
+    for m in markets {
+        v.e.create_market_ok(&m.args);
+    }
+    v.e.create_ruleset_ok(ruleset);
+    v
+}
+
+/// The sample of the new market a forged journal event is built on.
+fn new_coin_proof(time: i64, mid: u64) -> journal_types::PriceProof {
+    journal_types::PriceProof {
+        source: 2,
+        feed_id: journal_types::feed_id(&journal_types::NativeSha256, 2, "NEWCOIN"),
+        timestamp_ns: u64::try_from(time).unwrap() * 1_000_000_000,
+        quantized_value: i128::from(mid) * 1_000_000,
+        signed_update: vec![],
+    }
+}
+
+/// A batch an evaluator without the rule would post: a market buy of 10,000 units in the new market at the price its rule set implies
+/// (`half_spread_e6` for the account), then a heartbeat Meta.
+fn forged_new_coin_fill(chain: &LiteChain, time: i64, half_spread_e6: u32) -> journal_types::JournalBatch {
     let px = price(100.0);
-    spec.markets = vec![MarketSpec::plain(new_id, 6, "NEWCOIN".into(), 2, px, 15, 0, vec![(0, 10_080)])];
+    let fill = common::journal::fill(NEW_ID, true, 10_000, common::journal::ask(px, half_spread_e6), time, 0);
+    chain.j.batch(vec![fill, common::journal::meta(time, false)], vec![new_coin_proof(time, px)])
+}
+
+/// Steps of the new market for the evaluator: samples, then one market order (refused at arrival) and one close (nothing to close).
+fn new_coin_attempt(spec: &mut PathSpec) {
     let mut nonce = 1u32;
-    block(&mut spec.steps, &mut nonce, new_id, MONDAY + 600, px, 10_000);
+    block(&mut spec.steps, &mut nonce, NEW_ID, MONDAY + 600, price(100.0), 10_000);
     spec.end = MONDAY + 740;
     spec.steps.push(Step::Post { sec: spec.end, heartbeat: true });
+}
 
+/// THE FINDING behind "Adding a market after launch" in launch.md (P19 point 7), as an executable path, now closed: an account of
+/// rule set v1 cannot open a market created AFTER v1 (its half-spread in v1 is 0). The PROGRAM refuses a forged `Fill` there with
+/// `MarketUnpriced` (the account and the world are unchanged), the EVALUATOR refuses the trader's order at arrival (no intent on file,
+/// no event) and the VERIFIER calls the resulting honest history VALID (and the same forged fill FillNotAllowed, see below).
+#[test]
+fn an_old_account_cannot_open_a_market_created_after_its_rule_set_program_evaluator_and_verifier_agree() {
+    let (markets, ruleset) = load();
+    let v = launched(&markets, &ruleset);
+    assert_eq!(ruleset.spread_e6[usize::from(NEW_ID)], 0, "rule set v1 knows no market 21");
+    let mut spec = empty_spec(vec![]);
+    // the account is opened under v1 BEFORE the market exists, then an admin adds market 21 (nothing needs a new rule set for that)
+    let mut chain = LiteChain::from_vault(&spec, v);
+    chain.j.v.e.create_market_ok(&new_market_args());
+    assert_eq!(chain.j.account().ruleset_version, 1);
+
+    // ---- the program: an exposure-increasing Fill in the unpriced market is refused with the new code, nothing changes
+    let t = MONDAY + 600;
+    let forged = forged_new_coin_fill(&chain, t, 0);
+    chain.j.post_rejected(t + 1, &forged, &[NEW_ID], E::MarketUnpriced);
+    assert_eq!(u32::from(E::MarketUnpriced), 6109);
+
+    // ---- the evaluator: the trader's market order is refused at arrival, nothing is journalled, nothing is on file
+    spec.markets = vec![new_coin_spec(0)];
+    new_coin_attempt(&mut spec);
     let world = World::from_params(spec_rules(&spec), chain.params.clone());
     let r = run_path(&spec, world, &mut chain);
-    // the program took the fill and the close, the evaluator's account equals the chain's after every transaction, the verifier says VALID
+    assert_eq!(r.world.ev.stats().unpriced_rejects, 1, "the market order (the close has nothing to close)");
+    assert!(events(&r.items).iter().all(|e| !matches!(e, JournalEvent::Fill { .. } | JournalEvent::Close { .. })), "no trade in the new market");
+    assert!(r.world.ev.refusals().is_empty());
+    let on_file = setl8_verify::intents::IntentFile::parse(r.world.ev.intents_bytes()).expect("intents");
+    assert!(on_file.lines.is_empty(), "a refused order leaves no trace");
+
+    // ---- the verifier: the honest history (heartbeats only) is VALID against the chain after every transaction ...
     verify_segment(&spec, &chain, &r).unwrap_or_else(|e| panic!("{e}"));
-    let fill_price = events(&r.items).iter().find_map(|e| match e {
-        JournalEvent::Fill { market, price_e12, .. } if *market == new_id => Some(*price_e12),
-        _ => None,
-    });
-    // a buy at ask = mid x (1 + 0): the fill is at the sampled price itself (the sample alternates by 1 bp; k = 6 is the base price)
-    assert_eq!(fill_price, Some(px), "bought at the mid: half-spread 0");
+    // (the forged fill, published, is FillNotAllowed: trust_matrix row "a market fill in a market the account's rule set does not price",
+    // BOTH, and `walk.rs refusal_tests` for the reason text)
     // for contrast, a launch market pays its half-spread: BTC at 150 e6 is 1.5 bp above the mid
     assert!(ruleset.spread_e6[usize::from(BTC)] > 0);
+}
+
+/// (a) A NEW account under a NEW rule set version (v2, which prices the new market) trades the market: the fill is at the ask its
+/// half-spread implies, the program accepts every batch, and the verifier says VALID.
+#[test]
+fn a_new_account_under_a_rule_set_version_that_prices_the_new_market_trades_it() {
+    let (markets, v1) = load();
+    let mut v = launched(&markets, &v1);
+    v.e.create_market_ok(&new_market_args());
+    let mut v2 = v1.clone();
+    v2.version = 2;
+    v2.spread_e6[usize::from(NEW_ID)] = NEW_HALF_SPREAD_E6;
+    v.e.create_ruleset_ok(&v2);
+    let mut spec = empty_spec(vec![new_coin_spec(u32::from(NEW_HALF_SPREAD_E6))]);
+    let mut chain = LiteChain::from_vault(&spec, v);
+    assert_eq!(chain.j.account().ruleset_version, 2, "an account opened now takes the newest rule set");
+    new_coin_attempt(&mut spec);
+    let world = World::from_params(spec_rules(&spec), chain.params.clone());
+    let r = run_path(&spec, world, &mut chain);
+    assert_eq!(r.world.ev.stats().unpriced_rejects, 0);
+    assert!(r.world.ev.refusals().is_empty(), "{:?}", r.world.ev.refusals());
+    let evs = events(&r.items);
+    let fills: Vec<u64> = evs.iter().filter_map(|e| if let JournalEvent::Fill { market, price_e12, .. } = e { (*market == NEW_ID).then_some(*price_e12) } else { None }).collect();
+    let closes = evs.iter().filter(|e| matches!(e, JournalEvent::Close { market, .. } if *market == NEW_ID)).count();
+    // the buy is at k = 6 (the base price): ask = ceil(mid x (1 + 30e-6))
+    assert_eq!((fills.len(), closes), (1, 1));
+    assert_eq!(fills[0], common::journal::ask(price(100.0), u32::from(NEW_HALF_SPREAD_E6)));
+    assert!(fills[0] > price(100.0), "the market pays its half-spread");
+    verify_segment(&spec, &chain, &r).unwrap_or_else(|e| panic!("{e}"));
+}
+
+/// (b) The OLD v1 account keeps trading the markets v1 prices after v2 exists, and still cannot open the new one.
+#[test]
+fn an_account_of_rule_set_v1_keeps_trading_its_priced_markets_when_v2_exists() {
+    let (markets, v1) = load();
+    let v = launched(&markets, &v1);
+    let btc = &markets[usize::from(BTC)];
+    let p = &btc.args.params;
+    let btc_sessions = p.sessions[..usize::from(p.session_count)].iter().map(|s| (s.start_min, s.end_min)).collect();
+    let mut btc_spec = MarketSpec::plain(BTC, btc.args.class, btc.symbol.clone(), btc.source, price(81_131.526567), p.max_age_secs, u32::from(v1.spread_e6[usize::from(BTC)]), btc_sessions);
+    btc_spec.qty_step = p.qty_step;
+    btc_spec.qty_min = p.qty_min;
+    btc_spec.max_notional_micro = p.max_notional_usd;
+    let mut spec = empty_spec(vec![btc_spec, new_coin_spec(0)]);
+    let mut chain = LiteChain::from_vault(&spec, v);
+    // then the market and a rule set that prices it exist: the old account's rule set is not changed by that
+    chain.j.v.e.create_market_ok(&new_market_args());
+    let mut v2 = v1.clone();
+    v2.version = 2;
+    v2.spread_e6[usize::from(NEW_ID)] = NEW_HALF_SPREAD_E6;
+    chain.j.v.e.create_ruleset_ok(&v2);
+    assert_eq!(chain.j.v.e.config().current_ruleset, 2);
+    assert_eq!(chain.j.account().ruleset_version, 1, "the account keeps the rule set it was opened under");
+    let mut nonce = 1u32;
+    block(&mut spec.steps, &mut nonce, BTC, MONDAY + 600, price(81_131.526567), 1_000);
+    block(&mut spec.steps, &mut nonce, NEW_ID, MONDAY + 1_000, price(100.0), 10_000);
+    spec.end = MONDAY + 1_140;
+    spec.steps.push(Step::Post { sec: spec.end, heartbeat: true });
+    let world = World::from_params(spec_rules(&spec), chain.params.clone());
+    let r = run_path(&spec, world, &mut chain);
+    let evs = events(&r.items);
+    let count = |id: u16, fills: bool| evs.iter().filter(|e| match e { JournalEvent::Fill { market, .. } => fills && *market == id, JournalEvent::Close { market, .. } => !fills && *market == id, _ => false }).count();
+    assert_eq!((count(BTC, true), count(BTC, false)), (1, 1), "BTC is priced in v1 and trades");
+    assert_eq!((count(NEW_ID, true), count(NEW_ID, false)), (0, 0), "the new market is not priced in v1");
+    assert_eq!(r.world.ev.stats().unpriced_rejects, 1);
+    verify_segment(&spec, &chain, &r).unwrap_or_else(|e| panic!("{e}"));
+}
+
+/// A chain whose rule set v1 gives the new market the half-spread `spread_21`, with one account under it (the market is created
+/// BEFORE v1 here, so that v1 can price it).
+fn chain_pricing_the_new_market_at(spread_21: u16) -> LiteChain {
+    let (markets, mut v1) = load();
+    v1.spread_e6[usize::from(NEW_ID)] = spread_21;
+    let mut v = fresh(&v1);
+    for m in &markets {
+        v.e.create_market_ok(&m.args);
+    }
+    v.e.create_market_ok(&new_market_args());
+    v.e.create_ruleset_ok(&v1);
+    LiteChain::from_vault(&empty_spec(vec![]), v)
+}
+
+/// (d) The boundary: a half-spread of 1 e6 is accepted by the program (the fill at the ask it implies), 0 is refused.
+#[test]
+fn a_half_spread_of_one_e6_is_accepted_and_zero_is_refused_by_the_program() {
+    let t = MONDAY + 600;
+    for (spread, ok) in [(1u16, true), (0, false), (2, true)] {
+        let mut chain = chain_pricing_the_new_market_at(spread);
+        let batch = forged_new_coin_fill(&chain, t, u32::from(spread));
+        if ok {
+            chain.j.post_ok(t + 1, &batch, &[NEW_ID]);
+            assert_eq!(chain.j.account().seq, 2, "half-spread {spread}: the fill and the meta are on the chain");
+        } else {
+            chain.j.post_rejected(t + 1, &batch, &[NEW_ID], E::MarketUnpriced);
+            assert_eq!(chain.j.account().seq, 0);
+        }
+    }
+    // and the price of the 1 e6 fill is the rounded-up ask, one e6 above the mid
+    assert_eq!(common::journal::ask(price(100.0), 1), 100_000_100_000_000);
+}
+
+/// (c) Closing is never refused by the rule: a `Close` in the unpriced market is accepted (the program holds no position; a position
+/// cannot have been opened there, but the rule is about exposure increases, and the Close arm has no such check).
+#[test]
+fn a_close_in_an_unpriced_market_is_never_refused_by_the_program() {
+    let mut chain = chain_pricing_the_new_market_at(0);
+    let t = MONDAY + 600;
+    let px = price(100.0);
+    // entry = exit = the mid (a zero half-spread closes at the mid), so the claims are consistent and the pnl is 0
+    let close = common::journal::close(NEW_ID, true, 10_000, px, px, t, t - 100, 0);
+    let batch = chain.j.batch(vec![close, common::journal::meta(t, true)], vec![new_coin_proof(t, px)]);
+    chain.j.post_ok(t + 1, &batch, &[NEW_ID]);
+    assert_eq!(chain.j.account().seq, 2);
+}
+
+/// (e) `report_fail` runs the same batch loop: a batch with an exposure-increasing Fill in the unpriced market is refused the same
+/// way (before the Fail is looked at), and the account stays Active.
+#[test]
+fn report_fail_batches_with_an_unpriced_fill_are_refused_the_same_way() {
+    let chain = chain_pricing_the_new_market_at(0);
+    let mut chain = chain;
+    let t = MONDAY + 600;
+    let px = price(100.0);
+    let fill = common::journal::fill(NEW_ID, true, 10_000, px, t, 1);
+    let mut b = chain.j.fail_batch(t, vec![fill], FailReason::StaticFloor, 90_000_000_000, true);
+    b.proofs.push(new_coin_proof(t, px));
+    let before = chain.j.digest();
+    let r = chain.j.report_fail(t + 1, &b, 0, &[NEW_ID]);
+    common::journal::assert_err_at(&r, 0, E::MarketUnpriced);
+    assert_eq!(chain.j.digest(), before);
+    assert_eq!(chain.j.account().status, c::STATUS_ACTIVE);
+}
+
+/// (f) A pending order on the unpriced market is refused at PLACEMENT (the evaluator leaves no intent on file) and never fills,
+/// even when the price passes its level; the history is VALID (the verifier expects no fill there).
+#[test]
+fn a_pending_order_on_an_unpriced_market_is_refused_at_placement_and_never_fills() {
+    let (markets, ruleset) = load();
+    let v = launched(&markets, &ruleset);
+    let mut spec = empty_spec(vec![new_coin_spec(0)]);
+    let mut chain = LiteChain::from_vault(&spec, v);
+    chain.j.v.e.create_market_ok(&new_market_args());
+    let px = price(100.0);
+    let t0 = MONDAY + 600;
+    let mut steps = vec![Step::Sample { market: NEW_ID, sec: t0, mid: px }];
+    let intent = |kind, side, level| OrderIntent { kind, market: NEW_ID, side, qty: 10_000, price_e12: level, sl_e12: 0, tp_e12: 0, target_nonce: 0, client_time: t0 + 1 };
+    steps.push(Step::Order { nonce: 1, intent: intent(IntentKind::Limit, 0, price(99.0)) });
+    steps.push(Step::Order { nonce: 2, intent: intent(IntentKind::Stop, 0, price(101.0)) });
+    // the price falls through the limit's level and rises through the stop's, with a sample every few seconds
+    for (k, mid) in [(5i64, 98.0), (10, 98.5), (15, 102.0), (20, 103.0), (25, 100.0)] {
+        steps.push(Step::Sample { market: NEW_ID, sec: t0 + k, mid: price(mid) });
+    }
+    spec.steps = steps;
+    spec.end = t0 + 60;
+    spec.steps.push(Step::Post { sec: spec.end, heartbeat: true });
+    let world = World::from_params(spec_rules(&spec), chain.params.clone());
+    let r = run_path(&spec, world, &mut chain);
+    assert_eq!(r.world.ev.stats().unpriced_rejects, 2, "both pending orders are refused at placement");
+    assert!(events(&r.items).iter().all(|e| !matches!(e, JournalEvent::Fill { .. })), "and neither fills");
+    assert!(setl8_verify::intents::IntentFile::parse(r.world.ev.intents_bytes()).expect("intents").lines.is_empty());
+    verify_segment(&spec, &chain, &r).unwrap_or_else(|e| panic!("{e}"));
+}
+
+/// The unpriced check answers BEFORE the price and the proof of the fill are looked at (decision 65 (1)): a fill with a wrong price, a
+/// proof of another feed, or an off-step quantity in an unpriced market is `MarketUnpriced`, not the error of the later check;
+/// the same fill in a priced market is refused for the later check, so the order of the two is pinned from both sides.
+#[test]
+fn the_unpriced_check_answers_before_the_price_the_proof_and_the_quantity() {
+    let t = MONDAY + 600;
+    let px = price(100.0);
+    // (the fill, the error a PRICED market gives for it)
+    let wrong_feed = journal_types::PriceProof { feed_id: journal_types::feed_id(&journal_types::NativeSha256, 2, "SOMETHINGELSE"), ..new_coin_proof(t, px) };
+    let cases: Vec<(JournalEvent, journal_types::PriceProof, E)> = vec![
+        (common::journal::fill(NEW_ID, true, 10_000, px + 1, t, 0), new_coin_proof(t, px), E::EventPriceMismatch),
+        (common::journal::fill(NEW_ID, true, 10_000, px, t, 0), wrong_feed, E::ProofWrongFeed),
+        (common::journal::fill(NEW_ID, true, 10_500, px, t, 0), new_coin_proof(t, px), E::QuantityInvalid),
+    ];
+    for (ev, proof, later) in cases {
+        for (spread, want) in [(0u16, E::MarketUnpriced), (1, later)] {
+            let mut chain = chain_pricing_the_new_market_at(spread);
+            let batch = chain.j.batch(vec![ev.clone(), common::journal::meta(t, false)], vec![proof.clone()]);
+            chain.j.post_rejected(t + 1, &batch, &[NEW_ID], want);
+        }
+    }
+}
+
+/// The rule is about the market, not the kind of order: the fill of a triggered limit or stop order in the unpriced market is refused
+/// by the program like a market order's (P21 hand mutation "checked only on market orders").
+#[test]
+fn the_fill_of_a_pending_order_in_an_unpriced_market_is_refused_like_a_market_orders() {
+    let t = MONDAY + 600;
+    let px = price(100.0);
+    for kind in [journal_types::OrderKind::Limit, journal_types::OrderKind::Stop] {
+        for (spread, ok) in [(0u16, false), (1, true)] {
+            let mut chain = chain_pricing_the_new_market_at(spread);
+            let mut fill = common::journal::fill(NEW_ID, true, 10_000, common::journal::ask(px, u32::from(spread)), t, 0);
+            if let JournalEvent::Fill { order_kind, .. } = &mut fill {
+                *order_kind = kind;
+            }
+            let batch = chain.j.batch(vec![fill, common::journal::meta(t, false)], vec![new_coin_proof(t, px)]);
+            if ok {
+                chain.j.post_ok(t + 1, &batch, &[NEW_ID]);
+            } else {
+                chain.j.post_rejected(t + 1, &batch, &[NEW_ID], E::MarketUnpriced);
+            }
+        }
+    }
 }

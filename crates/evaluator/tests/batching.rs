@@ -26,10 +26,10 @@ fn kinds(b: &Batch) -> Vec<&'static str> {
         .collect()
 }
 
-/// `n` zero-spread markets of class 0 with a position each, opened at T_1400 + 21 h so a 22:00 rollover follows.
+/// `n` markets (half-spread `TEST_HALF_SPREAD_E6`, priced) of class 0 with a position each, opened at T_1400 + 21 h so a 22:00 rollover follows.
 fn night_world(n: u16) -> World {
     let markets: Vec<_> = (0..n).map(|i| {
-        let mut m = common::market(i, 0, &format!("N{i}"), 0);
+        let mut m = common::market(i, 0, &format!("N{i}"), TEST_HALF_SPREAD_E6);
         m.max_age_secs = 3_600;
         m
     }).collect();
@@ -78,7 +78,7 @@ fn eight_events_fit_and_nine_split() {
 #[test]
 fn at_most_three_proofs() {
     // four markets, one fill each at four different samples: 4 proofs do not fit one batch
-    let markets: Vec<_> = (0..4u16).map(|i| { let mut m = common::market(i, 0, &format!("P{i}"), 0); m.max_age_secs = 3_600; m }).collect();
+    let markets: Vec<_> = (0..4u16).map(|i| { let mut m = common::market(i, 0, &format!("P{i}"), TEST_HALF_SPREAD_E6); m.max_age_secs = 3_600; m }).collect();
     let mut w = World::new(base_rules(markets), S100K, 2, T_1400 - HOUR);
     for i in 0..4u16 {
         w.sample(i, T_1400 + i64::from(i), p4(10_000));
@@ -93,7 +93,7 @@ fn at_most_three_proofs() {
     assert_eq!(bs[1].batch.proofs.len(), 1);
     assert_eq!(kinds(&bs[0]), vec!["Fill", "Fill", "Fill", "Meta"]);
     // a lower policy limit splits earlier
-    let mut w = World::new(base_rules((0..4u16).map(|i| { let mut m = common::market(i, 0, &format!("P{i}"), 0); m.max_age_secs = 3_600; m }).collect()), S100K, 2, T_1400 - HOUR);
+    let mut w = World::new(base_rules((0..4u16).map(|i| { let mut m = common::market(i, 0, &format!("P{i}"), TEST_HALF_SPREAD_E6); m.max_age_secs = 3_600; m }).collect()), S100K, 2, T_1400 - HOUR);
     for i in 0..4u16 {
         w.sample(i, T_1400 + i64::from(i), p4(10_000));
     }
@@ -169,7 +169,7 @@ fn the_meta_time_never_passes_a_queued_holding_fee() {
 
 #[test]
 fn flips_and_tight_end_units_are_not_split() {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, MEUR, t)).unwrap();
@@ -183,7 +183,7 @@ fn flips_and_tight_end_units_are_not_split() {
     assert_eq!(kinds(flip), vec!["Close", "Fill", "Meta"]);
     assert_valid(&w, &bs);
     // a TightEnd needs a batch that ends flat: a close (ending tight mode) and a new fill in the same second go in two batches
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, MEUR, t)).unwrap();
     w.sample(0, t + 10, p4(10_030));
@@ -202,7 +202,7 @@ fn flips_and_tight_end_units_are_not_split() {
 
 #[test]
 fn a_report_fail_batch_ends_fail_then_meta_and_flat() {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     w.sample(0, T_1400, p4(10_000));
     w.order(market_order(0, true, 45 * MEUR / 10, T_1400)).unwrap();
     w.sample(0, T_1400 + 5, p4(10_000));
@@ -222,7 +222,7 @@ fn a_report_fail_batch_ends_fail_then_meta_and_flat() {
 
 #[test]
 fn heartbeats_and_meta_hashes() {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     w.sample(0, T_1400, p4(10_000));
     w.sample(0, T_1400 + 30, p4(10_001));
     // nothing queued, time moved on: a heartbeat carries only a Meta
@@ -248,7 +248,7 @@ fn heartbeats_and_meta_hashes() {
 
 #[test]
 fn chain_head_and_sequence_follow_the_batches() {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     w.sample(0, T_1400, p4(10_000));
     w.order(market_order(0, true, MEUR, T_1400)).unwrap();
     w.sample(0, T_1400 + 10, p4(10_000));

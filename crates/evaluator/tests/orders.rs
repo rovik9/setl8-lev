@@ -6,7 +6,7 @@ use evaluator::codec::{IntentKind, OrderIntent};
 use evaluator::{OrderReject as R, Status, STATUS_REDUCE_ONLY};
 
 fn w0() -> World {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     w.sample(0, T_1400, p4(10_000));
     w
 }
@@ -169,7 +169,7 @@ fn freezing_and_ending() {
 fn market_status_sessions_and_staleness() {
     // reduce-only: limit orders refused, an opening market order refused at execution, a close allowed
     let mut m = eur_market(0);
-    m.half_spread_e6 = 0;
+    m.half_spread_e6 = TEST_HALF_SPREAD_E6; // decision 64: a zero half-spread market is untradable, so the fixture is priced
     m.max_age_secs = 3_600;
     let mut w = World::new(base_rules(vec![m.clone()]), S100K, 2, T_1400 - HOUR);
     w.sample(0, T_1400, p4(10_000));
@@ -218,7 +218,7 @@ fn market_status_sessions_and_staleness() {
 fn notional_cap_margin_and_position_limits() {
     // per-position cap: 1,000,000 EUR at 1.0 is $1,000,000
     let mut m = eur_market(0);
-    m.half_spread_e6 = 0;
+    m.half_spread_e6 = TEST_HALF_SPREAD_E6;
     m.max_notional_micro = 999_999_000_000;
     let mut w = World::new(base_rules(vec![m]), S100K, 2, T_1400 - HOUR);
     w.sample(0, T_1400, p4(10_000));
@@ -231,8 +231,8 @@ fn notional_cap_margin_and_position_limits() {
     w.sample(0, T_1400 + 5, p4(10_000));
     w.ev.tick(T_1400 + 6);
     assert_eq!(w.ev.refusals().last().map(|r| r.reason), Some(R::NotionalCap), "adding 2,000 EUR would pass the cap");
-    // margin: 1:50 on EURUSD, equity $100,000: $5.1M of notional needs $102,000 of margin
-    let mut w = fx_world(0);
+    // margin: 1:50 on EURUSD, equity $100,000 (less the spread paid, about $10): $5.1M of notional needs $102,000 of margin
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     w.sample(0, T_1400, p4(10_000));
     w.order(market_order(0, true, 5_100 * MEUR / 1000, T_1400)).unwrap();
     w.sample(0, T_1400 + 2, p4(10_000));
@@ -248,7 +248,7 @@ fn notional_cap_margin_and_position_limits() {
 
 #[test]
 fn eight_positions_at_most() {
-    let markets: Vec<_> = (0..9u16).map(|i| common::market(i, 0, &format!("S{i}"), 0)).collect();
+    let markets: Vec<_> = (0..9u16).map(|i| common::market(i, 0, &format!("S{i}"), TEST_HALF_SPREAD_E6)).collect();
     let mut w = World::new(base_rules(markets), S100K, 2, T_1400 - HOUR);
     for i in 0..9u16 {
         w.sample(i, T_1400 + i64::from(i), p4(10_000));
@@ -264,7 +264,7 @@ fn eight_positions_at_most() {
 #[test]
 fn a_flip_remainder_must_be_a_valid_fill_quantity() {
     let mut m = eur_market(0);
-    m.half_spread_e6 = 0;
+    m.half_spread_e6 = TEST_HALF_SPREAD_E6;
     m.qty_min = 10_000_000;
     let mut w = World::new(base_rules(vec![m]), S100K, 2, T_1400 - HOUR);
     w.sample(0, T_1400, p4(10_000));
@@ -279,15 +279,25 @@ fn a_flip_remainder_must_be_a_valid_fill_quantity() {
     assert_eq!(w.ev.positions()[&0].p.qty, 100_000_000, "nothing happened");
 }
 
+// The breach sample, derived by hand for 1,000,000 EUR long, S = $100,000, no commission, half-spread 1e-6:
+//   entry at the ask 1.000001 (1_000_001_000_000); the sample at mid 1.0030 is the peak: bid = 1.0030 * 0.999999 = 1_002_998_997_000,
+//   so P_peak = 1_002_998_997_000 - 1_000_001_000_000 = 2_997_997_000 micro-USD (> 0.01 S: tight mode starts, G_peak = P_peak);
+//   L = F_s + 0.04 S + (G_peak - 0.01 S) = 96,000 + 2,997.997 - 1,000 = 97,997.997 USD, so E = B + P <= L needs
+//   P <= P_peak - 5,000 USD, that is bid <= 1_002_998_997_000 - 5_000_000_000 = 997_998_997_000.
+//   The mid whose bid is exactly that: 997_999_995_000 * 0.999999 = 997_998_997_000.005, floored to 997_998_997_000 (touching counts).
+//   (With a zero spread the same breach was mid 0.9980, 50 pips under the peak; the spread shifts the boundary by 5e-9, below the p4 grid.)
+const BREACH_MID: u64 = 997_999_995_000;
+
 #[test]
 fn the_breach_lock_blocks_opening_but_not_closing() {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, MEUR, t)).unwrap();
-    for (dt, p) in [(30, 10_006), (60, 10_012), (90, 10_030), (150, 9_980)] {
+    for (dt, p) in [(30, 10_006), (60, 10_012), (90, 10_030)] {
         w.sample(0, t + dt, p4(p));
     }
+    w.sample(0, t + 150, BREACH_MID);
     w.ev.tick(t + 151);
     assert!(w.ev.state().lock_until > t);
     w.order(market_order(0, true, MEUR, t + 151)).unwrap();
@@ -299,6 +309,23 @@ fn the_breach_lock_blocks_opening_but_not_closing() {
     assert!(w.order(order(IntentKind::Limit, 0, 0, MEUR, p4(9_900), 0, 0, 0, t + 161)).is_ok());
     let acct = w.opened.account;
     let _ = acct;
+}
+
+#[test]
+fn one_unit_of_mid_above_the_breach_sample_takes_no_lock() {
+    // BREACH_MID + 1 gives bid 997_998_997_001 (floor of ...001.004): one micro-USD of equity above L, so tight mode holds
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
+    let t = T_1400;
+    w.sample(0, t, p4(10_000));
+    w.order(market_order(0, true, MEUR, t)).unwrap();
+    for (dt, p) in [(30, 10_006), (60, 10_012), (90, 10_030)] {
+        w.sample(0, t + dt, p4(p));
+    }
+    w.sample(0, t + 150, BREACH_MID + 1);
+    w.ev.tick(t + 151);
+    assert_eq!(w.ev.state().lock_until, 0);
+    assert!(w.ev.state().tight_on);
+    assert_eq!(w.ev.positions().len(), 1);
 }
 
 #[test]
@@ -321,8 +348,9 @@ fn accept_all_takes_any_signature() {
 #[test]
 fn a_pending_order_waits_for_the_second_after_its_client_time() {
     let mut w = w0();
-    // accepted at T_1400 for a price the sample of the SAME second already satisfies: effective strictly after client_time
-    w.order(order(IntentKind::Limit, 0, 0, MEUR / 10, p4(10_000), 0, 0, 0, T_1400)).unwrap();
+    // accepted at T_1400 for a price the sample of the SAME second already satisfies (the ask at mid 1.0 touches the level):
+    // effective strictly after client_time
+    w.order(order(IntentKind::Limit, 0, 0, MEUR / 10, ASK_AT_ONE, 0, 0, 0, T_1400)).unwrap();
     w.sample(0, T_1400 + 5, p4(10_000));
     w.ev.tick(T_1400 + 6);
     let bs = w.ev.drain_batches(&evaluator::BatchPolicy::MAX);
@@ -333,10 +361,10 @@ fn a_pending_order_waits_for_the_second_after_its_client_time() {
 
 #[test]
 fn a_pending_order_of_another_market_does_not_fill_on_this_markets_sample() {
-    let mut m1 = common::market(1, 0, "OTHER", 0);
+    let mut m1 = common::market(1, 0, "OTHER", TEST_HALF_SPREAD_E6);
     m1.max_age_secs = 3_600;
     let mut m0 = eur_market(0);
-    m0.half_spread_e6 = 0;
+    m0.half_spread_e6 = TEST_HALF_SPREAD_E6;
     m0.max_age_secs = 3_600;
     let mut w = World::new(base_rules(vec![m0, m1]), S100K, 2, T_1400 - HOUR);
     w.sample(0, T_1400, p4(10_000));
@@ -418,7 +446,7 @@ fn a_sample_may_arrive_in_the_current_second_but_not_before_it() {
 #[test]
 fn a_market_order_trades_on_the_newest_sample_that_existed_when_it_arrived() {
     let mut m = eur_market(0);
-    m.half_spread_e6 = 0;
+    m.half_spread_e6 = TEST_HALF_SPREAD_E6;
     m.max_age_secs = 3_600;
     let mut w = World::new(base_rules(vec![m]), S100K, 2, T_1400 - HOUR);
     w.sample(0, T_1400 - 5, p4(10_000));
@@ -427,7 +455,8 @@ fn a_market_order_trades_on_the_newest_sample_that_existed_when_it_arrived() {
     w.ev.tick(T_1400 + 2);
     let bs = w.ev.drain_batches(&evaluator::BatchPolicy::MAX);
     let price = common::events_of(&bs).iter().find_map(|e| if let journal_types::JournalEvent::Fill { price_e12, .. } = e { Some(*price_e12) } else { None });
-    assert_eq!(price, Some(p4(10_000)));
+    // a long fills at the ask of the OLD sample (mid 1.0): ceil(1.0 * (1 + 1e-6)); the later mid 1.05 would give 1_050_001_050_000
+    assert_eq!(price, Some(ASK_AT_ONE));
 }
 
 #[test]
@@ -438,4 +467,111 @@ fn two_updates_with_the_same_source_time_are_both_taken() {
     assert!(w.ev.on_sample(0, t + 500, v(10_001), t + 600, [0; 32]).is_ok());
     assert!(w.ev.on_sample(0, t + 500, v(10_002), t + 700, [0; 32]).is_ok(), "equal source times are not 'backwards'");
     assert_eq!(w.ev.on_sample(0, t + 499, v(10_003), t + 800, [0; 32]), Err(evaluator::SampleError::MarketTimeBackwards));
+}
+
+// ---------------------------------------------------------------------------------------------------- decision 64: unpriced markets
+
+/// Market 0 priced (`TEST_HALF_SPREAD_E6`), market 1 unpriced (the rule set has no half-spread for it), one sample each.
+fn priced_and_unpriced() -> World {
+    let mut m0 = eur_market(0);
+    m0.half_spread_e6 = TEST_HALF_SPREAD_E6;
+    m0.max_age_secs = 3_600;
+    let mut m1 = market(1, 0, "UNPRICED", 0);
+    m1.max_age_secs = 3_600;
+    let mut w = World::new(base_rules(vec![m0, m1]), S100K, 2, T_1400 - HOUR);
+    w.sample(0, T_1400, p4(10_000));
+    w.sample(1, T_1400, p4(10_000));
+    w
+}
+
+#[test]
+fn every_order_that_opens_in_an_unpriced_market_is_refused_at_arrival_and_leaves_nothing() {
+    let mut w = priced_and_unpriced();
+    assert_eq!(intents_lines(&w), 0);
+    let at = T_1400;
+    let intents = [
+        market_order(1, true, MEUR, at),
+        market_order(1, false, MEUR, at),
+        // a market order with levels is refused for the market, not for the levels
+        order(IntentKind::Market, 1, 0, MEUR, 0, p4(9_900), p4(10_100), 0, at),
+        order(IntentKind::Limit, 1, 0, MEUR, p4(9_900), 0, 0, 0, at),
+        order(IntentKind::Limit, 1, 1, MEUR, p4(10_100), 0, 0, 0, at),
+        order(IntentKind::Stop, 1, 0, MEUR, p4(10_100), 0, 0, 0, at),
+        order(IntentKind::Stop, 1, 1, MEUR, p4(9_900), 0, 0, 0, at),
+    ];
+    for (k, it) in intents.iter().enumerate() {
+        assert_eq!(w.order(*it), Err(R::MarketUnpriced), "order {k}: {it:?}");
+    }
+    // nothing on file, nothing pending, every refusal counted, and the priced market still trades
+    assert_eq!(intents_lines(&w), 0);
+    assert_eq!(w.ev.stats().unpriced_rejects, 7);
+    assert!(w.ev.refusals().is_empty(), "a refusal at arrival is not a refusal at execution");
+    assert!(w.order(market_order(0, true, MEUR, at)).is_ok());
+    assert_eq!(intents_lines(&w), 1);
+    w.ev.tick(at + 2);
+    let bs = w.ev.drain_batches(&evaluator::BatchPolicy::MAX);
+    let evs = common::events_of(&bs);
+    assert!(evs.iter().all(|e| !matches!(e, journal_types::JournalEvent::Fill { market: 1, .. } | journal_types::JournalEvent::Close { market: 1, .. })));
+    assert_eq!(evs.iter().filter(|e| matches!(e, journal_types::JournalEvent::Fill { market: 0, .. })).count(), 1);
+    assert_valid(&w, &bs);
+}
+
+#[test]
+fn a_half_spread_of_one_is_priced_and_zero_is_not() {
+    for (spread, ok) in [(1u32, true), (0, false), (2, true), (u32::from(u16::MAX), true)] {
+        let mut m = eur_market(0);
+        m.half_spread_e6 = spread;
+        m.max_age_secs = 3_600;
+        let mut w = World::new(base_rules(vec![m]), S100K, 2, T_1400 - HOUR);
+        w.sample(0, T_1400, p4(10_000));
+        let r = w.order(market_order(0, true, 1_000, T_1400));
+        assert_eq!(r.is_ok(), ok, "half-spread {spread}: {r:?}");
+        if !ok {
+            assert_eq!(r, Err(R::MarketUnpriced));
+        }
+        let r = w.order(order(IntentKind::Limit, 0, 0, 1_000, p4(9_000), 0, 0, 0, T_1400));
+        assert_eq!(r.is_ok(), ok, "pending, half-spread {spread}: {r:?}");
+    }
+}
+
+#[test]
+fn an_unpriced_market_is_refused_after_the_quantity_the_price_and_the_market_state_and_before_everything_else() {
+    // the arrival order (the verifier mirrors only the order at execution, where an arrival refusal leaves nothing to compare):
+    // quantity, hold (pending kinds), a fresh price, the market's sessions and age, the status of a pending kind, THEN unpriced,
+    // then the levels of a pending order, the cap and the number of pending orders
+    let mut w = priced_and_unpriced();
+    // off the step: the quantity answers first
+    assert_eq!(w.order(market_order(1, true, 1_500, T_1400)), Err(R::InvalidQuantity));
+    assert_eq!(w.order(market_order(1, true, 0, T_1400)), Err(R::InvalidQuantity));
+    // a limit order with no level at all and an unpriced market: unpriced answers before the level
+    assert_eq!(w.order(order(IntentKind::Limit, 1, 0, MEUR, 0, 0, 0, 0, T_1400)), Err(R::MarketUnpriced));
+    // a held account answers first for a pending kind
+    w.ev.set_held(true);
+    assert_eq!(w.order(order(IntentKind::Limit, 1, 0, MEUR, p4(9_900), 0, 0, 0, T_1400)), Err(R::AccountHeld));
+    w.ev.set_held(false);
+    // a disabled market answers first for a pending kind
+    let mut m = market(1, 0, "UNPRICED", 0);
+    m.max_age_secs = 3_600;
+    m.status = STATUS_REDUCE_ONLY;
+    let mut w2 = World::new(base_rules(vec![eur_market(0), m]), S100K, 2, T_1400 - HOUR);
+    w2.sample(1, T_1400, p4(10_000));
+    assert_eq!(w2.order(order(IntentKind::Limit, 1, 0, MEUR, p4(9_900), 0, 0, 0, T_1400)), Err(R::MarketNotTradable));
+    // a price older than the market allows: the price answers first
+    let mut w3 = priced_and_unpriced();
+    w3.ev.tick(T_1400 + 10_000);
+    assert_eq!(w3.order(market_order(1, true, MEUR, T_1400 + 10_000)), Err(R::NoFreshPrice));
+}
+
+#[test]
+fn closes_cancels_and_levels_are_never_refused_as_unpriced() {
+    let mut w = priced_and_unpriced();
+    // nothing to close in the unpriced market: the reason is the position, not the market
+    assert_eq!(w.order(close_order(1, 0, T_1400)), Err(R::NoPosition));
+    assert_eq!(w.order(order(IntentKind::SetSlTp, 1, 0, 0, 0, p4(9_900), 0, 0, T_1400)), Err(R::NoPosition));
+    assert_eq!(w.order(order(IntentKind::Cancel, 1, 0, 0, 0, 0, 0, 77, T_1400)), Err(R::NoSuchOrder));
+    // a priced market with a position: the close is accepted (the rule is about the account's own rule set, per market)
+    assert!(w.order(market_order(0, true, MEUR, T_1400)).is_ok());
+    w.ev.tick(T_1400 + 2);
+    assert!(w.order(close_order(0, 0, T_1400 + 2)).is_ok());
+    assert_eq!(w.ev.stats().unpriced_rejects, 0);
 }

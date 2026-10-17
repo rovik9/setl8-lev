@@ -1,4 +1,4 @@
-//! Test support (no dependencies, std only): a seeded PRNG (xorshift64*) and a generator of random but reproducible
+//! Test support (std and the `engine` crate, which the `Edge` story uses to find the exact order size): a seeded PRNG (xorshift64*) and a generator of random but reproducible
 //! account histories - price paths with fat tails, gaps, quiet periods, session closes, weekend gaps and holding-fee
 //! nights, and a trader who fires every kind of order. A history is a list of [`Step`]s; the harness feeds them to an
 //! [`crate::Evaluator`] (and, in `tests-rs`, posts the batches through the real program). Every path is a pure function of a `u64` seed.
@@ -129,9 +129,13 @@ pub enum Scenario {
     Convert,
     /// M9b: the margin of a triggered pending order is short (decision D3); the order stays pending and may fill later.
     Margin,
-    /// M9c: market orders that use exactly all the margin (price 1.0, no spread, no commission) and one more step that is
-    /// refused; the same at the end of a flip and of an add.
+    /// M9c: market orders that use exactly all the margin (price 1.0, a priced market with a quantity step of one unit, no
+    /// commission) and one more unit that is refused; the same at the end of a flip and of an add.
     Edge,
+    /// P21 (decision 64): a second market the rule set does not price (half-spread 0). The trader trades the priced market and
+    /// tries to open the unpriced one with a market order, a limit order and a stop order: every attempt is refused, nothing is
+    /// journalled for it.
+    Unpriced,
     /// M9c: a pending order that is individually under the market's notional cap but not together with the position it adds
     /// to: refused at the trigger, filled later when the position is gone.
     Cap,
@@ -462,6 +466,7 @@ fn generate_inner(seed: u64, wild: bool) -> PathSpec {
         820..=869 => Scenario::Cap,
         870..=899 => Scenario::Remainder,
         740..=759 => Scenario::Hold,
+        700..=739 => Scenario::Unpriced,
         _ => Scenario::Noise,
     };
     let tier = if matches!(scenario, Scenario::Pass) { rng.range(3, 9) as usize } else { rng.range(0, 9) as usize };
@@ -470,7 +475,7 @@ fn generate_inner(seed: u64, wild: bool) -> PathSpec {
         Scenario::Pass => rng.range(1, 5) as u8,
         _ => rng.range(1, 5) as u8,
     };
-    let mut markets = markets_for(&mut rng, matches!(scenario, Scenario::Closed), matches!(scenario, Scenario::Convert));
+    let mut markets = markets_for(&mut rng, matches!(scenario, Scenario::Closed), matches!(scenario, Scenario::Convert | Scenario::Unpriced));
     shape_markets(&mut markets, scenario, size);
     let mut commission = [0u32; 8];
     // commission on some paths; more often on the quick-limit stories, where the overshooting slice has no fee (decision D2)
@@ -506,6 +511,7 @@ fn build_path(seed: u64, scenario: Scenario, tier: usize, size: i64, phase: u8, 
         Scenario::Convert => convert(&mut p, &ctx),
         Scenario::Margin => margin(&mut p, &ctx),
         Scenario::Edge => edge(&mut p, &ctx),
+        Scenario::Unpriced => unpriced(&mut p, &ctx),
         Scenario::Cap => cap(&mut p, &ctx),
         Scenario::Remainder => remainder(&mut p, &ctx),
         Scenario::Hold => hold(&mut p, &ctx),
@@ -739,8 +745,17 @@ fn convert_flip(p: &mut Plot, ctx: &Ctx) {
 }
 
 /// The market parameters a story needs (M9c): exact arithmetic for `Edge`, a notional cap for `Cap`, a quantity minimum for
-/// `Remainder`. All three trade a single FX market (class 0, 50x).
+/// `Remainder`. All three trade a single FX market (class 0, 50x). `Unpriced` keeps two markets and takes the half-spread of the
+/// second away (the rule set does not price it, decision 64).
 fn shape_markets(markets: &mut Vec<MarketSpec>, scenario: Scenario, size: i64) {
+    if scenario == Scenario::Unpriced {
+        markets.truncate(2);
+        if let Some(m) = markets.get_mut(1) {
+            m.spread_e6 = 0;
+            m.sessions = FULL_WEEK.to_vec();
+        }
+        return;
+    }
     if !matches!(scenario, Scenario::Edge | Scenario::Cap | Scenario::Remainder) {
         return;
     }
@@ -754,49 +769,150 @@ fn shape_markets(markets: &mut Vec<MarketSpec>, scenario: Scenario, size: i64) {
     }
     match scenario {
         Scenario::Edge => {
-            // price 1.0 and no spread: the fill price is the mid and the open profit is zero, so equity is exactly S
+            // price 1.0, the half-spread the market was given (a priced market: decision 64), and a step of one unit: the largest
+            // order the margin allows is found by `edge_max_order`, which needs a quantity grid fine enough to land on the boundary
             m.start_price = E12;
-            m.spread_e6 = 0;
+            m.qty_step = 1;
+            m.qty_min = 1;
         }
         Scenario::Cap => m.max_notional_micro = u64::try_from(size.saturating_mul(3)).unwrap_or(u64::MAX),
         _ => m.qty_min = 1_000_000,
     }
 }
 
-/// Market orders that use exactly all the margin: `equity - margin == 0` is accepted (the verifier must accept it), one step
-/// more is refused by the evaluator (an intent on file, no event). Three shapes: a single order, an add to a smaller
-/// position, and a flip whose remainder uses it.
+/// `equity - margin used` that a market order of `qty` units (long or short) in the single edge market leaves, as the evaluator's
+/// risk check computes it (no commission): `existing` is the position before the order, `b` the balance, `mid` the market's price
+/// and `h` its half-spread. A flip closes the opposite position first at the fill price, as `exec_trade` does.
+fn edge_slack(existing: Option<engine::Position>, b: i64, long: bool, qty: u64, h: u32, mid: u64, lev: u16) -> Option<i128> {
+    let side = if long { engine::Side::Buy } else { engine::Side::Sell };
+    let price = engine::fill_price_e12(mid, h, long).ok()?;
+    let (bid, ask) = (engine::bid_from_mid(mid, h).ok()?, engine::ask_from_mid(mid, h).ok()?);
+    // a time well after the position was opened: a loss is credited in full whatever the age of the slice
+    let t = existing.map_or(0, |p| p.timer_start) + 3_600;
+    let day = engine::day_index(t);
+    let close_qty = match existing {
+        Some(p) if p.qty.is_positive() != long => qty.min(p.qty.unsigned_abs()),
+        _ => 0,
+    };
+    let (mut base, mut b_after) = (existing, b);
+    if close_qty > 0 {
+        let o = engine::apply_fill(base, side, close_qty, price, t, day).ok()?;
+        b_after = b_after.checked_add(o.balance_delta)?;
+        base = o.position;
+    }
+    let np = engine::apply_fill(base, side, qty - close_qty, price, t, day).ok()?.position?;
+    let p_open = engine::open_profit_micro(&[(np, bid, ask)]).ok()?;
+    let used = engine::margin_micro(np.qty.unsigned_abs(), np.avg_entry_e12, lev).ok()?;
+    Some(i128::from(b_after) + i128::from(p_open) - i128::from(used))
+}
+
+/// The order quantity (units, at least `lo`) with `equity - margin == 0` exactly and one unit more short of margin. The slack
+/// falls by at most one micro-USD per unit (a unit is 0.02 micro-USD of margin and about 2e-6 of loss at 50x), so the largest
+/// quantity that still fits lands on zero; the scan below the binary search covers a rounding step of two. `None` when no such
+/// quantity exists in the search range.
+fn edge_max_order(existing: Option<engine::Position>, b: i64, long: bool, lo: u64, h: u32, mid: u64, lev: u16) -> Option<u64> {
+    let fits = |q: u64| edge_slack(existing, b, long, q, h, mid, lev).is_some_and(|x| x >= 0);
+    if !fits(lo) {
+        return None;
+    }
+    let mut hi = u64::try_from(i128::from(b.max(1)) * i128::from(lev) * i128::from(E12) / i128::from(mid.max(1)) * 2).ok()?.max(lo + 2);
+    let mut good = lo;
+    while good + 1 < hi {
+        let mid_q = good + (hi - good) / 2;
+        if fits(mid_q) {
+            good = mid_q;
+        } else {
+            hi = mid_q;
+        }
+    }
+    // `good` fits and `good + 1` does not; land on a quantity with a slack of exactly zero (and a refusal one unit above)
+    (good.saturating_sub(64).max(lo)..=good).rev().find(|&q| edge_slack(existing, b, long, q, h, mid, lev) == Some(0) && !fits(q + 1))
+}
+
+/// Market orders that use exactly all the margin: `equity - margin == 0` is accepted (the verifier must accept it), one unit
+/// more is refused by the evaluator (an intent on file, no event). Three shapes: a single order, an add to a smaller position,
+/// and a flip whose remainder uses it. The market is priced (decision 64), so the fill is at the ask or the bid and the position
+/// is marked on the other side: the quantity is found by `edge_max_order`, not by a formula.
 fn edge(p: &mut Plot, ctx: &Ctx) {
     let lev = ctx.lev0;
+    let lev16 = u16::try_from(lev).unwrap_or(1);
     let long = p.rng.chance(500_000);
-    let full = lev * 1_000;
+    let (h, mid, s) = (p.mk[0].spec.spread_e6, p.mk[0].price, p.size);
+    let side = |l: bool| if l { engine::Side::Buy } else { engine::Side::Sell };
+    // the position a first order of `q` units opens (a flat account, no commission)
+    let opened = |l: bool, q: u64| engine::fill_price_e12(mid, h, l).ok().and_then(|px| engine::apply_fill(None, side(l), q, px, 0, 0).ok()).and_then(|o| o.position);
     p.run(20, 5, 0, 0, 0);
     match p.rng.range(0, 2) {
-        0 => p.open_main(long, full, 0, 0),
+        0 => {
+            if let Some(q) = edge_max_order(None, s, long, 1, h, mid, lev16) {
+                p.long = long;
+                p.k_milli = lev * 1_000;
+                p.market_order(0, long, q, 0, 0);
+            }
+        }
         1 => {
+            let q1 = p.qty_for(0, lev * 600);
             p.open_main(long, lev * 600, 0, 0);
             p.run(10, 5, 0, 0, 0);
             p.post(false);
-            let q = p.qty_for(0, lev * 400);
-            p.market_order(0, long, q, 0, 0);
+            // the add: the order that takes the position to the largest size the margin allows
+            if let Some(q) = opened(long, q1).and_then(|pos| edge_max_order(Some(pos), s, long, 1, h, mid, lev16)) {
+                p.market_order(0, long, q, 0, 0);
+            }
         }
         _ => {
+            let q_short = p.qty_for(0, lev * 300);
             p.open_main(!long, lev * 300, 0, 0);
             p.run(10, 5, 0, 0, 0);
             p.post(false);
             // closes the short in full and opens the long that uses the whole margin
-            let q = p.qty_for(0, lev * 300) + p.qty_for(0, full);
-            p.market_order(0, long, q, 0, 0);
+            if let Some(q) = opened(!long, q_short).and_then(|pos| edge_max_order(Some(pos), s, long, q_short + 1, h, mid, lev16)) {
+                p.market_order(0, long, q, 0, 0);
+            }
         }
     }
     p.run(10, 5, 0, 0, 0);
     p.post(false);
-    // one step more, same side: refused for margin
-    p.market_order(0, long, 1_000, 0, 0);
+    // one unit more, same side: refused for margin
+    p.market_order(0, long, 1, 0, 0);
     p.run(10, 5, 0, 0, 0);
     p.post(false);
     p.close_order(0, 0);
     p.run(10, 5, 0, 0, 0);
+}
+
+/// The unpriced market (decision 64): the trader opens a position in the priced market, then tries to open the second market,
+/// whose half-spread the rule set does not have: a market order, a limit order and a stop order, each refused at arrival (no line
+/// in the intents file, no event). The position in the priced market goes on and is closed normally.
+fn unpriced(p: &mut Plot, ctx: &Ctx) {
+    let long = p.rng.chance(500_000);
+    let k = main_k(&mut p.rng, ctx).min(1_000);
+    p.run(20, 5, 0, 100, 20_000);
+    p.open_main(long, k, 0, 0);
+    p.run(10, 5, 0, 50, 20_000);
+    p.post(false);
+    // the second market gets a sample at least every few seconds; the attempts follow the first ones
+    p.mk[1].next_due = p.t;
+    p.run(10, 5, 0, 50, 20_000);
+    let side2 = p.rng.chance(500_000);
+    let q2 = p.qty_for(1, 300);
+    p.market_order(1, side2, q2, 0, 0);
+    p.run(5, 5, 0, 50, 20_000);
+    let off = p.rng.range(300, 900);
+    let level = p.scaled(1, if side2 { -off } else { off });
+    p.limit_order(1, side2, q2, level, false, 0, 0);
+    let stop_level = p.scaled(1, if side2 { off } else { -off });
+    p.limit_order(1, side2, q2, stop_level, true, 0, 0);
+    p.run(20, 5, 0, 50, 20_000);
+    p.post(false);
+    // a close in the unpriced market: nothing to close; and the priced market still trades: an add, then the close
+    p.close_order(1, 0);
+    let q3 = p.qty_for(0, 100);
+    p.market_order(0, long, q3, 0, 0);
+    p.run(20, 5, 0, 50, 20_000);
+    p.post(false);
+    p.close_order(0, 0);
+    p.run(20, 5, 0, 50, 20_000);
 }
 
 /// A position of 2 S under a notional cap of 3 S, and a pending order of 2 S: alone it is fine, added to the position it

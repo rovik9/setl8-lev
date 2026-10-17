@@ -140,6 +140,9 @@ pub enum OrderReject {
     AccountLocked,
     /// Market disabled, or reduce-only and the order would increase exposure.
     MarketNotTradable,
+    /// The market's half-spread in the account's rule set is 0 (a market the rule set does not price, decision 64): no
+    /// order that opens or adds exposure. Rule sets are immutable, so this never changes for the same account.
+    MarketUnpriced,
     /// Outside its session windows or no price change within `max_age_secs` (decision 49).
     MarketClosed,
     /// No price for the market, or the newest one is older than `max_age_secs`.

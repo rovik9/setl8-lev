@@ -571,6 +571,13 @@ impl Sc {
     }
 }
 
+/// The R1 / breach scenarios (a long of 1 M EUR bought at the ask 1.000001, marks at the bid): the peak is the bid of mid 1.0030,
+/// 1_002_998_997_000 (1_003_000_000_000 - 1_003_000), P = +2,997.997, G = 2,997.997, L = 96,000 + (G - 1,000) = 97,997.997. The breach
+/// needs E = 100,000 + P <= L, i.e. a bid of 1_002_998_997_000 - 5_000_000_000 = 997_998_997_000 (the same 0.005 under the peak as the
+/// 0.998 of the zero-spread version). That bid is floor(997_999_995_000 x (1 - 1e-6)) = 997_999_995_000 - 998_000, so E = L exactly:
+/// touching counts, and the breach is not lost to the spread (mid 0.9980 would end 4e-3 USD above L).
+const MID_TOUCHING_L: u64 = 997_999_995_000;
+
 fn scenarios() -> Vec<(String, String)> {
     let mut out = Vec::new();
     let t = T_1400;
@@ -584,13 +591,14 @@ fn scenarios() -> Vec<(String, String)> {
     s.tick(t + 151);
     s.drain(8, true);
     out.push(s);
-    // 2. R1 with a zero spread
-    let mut s = Sc::new("r1_zero_spread", "DESIGN 2.6 R1 on a zero-spread market.", fx_world(0));
+    // 2. R1 with the smallest priced market (decision 64: a zero half-spread is untradable)
+    let mut s = Sc::new("r1_minimal_spread", "DESIGN 2.6 R1 on the smallest priced market: half-spread 1e-6 (the ask is 1.000001 at mid 1.0, the bid 0.999999).", fx_world(TEST_HALF_SPREAD_E6));
     s.sample(0, t, p4(10_000));
     s.order(1, market_order(0, true, MEUR, t));
-    for (dt, p) in [(30, 10_006), (60, 10_012), (90, 10_030), (120, 10_010), (150, 9_980)] {
+    for (dt, p) in [(30, 10_006), (60, 10_012), (90, 10_030), (120, 10_010)] {
         s.sample(0, t + dt, p4(p));
     }
+    s.sample(0, t + 150, MID_TOUCHING_L);
     s.tick(t + 151);
     s.drain(3, true);
     out.push(s);
@@ -622,7 +630,7 @@ fn scenarios() -> Vec<(String, String)> {
     s.drain(8, true);
     out.push(s);
     // 5. flip
-    let mut s = Sc::new("flip_quick", "A long flipped to a short 30 s later: Close(Flip) and Fill under one intent, quick credit.", fx_world(0));
+    let mut s = Sc::new("flip_quick", "A long flipped to a short 30 s later: Close(Flip) and Fill under one intent, quick credit.", fx_world(TEST_HALF_SPREAD_E6));
     s.sample(0, t, 1_080_032_400_000);
     s.order(1, market_order(0, true, 1_000_000_000_000, t));
     s.sample(0, t + 30, 1_082_000_000_000);
@@ -632,7 +640,7 @@ fn scenarios() -> Vec<(String, String)> {
     s.drain(8, true);
     out.push(s);
     // 6. static fail
-    let mut s = Sc::new("static_floor_fail", "A 10% gap: the account fails at the sample, report_fail batch.", fx_world(0));
+    let mut s = Sc::new("static_floor_fail", "A 10% gap: the account fails at the sample, report_fail batch.", fx_world(TEST_HALF_SPREAD_E6));
     s.sample(0, t, p4(10_000));
     s.order(1, market_order(0, true, 4_500_000_000_000, t));
     s.sample(0, t + 10, p4(10_000));
@@ -642,7 +650,7 @@ fn scenarios() -> Vec<(String, String)> {
     s.drain(8, true);
     out.push(s);
     // 7. quick-limit fail
-    let mut s = Sc::new("quick_limit_fail", "Q passes 0.028 S at a quick close: Fail(PhaseQuick).", fx_world(0));
+    let mut s = Sc::new("quick_limit_fail", "Q passes 0.028 S at a quick close: Fail(PhaseQuick).", fx_world(TEST_HALF_SPREAD_E6));
     s.sample(0, t, p4(10_000));
     s.order(1, market_order(0, true, MEUR, t));
     s.sample(0, t + 30, p4(10_060));
@@ -652,7 +660,7 @@ fn scenarios() -> Vec<(String, String)> {
     s.drain(8, true);
     out.push(s);
     // 8. limit and stop-loss
-    let mut s = Sc::new("limit_fill_then_stop_loss", "A buy limit fills at the ask, its stop-loss triggers at the bid.", fx_world(0));
+    let mut s = Sc::new("limit_fill_then_stop_loss", "A buy limit fills at the ask, its stop-loss triggers at the bid.", fx_world(TEST_HALF_SPREAD_E6));
     s.sample(0, t, p4(10_000));
     s.order(1, order(IntentKind::Limit, 0, 0, 500_000_000_000, p4(9_990), p4(9_950), 0, 0, t));
     s.sample(0, t + 10, p4(9_995));
@@ -663,7 +671,7 @@ fn scenarios() -> Vec<(String, String)> {
     s.drain(8, true);
     out.push(s);
     // 9. two markets, a night, fees on both
-    let mk = |i: u16, sym: &str| { let mut m = common::market(i, 0, sym, 0); m.max_age_secs = 3_600; m };
+    let mk = |i: u16, sym: &str| { let mut m = common::market(i, 0, sym, TEST_HALF_SPREAD_E6); m.max_age_secs = 3_600; m };
     let mut s = Sc::new("two_markets_one_night", "A long and a short held through 22:00: two holding fees at their own marks.", World::new(base_rules(vec![mk(0, "AAA"), mk(1, "BBB")]), S100K, 2, t - HOUR));
     let r = t + 8 * HOUR;
     s.sample(0, r - 3_600, p4(10_000));
@@ -677,7 +685,7 @@ fn scenarios() -> Vec<(String, String)> {
     s.drain(8, true);
     out.push(s);
     // 10. a pass target
-    let mut s = Sc::new("target_reached_flat", "+8.5% realized in a normal slice: B = 1.085 S, flat, tight mode ended.", fx_world(0));
+    let mut s = Sc::new("target_reached_flat", "+8.5% on the mid in a normal slice: bought at the ask 1.000001, closed at the bid 1.0084989915 of mid 1.0085, pnl 8,497.9915: B = 1.084979915 S, flat, tight mode ended.", fx_world(TEST_HALF_SPREAD_E6));
     s.sample(0, t, p4(10_000));
     s.order(1, market_order(0, true, MEUR, t));
     s.sample(0, t + 100, p4(10_085));
@@ -687,12 +695,13 @@ fn scenarios() -> Vec<(String, String)> {
     s.drain(8, true);
     out.push(s);
     // 11. lock then a pending order that survives it
-    let mut s = Sc::new("breach_lock_and_pending_order", "A breach locks the account for 12 h; a limit order placed during the lock fills after it.", fx_world(0));
+    let mut s = Sc::new("breach_lock_and_pending_order", "A breach locks the account for 12 h; a limit order placed during the lock fills after it.", fx_world(TEST_HALF_SPREAD_E6));
     s.sample(0, t, p4(10_000));
     s.order(1, market_order(0, true, MEUR, t));
-    for (dt, p) in [(30, 10_006), (60, 10_012), (90, 10_030), (150, 9_980)] {
+    for (dt, p) in [(30, 10_006), (60, 10_012), (90, 10_030)] {
         s.sample(0, t + dt, p4(p));
     }
+    s.sample(0, t + 150, MID_TOUCHING_L);
     s.order(2, order(IntentKind::Limit, 0, 0, MEUR / 10, p4(9_900), 0, 0, 0, t + 150));
     s.sample(0, t + 600, p4(9_950));
     s.sample(0, t + 43_300, p4(9_890)); // after the lock (t + 150 + 43,200 = t + 43,350): not yet

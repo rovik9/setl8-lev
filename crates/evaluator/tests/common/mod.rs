@@ -244,6 +244,13 @@ pub mod reference;
 
 // ---------------------------------------------------------------------------- helpers for hand-written scenarios
 
+/// The smallest half-spread a test market may have (decision 64: a market whose half-spread is 0 is untradable). At mid 1.0 the
+/// ask is 1.000001 (`1_000_001_000_000`) and the bid 0.999999 (`999_999_000_000`).
+pub const TEST_HALF_SPREAD_E6: u32 = 1;
+/// Hand constants for mid 1.0 at `TEST_HALF_SPREAD_E6`: a long fills at the ask, a short at the bid, a close takes the other side.
+pub const ASK_AT_ONE: u64 = 1_000_001_000_000;
+pub const BID_AT_ONE: u64 = 999_999_000_000;
+
 /// A one-market (EURUSD-like, class 0) world with an exact half-spread, S = $100,000, and phase 2.
 pub fn fx_world(spread_e6: u32) -> World {
     let mut m = eur_market(0);

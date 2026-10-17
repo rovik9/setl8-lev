@@ -1,1 +1,1 @@
-{"b":103000000000,"flat":1,"g_peak":6000000000,"journal_hash":"7fa5f77a757523c03e5559db701e2f614e204caafa29f8b65eaedffa156b2699","l_level":101000000000,"latch":0,"lock_until":0,"phase":2,"q_tally":3000000000,"r":100000000000,"seq":5,"status":1,"tight_on":1,"trades_closed":1,"version":1}
+{"b":102997997000,"flat":1,"g_peak":5995994000,"journal_hash":"f7e2801e16b3d3badf4bd276d6786e36ab4fa9f42db7daf5a511b29afb4a9b0e","l_level":100995994000,"latch":0,"lock_until":0,"phase":2,"q_tally":2997997000,"r":100000000000,"seq":5,"status":1,"tight_on":1,"trades_closed":1,"version":1}

@@ -44,6 +44,8 @@ pub enum Refusal {
     Locked,
     /// The market is disabled or reduce-only (`status != 1`).
     NotTradable,
+    /// The market has no half-spread in the account's rule set (`spread_e6 == 0`, decision 64): an exposure increase is refused.
+    Unpriced,
     /// The quantity opened is not a multiple of the market's step or below its minimum (the whole order of a market fill, the
     /// remainder of a flip).
     Quantity,
@@ -61,6 +63,7 @@ impl Refusal {
             Refusal::Held => "an exposure increase on a held account",
             Refusal::Locked => "an exposure increase during the breach lock",
             Refusal::NotTradable => "an exposure increase in a market that is disabled or reduce-only",
+            Refusal::Unpriced => "an exposure increase in an unpriced market",
             Refusal::Quantity => "a quantity off the market's step or below its minimum",
             Refusal::TooManyPositions => "a ninth open position",
             Refusal::NotionalCap => "a position above the market's notional cap",
@@ -522,11 +525,12 @@ impl<'a> Replay<'a> {
     /// 0. `Held`: the log holds the account at this second.
     /// 1. `Locked` (`check.lock`): `time < lock_until`. A pending order never gets here locked (the walk does not trigger it).
     /// 2. `NotTradable`: the market is not enabled (disabled or reduce-only).
-    /// 3. `Quantity`: the quantity opened (the whole order of a plain open, the remainder of a flip) or, for a market order
+    /// 3. `Unpriced`: the market's half-spread in the account's rule set is 0 (decision 64, "unpriced market").
+    /// 4. `Quantity`: the quantity opened (the whole order of a plain open, the remainder of a flip) or, for a market order
     ///    (`check.whole_qty`), the whole order is off the step or below the minimum.
-    /// 4. `TooManyPositions`: a new market while `MAX_POSITIONS` are open.
-    /// 5. `NotionalCap`: the position left behind is above `max_notional_usd`.
-    /// 6. `Margin`: `b' + P' - closing commission - this fill's commission >= sum of margins` over the positions it leaves,
+    /// 5. `TooManyPositions`: a new market while `MAX_POSITIONS` are open.
+    /// 6. `NotionalCap`: the position left behind is above `max_notional_usd`.
+    /// 7. `Margin`: `b' + P' - closing commission - this fill's commission >= sum of margins` over the positions it leaves,
     ///    with the order's own sample as its market's mark and the walk's marks for the others (DESIGN 7.3, decision 27).
     #[allow(clippy::too_many_arguments)]
     fn open_refusal(
@@ -563,6 +567,9 @@ impl<'a> Replay<'a> {
         }
         if mk.status != 1 {
             return Ok(Some(Refusal::NotTradable));
+        }
+        if self.rules.spread(market) == 0 {
+            return Ok(Some(Refusal::Unpriced));
         }
         let bad = |q: u64| engine::validate_quantity(q, mk.qty_step, mk.qty_min).is_err();
         if bad(open_qty) || (check.whole_qty && bad(order_qty)) {
@@ -1138,7 +1145,7 @@ mod replay_tests {
 }
 
 /// M9b (D3): the margin check of triggered pending orders, the stop-loss and take-profit closes that come first in a second, and
-/// the lookup of refused executions. Numbers: S = $100,000, class 0 leverage 50, spread 0; 1 EUR is 1e6 qty units.
+/// the lookup of refused executions. Numbers: S = $100,000, class 0 leverage 50, half-spread 1 e6; 1 EUR is 1e6 qty units.
 #[cfg(test)]
 mod margin_tests {
     use super::*;
@@ -1152,13 +1159,15 @@ mod margin_tests {
 
     const EUR: u64 = 1_000_000;
     const ONE: u64 = 1_000_000_000_000;
+    /// The half-spread of both markets (decision 64: a market with 0 is untradable, so the fixtures cannot use 0).
+    const TEST_HALF_SPREAD_E6: u32 = 1;
 
     fn rules_json(commission_e6: u32) -> String {
         let feed = crate::hexutil::encode(&[7u8; 32]);
         let feed1 = crate::hexutil::encode(&[8u8; 32]);
         format!(
             r#"{{"version":1,"ruleset_version":1,"fee_bps":40,"leverage_x":[50,20,20,20,10,5,5,2],"holding_fee_e6":[0,0,0,0,0,0,0,0],
-"commission_e6":[{commission_e6},0,0,0,0,0,0,0],"tier_sizes":[100000000000],"spread_e6":{{"0":0,"1":0}},
+"commission_e6":[{commission_e6},0,0,0,0,0,0,0],"tier_sizes":[100000000000],"spread_e6":{{"0":{TEST_HALF_SPREAD_E6},"1":{TEST_HALF_SPREAD_E6}}},
 "markets":[{{"id":0,"class":0,"feed_id":"{feed}","max_age_secs":60,"status":1,"qty_step":1000,"qty_min":1000000,"max_notional_usd":1000000000000000,"sessions":[[0,10080]]}},
 {{"id":1,"class":0,"feed_id":"{feed1}","max_age_secs":60,"status":1,"qty_step":1000,"qty_min":1000000,"max_notional_usd":1000000000000000,"sessions":[[0,10080]]}}]}}"#
         )
@@ -1232,12 +1241,15 @@ mod margin_tests {
 
     #[test]
     fn an_order_that_uses_exactly_the_whole_margin_is_expected_and_one_step_more_is_not() {
-        // 5 M EUR at 1.0 needs $100,000 of margin on $100,000: equity - used == 0 is enough
+        // 5 M EUR at 1.0 needs $100,000 of margin on $100,000: equity - used == 0 is enough. The long is marked at the bid,
+        // 1 e6 under the mid: 5e12 units x 1e6 / 1e12 = $5 of open loss, which the balance covers (S + 5,000,000 micro-USD).
         with(0, &[smp(0, ONE)], |rp| {
+            rp.st.b = 100_000_000_000 + 5_000_000;
             let w = resolve(rp, vec![pending(1, 0, 0, 5_000_000)], &[(0, 0)], &[(0, 1, ONE, 0)], vec![]);
             assert_eq!((expected(&w), refused(&w)), (vec![1], vec![]));
         });
         with(0, &[smp(0, ONE)], |rp| {
+            rp.st.b = 100_000_000_000 + 5_000_000;
             let mut o = pending(1, 0, 0, 5_000_000);
             o.1.qty += 1_000;
             let w = resolve(rp, vec![o], &[(0, 0)], &[(0, 1, ONE, 0)], vec![]);
@@ -1406,7 +1418,7 @@ mod margin_tests {
 }
 
 /// M9c (B1, B2, B3): the evaluator's own refusals, recomputed for the execution of MARKET orders and for triggered pending
-/// orders. Numbers: S = $100,000, class 0 leverage 50, spread 0, price 1.0 (1 EUR is 1e6 qty units, so a quantity in units is
+/// orders. Numbers: S = $100,000, class 0 leverage 50, half-spread 1 e6, price 1.0 (1 EUR is 1e6 qty units, so a quantity in units is
 /// also its notional in micro-USD). Every check has its boundary pair.
 #[cfg(test)]
 mod refusal_tests {
@@ -1422,20 +1434,23 @@ mod refusal_tests {
     const EUR: u64 = 1_000_000;
     const ONE: u64 = 1_000_000_000_000;
     const S: i64 = 100_000_000_000;
+    /// The half-spread of every market (decision 64: a market with 0 is untradable, so the fixtures cannot use 0).
+    const TEST_HALF_SPREAD_E6: u32 = 1;
 
-    /// Rules with `n` markets (ids 0 to n-1, class 0, spread 0): `status` / `qty_step` / `qty_min` / `cap` / `sessions` of the
-    /// first one are the parameters, the others are ordinary.
-    fn rules_json(commission_e6: u32, n: u16, status: u8, qty_step: u64, qty_min: u64, cap: u64, sessions: &str) -> String {
+    /// Rules with `p.n` markets (ids 0 to n-1, class 0, half-spread `TEST_HALF_SPREAD_E6` except market 0's `p.spread`): `status` /
+    /// `qty_step` / `qty_min` / `cap` / `sessions` of the first one are the parameters, the others are ordinary.
+    fn rules_json(p: &P) -> String {
         let mut markets = Vec::new();
-        for id in 0..n {
+        for id in 0..p.n {
             let feed = crate::hexutil::encode(&[7 + id as u8; 32]);
-            let (st, step, min, cp, ses) = if id == 0 { (status, qty_step, qty_min, cap, sessions.to_string()) } else { (1, 1_000, 1_000_000, 1_000_000_000_000_000, "[[0,10080]]".to_string()) };
+            let (st, step, min, cp, ses) = if id == 0 { (p.status, p.qty_step, p.qty_min, p.cap, p.sessions.to_string()) } else { (1, 1_000, 1_000_000, 1_000_000_000_000_000, "[[0,10080]]".to_string()) };
             markets.push(format!(r#"{{"id":{id},"class":0,"feed_id":"{feed}","max_age_secs":60,"status":{st},"qty_step":{step},"qty_min":{min},"max_notional_usd":{cp},"sessions":{ses}}}"#));
         }
-        let spreads: Vec<String> = (0..n).map(|id| format!(r#""{id}":0"#)).collect();
+        let spreads: Vec<String> = (0..p.n).map(|id| format!(r#""{id}":{}"#, if id == 0 { p.spread } else { TEST_HALF_SPREAD_E6 })).collect();
         format!(
             r#"{{"version":1,"ruleset_version":1,"fee_bps":40,"leverage_x":[50,20,20,20,10,5,5,2],"holding_fee_e6":[0,0,0,0,0,0,0,0],
-"commission_e6":[{commission_e6},0,0,0,0,0,0,0],"tier_sizes":[100000000000],"spread_e6":{{{}}},"markets":[{}]}}"#,
+"commission_e6":[{}],"tier_sizes":[100000000000],"spread_e6":{{{}}},"markets":[{}]}}"#,
+            format_args!("{},0,0,0,0,0,0,0", p.commission_e6),
             spreads.join(","),
             markets.join(",")
         )
@@ -1446,6 +1461,7 @@ mod refusal_tests {
         Sample { market, source: 2, recv_ns: ts_ns, ts_ns, value: i128::from(mid) * 1_000_000, digest: [0; 32] }
     }
 
+    #[derive(Clone, Copy)]
     struct P {
         commission_e6: u32,
         n: u16,
@@ -1454,17 +1470,20 @@ mod refusal_tests {
         qty_min: u64,
         cap: u64,
         sessions: &'static str,
+        /// The half-spread of market 0 in e6 (0 = the rule set does not price it, decision 64).
+        spread: u32,
     }
 
     impl P {
+        const NEW: P = P { commission_e6: 0, n: 2, status: 1, qty_step: 1_000, qty_min: 1_000_000, cap: 1_000_000_000_000_000, sessions: "[[0,10080]]", spread: TEST_HALF_SPREAD_E6 };
         fn new() -> P {
-            P { commission_e6: 0, n: 2, status: 1, qty_step: 1_000, qty_min: 1_000_000, cap: 1_000_000_000_000_000, sessions: "[[0,10080]]" }
+            P::NEW
         }
     }
 
     /// A replay over one sample per market (at price 1.0, second T0) with a walker that has walked them all.
     fn with(p: &P, f: impl FnOnce(&mut Replay)) {
-        let rules = Rules::parse(rules_json(p.commission_e6, p.n, p.status, p.qty_step, p.qty_min, p.cap, p.sessions).as_bytes()).unwrap();
+        let rules = Rules::parse(rules_json(p).as_bytes()).unwrap();
         let mut aw = ArchiveWriter::new();
         for m in 0..p.n {
             aw.push(&smp(m, ONE));
@@ -1510,20 +1529,26 @@ mod refusal_tests {
 
     #[test]
     fn the_whole_margin_is_enough_one_micro_usd_less_is_not() {
-        // 5,000,000 EUR is $5M of notional: margin exactly $100,000 = S
-        with(&P::new(), |rp| assert_eq!(judge(rp, true, 5_000_000 * EUR), vec![]));
-        // one micro-USD short: the closed balance is S - 1
+        // 5,000,000 EUR is $5M of notional: margin exactly $100,000 = S. The long is marked at the bid, 1 e6 under the mid (half-spread
+        // 1 e6): 5e12 units x 1e6 / 1e12 = 5,000,000 micro-USD of open loss, so the balance S + LOSS is exactly enough.
+        const LOSS: i64 = 5_000_000;
         with(&P::new(), |rp| {
-            rp.st.b = S - 1;
+            rp.st.b = S + LOSS;
+            assert_eq!(judge(rp, true, 5_000_000 * EUR), vec![]);
+        });
+        // one micro-USD short: the closed balance is S + LOSS - 1
+        with(&P::new(), |rp| {
+            rp.st.b = S + LOSS - 1;
             assert_eq!(judge(rp, true, 5_000_000 * EUR), vec![FindingClass::FillWithoutMargin]);
         });
-        // one micro-USD of room more than needed is fine; one step (1,000 units = 20 micro-USD of margin) more is short
+        // one step (1,000 units = 20 micro-USD of margin, and 1,000 x 1e6 / 1e12 = 0.001 micro-USD of loss, rounded up to 1) more
+        // needs 21 micro-USD more balance
         with(&P::new(), |rp| {
-            rp.st.b = S + 20;
+            rp.st.b = S + LOSS + 21;
             assert_eq!(judge(rp, true, 5_000_000 * EUR + 1_000), vec![]);
         });
         with(&P::new(), |rp| {
-            rp.st.b = S + 19;
+            rp.st.b = S + LOSS + 20;
             assert_eq!(judge(rp, true, 5_000_000 * EUR + 1_000), vec![FindingClass::FillWithoutMargin]);
         });
         // the finding names the order
@@ -1547,10 +1572,11 @@ mod refusal_tests {
 
     #[test]
     fn open_profit_of_the_other_markets_counts_at_the_walks_marks() {
-        // long 1 M EUR in market 0 at 1.0 now marked at 1.01 (+$10,000, margin $20,000); a market order in market 1
-        // (sample 1 at 1.0) of N EUR: 110,000 - 20,000 - N / 50 >= 0, N at most 4.5 M EUR
-        for (n, ok) in [(4_500_000u64, true), (4_501_000, false)] {
-            let rules = Rules::parse(rules_json(0, 2, 1, 1_000, 1_000_000, 1_000_000_000_000_000, "[[0,10080]]").as_bytes()).unwrap();
+        // long 1 M EUR in market 0 at 1.0 now marked at the bid of 1.01, 1 e6 under it (+$10,000 - $1.01 = $9,998.99, margin
+        // $20,000); a market order in market 1 (sample 1 at 1.0, bid 1 e6 under it: N micro-USD of open loss) of N EUR:
+        // 109,998.99 - 20,000 - N / 50 - N e-6 >= 0, N at most 4,499,724 EUR, so 4,499,000 fits and 4,500,000 does not
+        for (n, ok) in [(4_499_000u64, true), (4_500_000, false)] {
+            let rules = Rules::parse(rules_json(&P::new()).as_bytes()).unwrap();
             let mut aw = ArchiveWriter::new();
             aw.push(&smp(0, 1_010_000_000_000));
             aw.push(&smp(1, ONE));
@@ -1573,13 +1599,16 @@ mod refusal_tests {
 
     #[test]
     fn a_flip_is_judged_as_a_whole_before_its_closing_slice() {
-        // long 4 M EUR at 1.0, mark 1.0: a market sell of 9 M EUR closes the 4 M and opens a short of 5 M ($100,000 of margin):
-        // exactly enough. One step more is short.
+        // long 4 M EUR at 1.0, mark 1.0: a market sell of 9 M EUR closes the 4 M and opens a short of 5 M ($100,000 of margin),
+        // marked at the ask 1 e6 over the mid ($5 of open loss, so the balance S + 5,000,000 micro-USD): exactly enough. One step
+        // more is short.
         with(&P::new(), |rp| {
+            rp.st.b = S + 5_000_000;
             rp.positions.insert(0, long(4_000_000, ONE));
             assert_eq!(judge(rp, false, 9_000_000 * EUR), vec![]);
         });
         with(&P::new(), |rp| {
+            rp.st.b = S + 5_000_000;
             rp.positions.insert(0, long(4_000_000, ONE));
             assert_eq!(judge(rp, false, 9_000_000 * EUR + 1_000), vec![FindingClass::FillWithoutMargin]);
         });
@@ -1846,7 +1875,7 @@ mod refusal_tests {
         // 140,000 - 20,200 - N / 50 >= 0 means N up to 5,990,000; without the credit it would be 4,000,000 at most.
         let sample = |m: u16, mid: u64| smp(m, mid);
         for (n, ok) in [(5_900_000u64, true), (6_100_000, false)] {
-            let rules = Rules::parse(rules_json(0, 2, 1, 1_000, 1_000_000, 1_000_000_000_000_000, "[[0,10080]]").as_bytes()).unwrap();
+            let rules = Rules::parse(rules_json(&P::new()).as_bytes()).unwrap();
             let mut aw = ArchiveWriter::new();
             aw.push(&sample(0, 1_010_000_000_000));
             aw.push(&sample(1, ONE));
@@ -1887,6 +1916,98 @@ mod refusal_tests {
             rp.walk = Some(w);
             rp.walk_fill(Ctx { seq: Some(3), idx: Some(2), time: T0 }, 0, OrderKind::Limit, 1);
             assert_eq!(rp.f.list.iter().map(|f| f.class).collect::<Vec<_>>(), vec![FindingClass::PendingFillWithoutMargin]);
+        });
+    }
+
+    // ---- decision 64: a market the account's rule set does not price (half-spread 0) takes no new exposure
+
+    const UNPRICED: P = P { spread: 0, ..P::NEW };
+
+    #[test]
+    fn a_market_order_in_an_unpriced_market_is_a_fill_not_allowed_and_a_half_spread_of_one_is_not() {
+        // the boundary pair: 1 e6 is priced, 0 is not (the first fill of the history is refused, the reason names the market)
+        with(&P { spread: 1, ..P::new() }, |rp| assert_eq!(judge(rp, true, 10 * EUR), vec![]));
+        with(&UNPRICED, |rp| {
+            assert_eq!(judge(rp, true, 10 * EUR), vec![FindingClass::FillNotAllowed]);
+            assert!(rp.f.list[0].expected.contains("unpriced market"), "{:?}", rp.f.list[0]);
+            assert_eq!((rp.f.list[0].seq, rp.f.list[0].event_index), (Some(5), Some(1)));
+        });
+        // a short is refused the same way, and the other market (priced) is not affected
+        with(&UNPRICED, |rp| assert_eq!(judge(rp, false, 10 * EUR), vec![FindingClass::FillNotAllowed]));
+        with(&UNPRICED, |rp| {
+            rp.last_proof_si = Some(1);
+            rp.check_market_order(ctx(), 1, true, 10 * EUR, ONE, T0);
+            assert!(rp.f.list.is_empty(), "market 1 is priced: {:?}", rp.f.list);
+        });
+    }
+
+    #[test]
+    fn a_close_in_an_unpriced_market_is_never_refused_but_the_opening_half_of_a_flip_is() {
+        // a position that cannot exist for an honest account (it could not be opened) is still closed without a finding
+        with(&UNPRICED, |rp| {
+            rp.positions.insert(0, long(1_000, ONE));
+            assert_eq!(judge(rp, false, 1_000 * EUR), vec![], "a sell of exactly the long");
+            rp.check_market_close(ctx(), 0, T0, 400 * EUR);
+            assert_eq!(rp.f.list.iter().map(|f| f.class).collect::<Vec<_>>(), Vec::<FindingClass>::new(), "a named quantity of a close");
+        });
+        // a sell of one step more than the long opens a short: refused
+        with(&UNPRICED, |rp| {
+            rp.positions.insert(0, long(1_000, ONE));
+            assert_eq!(judge(rp, false, 1_000 * EUR + 1_000_000), vec![FindingClass::FillNotAllowed]);
+            assert!(rp.f.list[0].expected.contains("unpriced market"), "{:?}", rp.f.list[0]);
+        });
+        // an add to a long is an exposure increase
+        with(&UNPRICED, |rp| {
+            rp.positions.insert(0, long(1_000, ONE));
+            assert_eq!(judge(rp, true, 10 * EUR), vec![FindingClass::FillNotAllowed]);
+        });
+    }
+
+    #[test]
+    fn the_unpriced_check_sits_after_the_status_and_before_the_quantity() {
+        // held, locked and not-tradable answer first; the quantity (off the step) and everything after answer second
+        with(&UNPRICED, |rp| {
+            rp.st.lock_until = T0 + 1;
+            assert_eq!(judge(rp, true, 10 * EUR), vec![FindingClass::FillNotAllowed]);
+            assert!(rp.f.list[0].expected.contains("breach lock"), "{:?}", rp.f.list[0]);
+        });
+        with(&P { spread: 0, status: 2, ..P::new() }, |rp| {
+            assert_eq!(judge(rp, true, 10 * EUR), vec![FindingClass::FillNotAllowed]);
+            assert!(rp.f.list[0].expected.contains("disabled or reduce-only"), "{:?}", rp.f.list[0]);
+        });
+        with(&UNPRICED, |rp| {
+            // 1,000,500 units: off the 1,000-unit step, and unpriced: the unpriced reason is the one reported
+            assert_eq!(judge(rp, true, 1_000_000 + 500), vec![FindingClass::FillNotAllowed]);
+            assert!(rp.f.list[0].expected.contains("unpriced market"), "{:?}", rp.f.list[0]);
+        });
+        // a priced market with the same off-step quantity: the quantity is the reason
+        with(&P::new(), |rp| {
+            assert_eq!(judge(rp, true, 1_000_000 + 500), vec![FindingClass::FillNotAllowed]);
+            assert!(rp.f.list[0].expected.contains("step"), "{:?}", rp.f.list[0]);
+        });
+    }
+
+    #[test]
+    fn a_triggered_pending_order_in_an_unpriced_market_is_expected_not_to_fill_and_a_fill_is_not_allowed() {
+        with(&UNPRICED, |rp| {
+            let w = resolve(rp, pending(1, 10 * EUR, 0));
+            assert_eq!(outcome(&w), (vec![], vec![(1, Refusal::Unpriced)]), "no fill is expected, so no TriggerMissed either");
+            // the dishonest history executes it: FillNotAllowed (not a TriggerFalse, not a margin finding)
+            rp.walk = Some(w);
+            rp.walk_fill(Ctx { seq: Some(3), idx: Some(2), time: T0 }, 0, OrderKind::Limit, 1);
+            assert_eq!(rp.f.list.iter().map(|f| f.class).collect::<Vec<_>>(), vec![FindingClass::FillNotAllowed]);
+            assert!(rp.f.list[0].expected.contains("unpriced market"), "{:?}", rp.f.list[0]);
+        });
+        // the same order in a PRICED market with every other condition equal is expected to fill (so its absence is a TriggerMissed)
+        with(&P::new(), |rp| {
+            let w = resolve(rp, pending(1, 10 * EUR, 0));
+            assert_eq!(outcome(&w), (vec![1], vec![]));
+        });
+        // a pending reduce in an unpriced market is not judged (the position cannot be opened, but a reduce is never refused)
+        with(&UNPRICED, |rp| {
+            rp.positions.insert(0, long(1_000_000, ONE));
+            let w = resolve(rp, pending(1, 500_000 * EUR, 1));
+            assert_eq!(outcome(&w), (vec![1], vec![]));
         });
     }
 }

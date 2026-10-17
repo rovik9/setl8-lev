@@ -53,7 +53,7 @@ fn find_close(evs: &[JournalEvent]) -> Option<usize> {
 /// Finding 1 / D1. DESIGN 7.2 N-9: a pending order that fills in a market where a position exists nets normally. When it
 /// only reduces the position, the result is a `Close` under the order's nonce and no `Fill`.
 fn d1_world() -> (World, Vec<Batch>, u32) {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, MEUR, t)).unwrap();
@@ -110,7 +110,7 @@ fn d1_still_caught_a_close_under_the_order_with_the_wrong_quantity_or_price() {
 /// A long 1 M EUR, a sell limit of 250,000 at 1.0500 that is never reached (nonce 2), a `set_sl_tp` (nonce 3) and a trader close of
 /// half the position (nonce 4).
 fn d1_untriggered_world() -> (World, Vec<Batch>, [u32; 3]) {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, MEUR, t)).unwrap();
@@ -150,7 +150,7 @@ fn d1_still_caught_a_close_under_an_intent_that_is_no_order_of_the_trader() {
 fn commission_world() -> World {
     let mut rules = base_rules(vec![{
         let mut m = eur_market(0);
-        m.half_spread_e6 = 0;
+        m.half_spread_e6 = TEST_HALF_SPREAD_E6;
         m
     }]);
     rules.commission_e6[0] = 20;
@@ -164,15 +164,17 @@ fn d2_overshoot_world() -> (World, Vec<Batch>) {
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, MEUR, t)).unwrap();
-    w.sample(0, t + 30, 1_005_602_000_000); // +5,602 raw in 30 s: credited 2,801 > 2,800
+    // mid 1.005604 in 30 s: the long (ask 1.000001, ASK_AT_ONE = 1_000_001_000_000) closes at the bid 1_005_604_000_000 - 1_005_604 =
+    // 1_005_602_994_396, pnl 5,601.994396, credited half = 2,800.997198 > 2,800 (0.028 S)
+    w.sample(0, t + 30, 1_005_604_000_000);
     w.order(close_order(0, 0, t + 30)).unwrap();
-    w.sample(0, t + 40, 1_005_602_000_000);
+    w.sample(0, t + 40, 1_005_604_000_000);
     w.ev.tick(t + 41);
     let bs = drain(&mut w);
     (w, bs)
 }
 
-/// The same history one tick short of the limit: a quick close of +1,000 (credit 500), commission charged.
+/// The same history one tick short of the limit: a quick close at the bid 1_000_998_999_000 (mid 1.0010) for a pnl of 997.999 (credit 498.9995), commission charged.
 fn d2_plain_quick_world() -> (World, Vec<Batch>) {
     let mut w = commission_world();
     let t = T_1400;
@@ -251,14 +253,14 @@ fn d2_flip_world(profit_pips: u64) -> (World, Vec<Batch>) {
 
 fn world_for_flip() -> World {
     let mut m = eur_market(0);
-    m.half_spread_e6 = 0;
+    m.half_spread_e6 = TEST_HALF_SPREAD_E6;
     m.max_age_secs = 3_600;
     World::new(base_rules(vec![m]), S100K, 2, T_1400 - HOUR)
 }
 
 #[test]
 fn d2_a_flip_whose_closing_slice_overshoots_ends_at_the_fail_and_verifies() {
-    // 2 M EUR, +0.30% in 20 s: profit $6,000, quick credit $3,000 over 0.028 S = $2,800
+    // 2 M EUR bought at the ask 1.000001, the close at the bid of mid 1.0030 (1.002998997) in 20 s: profit $5,995.994, quick credit $2,997.997 over 0.028 S = $2,800
     let (w, bs) = d2_flip_world(30);
     assert!(matches!(w.ev.status(), Status::Failed(engine::FailReason::PhaseQuick)));
     let evs = events_of(&bs);
@@ -268,7 +270,7 @@ fn d2_a_flip_whose_closing_slice_overshoots_ends_at_the_fail_and_verifies() {
 
 #[test]
 fn d2_still_caught_a_flip_that_drops_its_remainder_without_an_overshoot() {
-    // +0.20%: credit $2,000, no overshoot: the flip is Close(Flip) + Fill
+    // mid 1.0020: bid 1.001998998, profit $3,995.996, credit $1,997.998, no overshoot: the flip is Close(Flip) + Fill
     let (w, bs) = d2_flip_world(20);
     assert_valid(&w, &bs);
     let evs = events_of(&bs);
@@ -284,7 +286,7 @@ fn d2_still_caught_a_flip_that_drops_its_remainder_without_an_overshoot() {
 
 /// Finding 3 / D3. `first` EUR bought at 1.0000; a limit buy of 1 M at 0.9990 triggers at 0.9985.
 fn d3_world(first: u64) -> (World, Vec<Batch>) {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, first, t)).unwrap();
@@ -298,7 +300,7 @@ fn d3_world(first: u64) -> (World, Vec<Batch>) {
 
 #[test]
 fn finding_3_a_pending_fill_refused_for_margin_expects_no_event_and_verifies() {
-    // $4.9M: margin $98,000 of $100,000; the 1 M more needs $20,000
+    // $4.9M at the ask: margin $98,000.098 of $100,000; the 1 M more needs about $20,000
     let (w, bs) = d3_world(4_900 * MEUR / 1000);
     assert_eq!(w.ev.stats().refused_fills, 1);
     assert_eq!(w.ev.refusals().last().map(|r| r.reason), Some(OrderReject::InsufficientMargin));
@@ -308,7 +310,7 @@ fn finding_3_a_pending_fill_refused_for_margin_expects_no_event_and_verifies() {
 
 #[test]
 fn d3_the_same_order_with_enough_margin_fills_and_verifies() {
-    // $3.0M: margin $60,000; after the fill $80,000 against an equity of about $95,500
+    // $3.0M at the ask: margin $60,000.06; after the fill about $80,000 against an equity of about $95,500
     let (w, bs) = d3_world(3_000 * MEUR / 1000);
     assert_eq!(w.ev.stats().refused_fills, 0);
     assert!(events_of(&bs).iter().any(|e| matches!(e, JournalEvent::Fill { order_kind: OrderKind::Limit, .. })));
@@ -346,7 +348,7 @@ fn d3_still_caught_a_fill_the_account_could_not_margin() {
 }
 
 fn d3_later_fill_world() -> (World, Vec<Batch>) {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, 4_900 * MEUR / 1000, t)).unwrap();
@@ -379,34 +381,39 @@ fn d3_an_order_refused_for_margin_fills_at_a_later_trigger_once_the_margin_is_th
 /// balance after the closes can be at or below the static floor although the equity that triggered the breach was above it.
 fn d4_static_world() -> (World, Vec<Batch>) {
     let mk = |i: u16, s: &str| {
-        let mut m = common::market(i, 0, s, 0);
+        let mut m = common::market(i, 0, s, TEST_HALF_SPREAD_E6);
         m.max_age_secs = 3_600;
         m
     };
     let mut w = World::new(base_rules(vec![mk(0, "AAA"), mk(1, "BBB")]), S100K, 2, T_1400 - HOUR);
     let mut t = T_1400;
-    // B = 92,500 (a normal -7,500 slice), static floor 92,000
+    // B = 92,500 (a normal -7,500 slice), static floor 92,000. The long is bought at the ask ASK_AT_ONE; the close sells at the bid, so
+    // the sample mid is the one whose bid is ASK_AT_ONE - 7,500 = 992_501_000_000: floor(992_501_992_502 x (1 - 1e-6)) = 992_501_000_000
+    // (992_501_992_502 - 992_502 = 992_501_000_000 exactly), pnl = 992_501_000_000 - 1_000_001_000_000 = -7,500,000,000 micro-USD.
+    let down = 992_501_992_502u64;
     w.sample(0, t, p4(10_000));
     w.sample(1, t + 1, p4(10_000));
     w.order(market_order(0, true, MEUR, t + 1)).unwrap();
     t += 100;
-    w.sample(0, t, p4(9_925));
+    w.sample(0, t, down);
     w.sample(1, t + 1, p4(10_000));
     w.order(close_order(0, 0, t + 1)).unwrap();
     t += 10;
-    w.sample(0, t, p4(9_925));
+    w.sample(0, t, down);
     w.sample(1, t + 1, p4(10_000));
     w.ev.tick(t + 2);
     assert_eq!(w.ev.state().b, 92_500_000_000);
     t += 3;
-    // two positions at 1.0. A moves to +1,500 (P = +1,500: tight mode, R = 92,500, L = 92,500 + 500 = 93,000) ...
+    // two positions bought at the ask ASK_AT_ONE, marked at the bid. A moves to mid 1.0015: bid 1_001_498_998_500, +1,497.9985; B is still
+    // marked at BID_AT_ONE: -2 (the spread). P = +1,495.9985: tight mode, R = 92,500, L = 92,500 + (1,495.9985 - 1,000) = 92,995.9985 ...
     w.sample(0, t, p4(10_000));
     w.sample(1, t + 1, p4(10_000));
     w.order(market_order(0, true, MEUR, t + 1)).unwrap();
     w.order(market_order(1, true, MEUR, t + 1)).unwrap();
     w.sample(0, t + 10, p4(10_015));
     w.sample(1, t + 11, p4(10_000));
-    // ... then B falls to -1,500: P = 0, E = 92,500 <= L, and E is above the static floor 92,000: the breach sample
+    // ... then B falls to mid 0.9985: bid 998_499_001_500, -1,501.9985: P = 1,497.9985 - 1,501.9985 = -4 (the two spreads), E = 92,496 <= L,
+    // and E is above the static floor 92,000: the breach sample
     w.sample(1, t + 40, p4(9_985));
     w.ev.tick(t + 50);
     let bs = drain(&mut w);
@@ -419,15 +426,17 @@ fn finding_4_a_breach_whose_closes_end_below_the_static_floor_is_a_fail_and_veri
     assert!(matches!(w.ev.status(), Status::Failed(engine::FailReason::StaticFloor)), "stats {:?}", w.ev.stats());
     let evs = events_of(&bs);
     let b_after = evs.iter().find_map(|e| if let JournalEvent::Fail { b_after, .. } = e { Some(*b_after) } else { None }).unwrap();
-    assert_eq!(b_after, 92_500_000_000 + 750_000_000 - 1_500_000_000, "A's quick profit is halved, B's loss is in full");
+    // A closes at its bid 1_001_498_998_500: +1,497.9985, halved 748.99925; B at its bid 998_499_001_500: -1,501.9985, in full
+    assert_eq!(b_after, 92_500_000_000 + 748_999_250 - 1_501_998_500, "A's quick profit is halved, B's loss is in full");
     assert!(!evs.iter().any(|e| matches!(e, JournalEvent::Breach { .. })));
     assert_valid(&w, &bs);
 }
 
-/// Long 1 M EUR for 100 s, +20 pips: tight mode (G = 2,000, L = 96,000 + 1,000 = 97,000); down to -35 pips: E = 96,500 <= L, the
-/// breach; the closes (a loss, in full) leave B = 96,500, above the static floor 92,000.
+/// Long 1 M EUR (ask 1.000001) for 100 s, mid +20 pips (bid 1.001998998, +1,997.998): tight mode (G = 1,997.998, L = 96,000 + 997.998 =
+/// 96,997.998); down to mid -35 pips (bid 0.9964990035, -3,501.9965): E = 96,498.0035 <= L, the breach; the closes (a loss, in full) leave
+/// B = 96,498.0035, above the static floor 92,000.
 fn d4_plain_breach_world() -> (World, Vec<Batch>) {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, MEUR, t)).unwrap();
@@ -452,7 +461,7 @@ fn d4_still_caught_a_breach_posted_where_the_closes_end_at_or_below_the_static_f
     let bad = edited(&bs, |evs| {
         let Some(k) = evs.iter().position(|e| matches!(e, JournalEvent::Fail { .. })) else { return };
         let JournalEvent::Fail { time, b_after, proof, .. } = evs[k] else { unreachable!() };
-        evs[k] = JournalEvent::Breach { time, l_level: 93_000_000_000, b_after, proof };
+        evs[k] = JournalEvent::Breach { time, l_level: 92_995_998_500, b_after, proof };
     });
     let c = classes(&w, &bad);
     assert!(c.contains(&F::FalseBreach) && c.contains(&F::FloorMismatch), "{c:?}");
@@ -489,12 +498,12 @@ fn d4_still_caught_an_omitted_breach_or_fail() {
 /// Finding 4, second form / D4: the forced closes of a breach push the quick tally over its limit. Nothing but the `Fail`
 /// may follow an overshoot, so the breach becomes `Fail(PhaseQuick)`.
 fn d4_quick_world() -> (World, Vec<Batch>) {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, MEUR, t)).unwrap();
-    w.sample(0, t + 20, p4(11_070)); // +10,700: tight mode, G = 10,700, L = 96,000 + 9,700 = 105,700
-    w.sample(0, t + 40, p4(10_570)); // +5,700: E = 105,700 <= L: breach; the quick slice credits 2,850 > 2,800
+    w.sample(0, t + 20, p4(11_070)); // mid 1.107, bid 1_106_998_893_000: +106,997.893: tight mode, G = 106,997.893, L = 96,000 + 105,997.893 = 201,997.893
+    w.sample(0, t + 40, p4(10_570)); // mid 1.057, bid 1_056_998_943_000: +56,997.943: E = 156,997.943 <= L: breach; the quick slice credits 28,498.97 > 2,800
     w.ev.tick(t + 45);
     let bs = drain(&mut w);
     (w, bs)
@@ -528,7 +537,7 @@ fn unused(_: Side) {}
 
 /// A pending order larger than the position it meets: `Close(Flip)` under its nonce and a `Fill(Limit)` for the remainder.
 fn d1_pending_flip_world() -> (World, Vec<Batch>) {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, MEUR / 2, t)).unwrap();
@@ -542,13 +551,13 @@ fn d1_pending_flip_world() -> (World, Vec<Batch>) {
 
 /// The same, with a closing slice that overshoots the quick limit: `Close(Flip)` under the order's nonce, then the `Fail`.
 fn d2_pending_flip_overshoot_world() -> (World, Vec<Batch>) {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     let t = T_1400;
     w.sample(0, t, p4(10_000));
     w.order(market_order(0, true, 2 * MEUR, t)).unwrap();
     w.order(order(IntentKind::Limit, 0, 1, 3 * MEUR, p4(10_020), 0, 0, 0, t)).unwrap(); // sell 3 M at 1.0020 or better
     w.sample(0, t + 5, p4(10_000));
-    w.sample(0, t + 20, p4(10_030)); // +6,000 on the position: credit 3,000 > 2,800
+    w.sample(0, t + 20, p4(10_030)); // bid 1.002998997: +5,995.994 on the position (ask 1.000001): credit 2,997.997 > 2,800
     w.ev.tick(t + 30);
     let bs = drain(&mut w);
     (w, bs)

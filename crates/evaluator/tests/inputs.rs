@@ -153,9 +153,9 @@ fn several_samples_in_one_second_act_on_the_last_numbers() {
     // two markets, both sampled in the same second: the decision uses the account at the start of the second and the marks
     // as they stand sample by sample; the verifier's walk does the same
     let mut m0 = eur_market(0);
-    m0.half_spread_e6 = 0;
+    m0.half_spread_e6 = TEST_HALF_SPREAD_E6;
     m0.max_age_secs = 3_600;
-    let mut m1 = common::market(1, 0, "SECOND", 0);
+    let mut m1 = common::market(1, 0, "SECOND", TEST_HALF_SPREAD_E6);
     m1.max_age_secs = 3_600;
     let mut w = World::new(base_rules(vec![m0, m1]), S100K, 2, T_1400 - HOUR);
     w.sample(0, T_1400, p4(10_000));
@@ -172,7 +172,7 @@ fn several_samples_in_one_second_act_on_the_last_numbers() {
 
 #[test]
 fn an_ended_evaluator_still_archives() {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     w.sample(0, T_1400, p4(10_000));
     w.order(market_order(0, true, 45 * MEUR / 10, T_1400)).unwrap();
     w.sample(0, T_1400 + 5, p4(10_000));
@@ -194,7 +194,7 @@ fn an_ended_evaluator_still_archives() {
 
 #[test]
 fn external_end_stops_the_evaluator() {
-    let mut w = fx_world(0);
+    let mut w = fx_world(TEST_HALF_SPREAD_E6);
     w.sample(0, T_1400, p4(10_000));
     w.ev.end_externally();
     assert!(w.ev.is_ended() && w.ev.is_frozen());

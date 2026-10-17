@@ -64,10 +64,17 @@ impl Evaluator {
                 }
                 let j = latest.ok_or(OrderReject::NoFreshPrice)?;
                 self.market_state_ok(&cfg, j, it.client_time)?;
+                if it.kind != IntentKind::Market && cfg.status != STATUS_ENABLED {
+                    return Err(OrderReject::MarketNotTradable);
+                }
+                // decision 64: an order that opens or adds in a market the account's rule set does not price is refused at
+                // placement. The rule set is immutable, so the half-spread never becomes non-zero for this account: a pending
+                // order refused here would never fill, which is why it is not recorded (a refusal at the trigger, decision 27,
+                // would stay pending forever and be the same refusal every second).
+                if cfg.half_spread_e6 == 0 && would_open(pos, it) {
+                    return Err(OrderReject::MarketUnpriced);
+                }
                 if it.kind != IntentKind::Market {
-                    if cfg.status != STATUS_ENABLED {
-                        return Err(OrderReject::MarketNotTradable);
-                    }
                     if it.price_e12 == 0 {
                         return Err(OrderReject::InvalidLevel);
                     }
@@ -237,6 +244,11 @@ impl Evaluator {
             }
             if cfg.status != STATUS_ENABLED {
                 return Ok(Err(OrderReject::MarketNotTradable));
+            }
+            // decision 64 (fill time, the order the verifier mirrors: held, lock, status, UNPRICED, then the quantity of a flip's
+            // remainder, positions, levels, cap, margin): the same refusal for a triggered pending order and a market order
+            if cfg.half_spread_e6 == 0 {
+                return Ok(Err(OrderReject::MarketUnpriced));
             }
             if close_qty > 0 && engine::validate_quantity(open_qty, cfg.qty_step, cfg.qty_min).is_err() {
                 return Ok(Err(OrderReject::InvalidRemainder));
@@ -510,5 +522,126 @@ impl Evaluator {
             units.push(evs);
         }
         Ok(units)
+    }
+}
+
+/// Whether an order of `it` would open or add exposure against the position `pos` of its market: no position, a position of
+/// the same side, or more than the opposite position holds (a flip's opening half).
+fn would_open(pos: Option<&Pos>, it: &OrderIntent) -> bool {
+    match pos {
+        None => true,
+        Some(p) => (p.p.qty.is_positive()) == (it.side == 0) || it.qty > p.p.qty.unsigned_abs(),
+    }
+}
+
+#[cfg(test)]
+mod unpriced_tests {
+    //! Decision 64 at fill time. Through `on_order` an order that opens in an unpriced market never gets this far (it is refused at
+    //! arrival), so the fill-time check is exercised by calling `exec_trade` on an evaluator that holds a position in an
+    //! unpriced market (state an honest account cannot reach): the opening part is refused, a pure reduce is not.
+    use super::*;
+    use engine::Position;
+
+    const ONE: u64 = 1_000_000_000_000;
+    const T: i64 = 1_700_000_100;
+
+    fn ev(half_spread_e6: u32) -> Evaluator {
+        ev_with(half_spread_e6, |_| {})
+    }
+
+    fn ev_with(half_spread_e6: u32, edit: impl FnOnce(&mut MarketCfg)) -> Evaluator {
+        let mut market = MarketCfg {
+            id: 0,
+            class: 0,
+            source: 2,
+            feed_id: [7; 32],
+            max_age_secs: 600,
+            status: 1,
+            qty_step: 1_000,
+            qty_min: 1_000,
+            max_notional_micro: 1_000_000_000_000_000,
+            sessions: vec![(0, 10_080)],
+            half_spread_e6,
+        };
+        edit(&mut market);
+        let rules = RulesCfg { ruleset_version: 1, leverage_x: [50, 20, 20, 20, 10, 5, 5, 2], holding_fee_e6: [100, 200, 400, 200, 400, 400, 1000, 1600], commission_e6: [0; 8], markets: vec![market] };
+        let acct = AccountParams { account: [1; 32], trader: [2; 32], challenge_id: 0, size_micro: 100_000_000_000, phase: 2, tier_index: 8, opened_time: T - 3_600 };
+        let mut ev = Evaluator::new(rules, acct, Box::new(crate::eval::AcceptAll)).unwrap();
+        ev.on_sample_mid(0, T, ONE).unwrap();
+        ev.tick(T + 1);
+        ev
+    }
+
+    fn long_position(qty: i64) -> Pos {
+        Pos { p: Position { qty, avg_entry_e12: ONE, timer_start: T - 600, opened_at: T - 600, fee_day: engine::day_index(T) }, sl: 0, tp: 0 }
+    }
+
+    fn intent(side: u8, qty: u64) -> OrderIntent {
+        OrderIntent { kind: IntentKind::Market, market: 0, side, qty, price_e12: 0, sl_e12: 0, tp_e12: 0, target_nonce: 0, client_time: T }
+    }
+
+    fn run(ev: &mut Evaluator, it: &OrderIntent, kind: OrderKind) -> Reject {
+        ev.exec_trade(9, it, 0, kind, T + 1, ONE).expect("no internal error")
+    }
+
+    #[test]
+    fn would_open_is_true_for_no_position_the_same_side_and_the_part_beyond_the_opposite_position() {
+        let long = long_position(10_000);
+        assert!(would_open(None, &intent(0, 1_000)));
+        assert!(would_open(None, &intent(1, 1_000)));
+        assert!(would_open(Some(&long), &intent(0, 1_000)), "an add");
+        assert!(!would_open(Some(&long), &intent(1, 1_000)), "a reduce");
+        assert!(!would_open(Some(&long), &intent(1, 10_000)), "exactly the position closes it");
+        assert!(would_open(Some(&long), &intent(1, 10_001)), "a flip opens the remainder");
+    }
+
+    #[test]
+    fn an_opening_fill_of_a_market_or_a_triggered_pending_order_is_refused_when_the_market_is_unpriced() {
+        for kind in [OrderKind::Market, OrderKind::Limit, OrderKind::Stop] {
+            let mut e = ev(0);
+            assert_eq!(run(&mut e, &intent(0, 10_000), kind), Err(OrderReject::MarketUnpriced), "{kind:?} open");
+            // an add and the opening half of a flip, with a position that cannot exist for an honest account
+            let mut e = ev(0);
+            e.positions.insert(0, long_position(10_000));
+            assert_eq!(run(&mut e, &intent(0, 1_000), kind), Err(OrderReject::MarketUnpriced), "{kind:?} add");
+            let mut e = ev(0);
+            e.positions.insert(0, long_position(10_000));
+            assert_eq!(run(&mut e, &intent(1, 12_000), kind), Err(OrderReject::MarketUnpriced), "{kind:?} flip");
+            // nothing changed
+            assert_eq!(e.positions.get(&0).map(|p| p.p.qty), Some(10_000));
+            assert!(e.queue.is_empty());
+        }
+        // the same orders in a priced market are not refused for it
+        let mut e = ev(1);
+        assert_eq!(run(&mut e, &intent(0, 10_000), OrderKind::Market), Ok(()));
+    }
+
+    #[test]
+    fn a_reduce_or_a_close_in_an_unpriced_market_is_never_refused() {
+        let mut e = ev(0);
+        e.positions.insert(0, long_position(10_000));
+        assert_eq!(run(&mut e, &intent(1, 4_000), OrderKind::Market), Ok(()), "a partial reduce");
+        assert_eq!(e.positions.get(&0).map(|p| p.p.qty), Some(6_000));
+        assert_eq!(run(&mut e, &intent(1, 6_000), OrderKind::Limit), Ok(()), "a pending order that closes the rest");
+        assert!(!e.positions.contains_key(&0));
+    }
+
+    #[test]
+    fn the_unpriced_refusal_comes_after_hold_lock_and_status_and_before_the_flip_remainder() {
+        // held first
+        let mut e = ev(0);
+        e.set_held(true);
+        assert_eq!(run(&mut e, &intent(0, 10_000), OrderKind::Market), Err(OrderReject::AccountHeld));
+        // status next
+        let mut e = ev_with(0, |m| m.status = STATUS_REDUCE_ONLY);
+        assert_eq!(run(&mut e, &intent(0, 10_000), OrderKind::Market), Err(OrderReject::MarketNotTradable));
+        // before the remainder of a flip: a flip whose remainder (1,000 units) is under the minimum (1,000,000) is `InvalidRemainder` in a priced
+        // market and `MarketUnpriced` in an unpriced one
+        let mut e = ev_with(1, |m| m.qty_min = 1_000_000);
+        e.positions.insert(0, long_position(10_000));
+        assert_eq!(run(&mut e, &intent(1, 11_000), OrderKind::Limit), Err(OrderReject::InvalidRemainder));
+        let mut e = ev_with(0, |m| m.qty_min = 1_000_000);
+        e.positions.insert(0, long_position(10_000));
+        assert_eq!(run(&mut e, &intent(1, 11_000), OrderKind::Limit), Err(OrderReject::MarketUnpriced));
     }
 }

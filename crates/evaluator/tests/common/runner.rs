@@ -544,6 +544,8 @@ pub struct M9cCover {
     pub pending_quantity_refused: u64,
     /// ... the account is held.
     pub pending_held_refused: u64,
+    /// P21 (decision 64): an order that would open exposure in a market the rule set does not price was refused (an "unpriced attempt").
+    pub unpriced_attempt_refused: u64,
 }
 
 impl M9cCover {
@@ -553,6 +555,7 @@ impl M9cCover {
         self.pending_notional_refused += o.pending_notional_refused;
         self.pending_quantity_refused += o.pending_quantity_refused;
         self.pending_held_refused += o.pending_held_refused;
+        self.unpriced_attempt_refused += o.unpriced_attempt_refused;
     }
 
     /// Floors of the gate run over `n` paths (100 each, 150 for the market margin refusal at 10,000 paths; scaled down, never below 1).
@@ -564,6 +567,7 @@ impl M9cCover {
             ("pending_notional_refused", scale(100)),
             ("pending_quantity_refused", scale(100)),
             ("pending_held_refused", scale(100)),
+            ("unpriced_attempt_refused", scale(100)),
         ]
     }
 
@@ -574,6 +578,7 @@ impl M9cCover {
             "pending_notional_refused" => self.pending_notional_refused,
             "pending_quantity_refused" => self.pending_quantity_refused,
             "pending_held_refused" => self.pending_held_refused,
+            "unpriced_attempt_refused" => self.unpriced_attempt_refused,
             _ => 0,
         }
     }
@@ -605,5 +610,6 @@ pub fn m9c_cover(w: &World) -> M9cCover {
         pending_notional_refused: n(OrderReject::NotionalCap, true),
         pending_quantity_refused: n(OrderReject::InvalidRemainder, true),
         pending_held_refused: n(OrderReject::AccountHeld, true),
+        unpriced_attempt_refused: u64::from(w.ev.stats().unpriced_rejects > 0),
     }
 }

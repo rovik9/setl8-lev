@@ -30,10 +30,15 @@ fn phase_0_and_phase_6_are_not_phases() {
     }
 }
 
-/// A +8.5% winner in `p`: the pass flow of the new account is the ordinary one of that phase.
+/// B after a `winner_in`: the long fills at the ask of mid 1.0 (`ASK_AT_ONE`), the close sells at the bid of mid 1.0085,
+/// `1_008_500_000_000 - 1_008_500 = 1_008_498_991_500`; qty = 1 MEUR makes the pnl in micro-USD the price difference:
+/// 1_008_498_991_500 - 1_000_001_000_000 = 8_497_991_500 (no commission, no rollover).
+const WINNER_B: i64 = S100K + 8_497_991_500;
+
+/// A +8.5% (mid) winner in `p`: the pass flow of the new account is the ordinary one of that phase.
 fn winner_in(phase: u8) -> (World, i64) {
     let mut m = eur_market(0);
-    m.half_spread_e6 = 0;
+    m.half_spread_e6 = TEST_HALF_SPREAD_E6;
     m.max_age_secs = 3_600;
     let mut w = World::new(base_rules(vec![m]), S100K, phase, T_1400 - HOUR);
     let t = T_1400;
@@ -52,7 +57,7 @@ fn a_phase_p_start_trades_passes_and_the_verifier_agrees_for_every_p() {
         let (mut w, t) = winner_in(p);
         let bs = w.ev.drain_batches(&BatchPolicy::MAX);
         let v = ChainView { seq: w.ev.seq(), journal_hash: w.ev.head(), b: w.ev.state().b, flat: true, phase: w.ev.phase() };
-        assert_eq!(v.b, 108_500_000_000, "phase {p}");
+        assert_eq!(v.b, WINNER_B, "phase {p}");
         // the verifier calls the history VALID from the phase-p start
         let rep = verify(&w, &bs);
         assert!(rep.verdict == setl8_verify::Verdict::Valid, "phase {p}:\n{}", describe(&rep));
@@ -71,7 +76,7 @@ fn a_phase_p_start_trades_passes_and_the_verifier_agrees_for_every_p() {
 fn the_new_account_of_a_reset_is_independent_of_the_failed_one() {
     // the failed account: a quick-limit fail in phase 3
     let mut m0 = eur_market(0);
-    m0.half_spread_e6 = 0;
+    m0.half_spread_e6 = TEST_HALF_SPREAD_E6;
     m0.max_age_secs = 3_600;
     let mut a = World::new(base_rules(vec![m0]), S100K, 3, T_1400 - HOUR);
     let t = T_1400;
@@ -92,7 +97,7 @@ fn the_new_account_of_a_reset_is_independent_of_the_failed_one() {
     p2.account = [0xA8; 32];
     p2.challenge_id = 1;
     let mut m = eur_market(0);
-    m.half_spread_e6 = 0;
+    m.half_spread_e6 = TEST_HALF_SPREAD_E6;
     m.max_age_secs = 3_600;
     let mut b = World::from_params(base_rules(vec![m]), p2);
     assert_eq!((b.ev.phase(), *b.ev.state(), b.ev.seq()), (3, engine::reset_phase_state(S100K), 0));
@@ -110,7 +115,7 @@ fn the_new_account_of_a_reset_is_independent_of_the_failed_one() {
     b.sample(0, t + 5_210, p4(10_085));
     b.ev.tick(t + 5_211);
     let b_batches = b.ev.drain_batches(&BatchPolicy::MAX);
-    assert_eq!(b.ev.state().b, 108_500_000_000);
+    assert_eq!(b.ev.state().b, WINNER_B);
     assert_valid(&b, &b_batches);
     assert!(matches!(a.ev.status(), Status::Failed(_)));
     assert_eq!(a.order(market_order(0, true, MEUR, t + 5_300)), Err(OrderReject::AccountEnded));

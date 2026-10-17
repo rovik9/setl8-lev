@@ -16,6 +16,7 @@ use ::evaluator::{AccountParams, Batch, RulesCfg};
 use common::evaluator::shared::runner::{items_text, run_path, spec_rules, Chain, Item, SimChain};
 use common::evaluator::shared::{self, market_order, order, p4, World, E12, HOUR, MEUR, T_1400};
 use common::evaluator::*;
+use common::journal::TEST_HALF_SPREAD_E6;
 use common::{assert_ok, dup};
 use journal_types::{CloseReason, FailReason, FeeKind, JournalEvent, Side};
 use setl8_lev_trading::errors::Setl8Error;
@@ -148,7 +149,7 @@ fn sc_fail() -> ::evaluator::testkit::PathSpec {
     s.post(T_1400 + 11);
     s.s(0, T_1400 + 20, p4(9_000));
     s.end(T_1400 + 25);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 60, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 60, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 /// +8.5% realized (a normal slice), flat; then a new small position stays open.
@@ -163,7 +164,7 @@ fn sc_pass_open() -> ::evaluator::testkit::PathSpec {
     s.o(market_order(0, true, MEUR / 10, T_1400 + 111));
     s.s(0, T_1400 + 120, p4(10_085));
     s.end(T_1400 + 125);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 60, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 60, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 /// A buy limit that fills, a stop-loss that triggers.
@@ -178,7 +179,7 @@ fn sc_limit_sl() -> ::evaluator::testkit::PathSpec {
     s.s(0, T_1400 + 30, p4(9_970));
     s.s(0, T_1400 + 40, p4(9_950)); // the stop-loss triggers here
     s.end(T_1400 + 45);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 60, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 60, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 /// Two positions in two markets; each dips alone (never together) so the honest account never breaches.
@@ -200,7 +201,7 @@ fn sc_two() -> ::evaluator::testkit::PathSpec {
     s.post(t + 32);
     s.s(0, t + 40, p4(10_020)).s(1, t + 41, p4(10_020));
     s.end(t + 45);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 60, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", 0, 60, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 60, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", TEST_HALF_SPREAD_E6, 60, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 /// A flash crash: one sample breaches the tight floor, the next one is back up.
@@ -210,11 +211,13 @@ fn sc_flash() -> ::evaluator::testkit::PathSpec {
     s.o(market_order(0, true, MEUR, T_1400));
     s.s(0, T_1400 + 10, p4(10_030)); // +3.0k: tight, L = 96k + 2k = 98k
     s.post(T_1400 + 11);
-    s.s(0, T_1400 + 20, p4(9_980)); // -2.0k: E = 98.0k <= L: breach
+    // with spread 0 the crash was -2.0k and touched L exactly; the two half-spreads of 1 e6 move both sides by about 1 and 2 USD, so the
+    // crash goes one tick further: -2.1k, E = 97.9k <= L = 97,997.997: breach
+    s.s(0, T_1400 + 20, p4(9_979));
     s.s(0, T_1400 + 30, p4(10_031));
     s.s(0, T_1400 + 40, p4(10_032));
     s.end(T_1400 + 45);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 60, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 60, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 /// `sc_flash` on a stream from which the crash sample (second +20) was removed.
@@ -232,7 +235,7 @@ fn sc_stale() -> ::evaluator::testkit::PathSpec {
     s.o(market_order(0, true, MEUR / 2, T_1400 + 20));
     s.s(0, T_1400 + 30, p4(10_000));
     s.end(T_1400 + 35);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 60, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 60, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 /// A market that closes: sessions Monday 00:00-14:30 only.
@@ -242,7 +245,7 @@ fn sc_session() -> ::evaluator::testkit::PathSpec {
     s.o(market_order(0, true, MEUR / 10, T_1400 + 29 * 60));
     s.s(0, T_1400 + 29 * 60 + 20, p4(10_000));
     s.end(T_1400 + 29 * 60 + 25);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 60, vec![(0, 14 * 60 + 30)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 60, vec![(0, 14 * 60 + 30)])], 0, 2, s.steps)
 }
 
 // ---- M9b scenarios (decisions D1 to D5)
@@ -259,7 +262,7 @@ fn sc_pend_reduce() -> ::evaluator::testkit::PathSpec {
     s.s(0, T_1400 + 120, p4(10_060));
     s.post(T_1400 + 121);
     s.end(T_1400 + 130);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 /// D1. A long 1 M EUR; a sell limit that no sample reaches (nonce 2); a set_sl_tp (nonce 3); the trader's close (nonce 4).
@@ -274,20 +277,20 @@ fn sc_pend_untriggered() -> ::evaluator::testkit::PathSpec {
     s.o(close_order(0, T_1400 + 12));
     s.s(0, T_1400 + 20, p4(10_001));
     s.end(T_1400 + 30);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
-/// D2. A long 1 M EUR with a commission of 20 ppm; +5,602 raw in 30 s: the closing slice's credit 2,801 is over 0.028 S.
+/// D2. A long 1 M EUR with a commission of 20 ppm; +5,603 raw in 30 s; after the half-spread of 1 e6 on both fills the pnl is 5,600.994397 and the closing slice's credit 2,800.497198 is over 0.028 S.
 fn sc_overshoot() -> ::evaluator::testkit::PathSpec {
     let mut s = Script::new();
     s.s(0, T_1400, p4(10_000));
     s.o(market_order(0, true, MEUR, T_1400));
     s.post(T_1400 + 1);
-    s.s(0, T_1400 + 30, 1_005_602_000_000);
+    s.s(0, T_1400 + 30, 1_005_603_000_000);
     s.o(close_order(0, T_1400 + 30));
-    s.s(0, T_1400 + 40, 1_005_602_000_000);
+    s.s(0, T_1400 + 40, 1_005_603_000_000);
     s.end(T_1400 + 45);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 60, vec![(0, 10_080)])], 20, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 60, vec![(0, 10_080)])], 20, 2, s.steps)
 }
 
 /// D2. A long 400,000 EUR, +0.20% in 20 s (credit 400, no overshoot, no tight mode), then a market sell of 1.2 M: a flip, `Close(Flip)`
@@ -303,7 +306,7 @@ fn sc_flip() -> ::evaluator::testkit::PathSpec {
     s.o(market_order(0, false, 12 * MEUR / 10, T_1400 + 21));
     s.s(0, T_1400 + 25, p4(10_020));
     s.end(T_1400 + 30);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 /// D3. A long 4.9 M EUR in market 0 (margin $98,000 of $100,000); a buy limit of 1 M in market 1 (flat) triggers at +21 s and cannot be
@@ -317,7 +320,7 @@ fn sc_margin_short() -> ::evaluator::testkit::PathSpec {
     s.s(0, t + 10, p4(10_000)).s(1, t + 11, p4(10_000));
     s.s(0, t + 20, p4(10_000)).s(1, t + 21, p4(9_985));
     s.end(t + 22);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 /// D4, static floor. B = 92,500 after a realized loss; two positions; A +1,500 (tight mode), B -1,500 (the breach); the closes end at 91,750.
@@ -336,7 +339,7 @@ fn sc_conv_static() -> ::evaluator::testkit::PathSpec {
     s.s(0, t0 + 123, p4(10_015)).s(1, t0 + 124, p4(10_000));
     s.s(1, t0 + 153, p4(9_985));
     s.end(t0 + 160);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 /// D4, quick limit. A long 1 M EUR, +10.7% in 20 s (tight mode), back to +5.7% (the breach); the quick slice credits 2,850 > 2,800.
@@ -348,7 +351,7 @@ fn sc_conv_quick() -> ::evaluator::testkit::PathSpec {
     s.s(0, T_1400 + 20, p4(11_070));
     s.s(0, T_1400 + 40, p4(10_570));
     s.end(T_1400 + 45);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 /// Two flat markets and nothing else: a place to put a fill the evaluator should not have posted.
@@ -357,7 +360,7 @@ fn sc_flat_two() -> ::evaluator::testkit::PathSpec {
     s.s(0, T_1400, p4(10_000)).s(1, T_1400 + 1, p4(10_000));
     s.s(0, T_1400 + 10, p4(10_000)).s(1, T_1400 + 11, p4(10_000));
     s.end(T_1400 + 15);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 /// Like `sc_flat_two`, but market 0 caps a position at $5,000 of notional (the program has no such rule).
@@ -366,9 +369,19 @@ fn sc_flat_capped() -> ::evaluator::testkit::PathSpec {
     s.s(0, T_1400, p4(10_000)).s(1, T_1400 + 1, p4(10_000));
     s.s(0, T_1400 + 10, p4(10_000)).s(1, T_1400 + 11, p4(10_000));
     s.end(T_1400 + 15);
-    let mut m0 = eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)]);
+    let mut m0 = eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)]);
     m0.max_notional_micro = 5_000_000_000;
-    base_spec(vec![m0, eur_spec(1, "GBPUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![m0, eur_spec(1, "GBPUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+}
+
+/// Market 0 priced, market 1 NOT priced (the rule set has no half-spread for it, decision 64: a market added after the account's
+/// rule set). Nothing is traded; the evaluator refuses every order that would open exposure in market 1.
+fn sc_flat_unpriced() -> ::evaluator::testkit::PathSpec {
+    let mut s = Script::new();
+    s.s(0, T_1400, p4(10_000)).s(1, T_1400 + 1, p4(10_000));
+    s.s(0, T_1400 + 10, p4(10_000)).s(1, T_1400 + 11, p4(10_000));
+    s.end(T_1400 + 15);
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 // ------------------------------------------------------------------------------------------------- the tampering view
@@ -733,7 +746,7 @@ fn sc_slow() -> ::evaluator::testkit::PathSpec {
     s.o(close_order(0, T_1400 + 100));
     s.s(0, T_1400 + 105, p4(10_006));
     s.end(T_1400 + 110);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 60, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 60, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 /// +8.5% realized, flat, nothing else: a pass can be requested.
@@ -745,7 +758,7 @@ fn sc_win() -> ::evaluator::testkit::PathSpec {
     s.o(close_order(0, T_1400 + 100));
     s.s(0, T_1400 + 110, p4(10_085));
     s.end(T_1400 + 115);
-    base_spec(vec![eur_spec(0, "EURUSD", 0, 60, vec![(0, 10_080)])], 0, 2, s.steps)
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 60, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
 // ------------------------------------------------------------------------------------------------- the rows
@@ -788,6 +801,34 @@ fn last_idx(t: &T, f: impl Fn(&JournalEvent) -> bool) -> (usize, usize) {
         }
     }
     found.expect("event")
+}
+
+/// A limit buy in market 1 (unpriced) that the trader signed (client time +5) and that the +11 sample triggers. With `fill`, the
+/// evaluator publishes its fill before the last heartbeat; without, it publishes nothing.
+fn pending_unpriced(t: &mut T, fill: bool) {
+    let qty = MEUR / 100;
+    let intent = order(IntentKind::Limit, 1, 0, qty, p4(10_010), 0, 0, 0, T_1400 + 5);
+    let line = t.trader_sign(99, &intent);
+    t.intents.push(line);
+    if !fill {
+        let bi = t.batches.len() - 1;
+        t.batches[bi].intents_committed_bytes = t.intents_text().len();
+        t.fix();
+        return;
+    }
+    let j = t.sample_at(1, T_1400 + 11);
+    let mut ev = t.hand_fill(j, true, qty, T_1400 + 11, 99, 0);
+    if let JournalEvent::Fill { order_kind, .. } = &mut ev {
+        *order_kind = OrderKind::Limit;
+    }
+    let proof = t.proof_of_sample(j);
+    let bi = t.batches.len() - 1;
+    t.batches[bi].batch.events.insert(0, ev);
+    t.batches[bi].batch.proofs.push(proof);
+    t.batches[bi].markets.push(1);
+    t.batches[bi].intents_committed_bytes = t.intents_text().len();
+    t.set_meta_flat(bi, false);
+    t.fix();
 }
 
 fn rows() -> Vec<Row> {
@@ -1244,11 +1285,15 @@ fn rows() -> Vec<Row> {
                 let a = t.sample_at(0, T_1400 + 20);
                 let b = t.sample_at(1, T_1400 + 31);
                 let time = T_1400 + 50;
-                let entry = 1_000_000_000_000u64;
+                // the fills of sc_two are long at ask(1.0, 1 e6) = ceil(1e12 x (1 + 1e-6)) = 1_000_001_000_000
+                let entry = 1_000_001_000_000u64;
                 let close_a = t.hand_close(a, true, MEUR, entry, time, T_1400 + 1, CloseReason::Breach, 0);
                 let close_b = t.hand_close(b, true, MEUR, entry, time, T_1400 + 1, CloseReason::Breach, 1);
                 let snap = t.account_after(1);
-                let b_after = snap.b - 3_000_000_000;
+                // the dishonest breach must be internally consistent: its balance is the stored balance plus what its own two closes credit
+                // (each pnl is 1_000_000 micro-USD below the spread-0 value because the entry is the ask 1_000_001_000_000)
+                let credited = |e: &JournalEvent| if let JournalEvent::Close { credited, .. } = e { *credited } else { unreachable!() };
+                let b_after = snap.b + credited(&close_a) + credited(&close_b);
                 let breach = JournalEvent::Breach { time, l_level: snap.l_level, b_after, proof: 0 };
                 let proofs = vec![t.proof_of_sample(a), t.proof_of_sample(b)];
                 t.append(::evaluator::BatchKind::PostJournal, vec![close_a, close_b, breach], proofs, time, true, vec![0, 1]);
@@ -1837,6 +1882,51 @@ fn rows() -> Vec<Row> {
             program: None,
             verifier: &[F::FillNotAllowed],
         },
+        // ---------------------------------------------------------------- decision 64 (P21): unpriced markets are untradable
+        Row {
+            name: "a market fill in a market the account's rule set does not price",
+            sc: sc_flat_unpriced,
+            tamper: |t| {
+                let i = t.samples.len() - 1;
+                let time = t.samples[i].ts_sec() + 20;
+                // 10,000 EUR ($200 of margin) in market 1, whose half-spread in the rule set is 0: the fill is at the mid itself
+                let qty = MEUR / 100;
+                let intent = market_order(1, true, qty, time);
+                let line = t.trader_sign(99, &intent);
+                t.intents.push(line);
+                let j = t.sample_at(1, T_1400 + 11);
+                let fill = t.hand_fill(j, true, qty, time, 99, 0);
+                let proofs = vec![t.proof_of_sample(j)];
+                t.append(::evaluator::BatchKind::PostJournal, vec![fill], proofs, time, false, vec![1]);
+                t.fix();
+            },
+            who: Both,
+            program: Some(Setl8Error::MarketUnpriced),
+            verifier: &[F::FillNotAllowed],
+        },
+        Row {
+            name: "the fill of a triggered pending order in a market the rule set does not price",
+            sc: sc_flat_unpriced,
+            tamper: |t| {
+                pending_unpriced(t, true);
+            },
+            who: Both,
+            program: Some(Setl8Error::MarketUnpriced),
+            verifier: &[F::FillNotAllowed],
+        },
+        Row {
+            // NOT an attack: this is the rule. The order is on file (the trader signed it; an honest evaluator would not even have
+            // accepted it), it triggers, and the evaluator does not fill it. The verifier computes the same refusal and expects no
+            // fill, so there is no TriggerMissed: both accept, which is exactly right. The same silence in a PRICED market is a miss.
+            name: "a triggered pending order in an unpriced market that the evaluator does not fill (the rule itself)",
+            sc: sc_flat_unpriced,
+            tamper: |t| {
+                pending_unpriced(t, false);
+            },
+            who: Neither,
+            program: None,
+            verifier: &[],
+        },
     ]
 }
 
@@ -2004,11 +2094,11 @@ fn finding_2_the_program_refuses_a_fee_between_the_overshooting_close_and_the_fa
     s.s(0, T_1400, p4(10_000));
     s.o(market_order(0, true, MEUR, T_1400));
     s.post(T_1400 + 1);
-    s.s(0, T_1400 + 30, 1_005_602_000_000);
+    s.s(0, T_1400 + 30, 1_005_603_000_000);
     s.o(close_order(0, T_1400 + 30));
-    s.s(0, T_1400 + 40, 1_005_602_000_000);
+    s.s(0, T_1400 + 40, 1_005_603_000_000);
     s.end(T_1400 + 45);
-    let spec = base_spec(vec![eur_spec(0, "EURUSD", 0, 60, vec![(0, 10_080)])], 20, 2, s.steps);
+    let spec = base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 60, vec![(0, 10_080)])], 20, 2, s.steps);
     let (mut t, mut chain) = honest(&spec);
     // the evaluator's own history: Fill, Fee | Close, Fail: accepted by the program
     let last = t.batches.len() - 1;
@@ -2049,7 +2139,7 @@ fn finding_4_the_program_wants_a_fail_when_the_breach_closes_end_below_the_stati
     s.s(0, t0 + 123, p4(10_015)).s(1, t0 + 124, p4(10_000));
     s.s(1, t0 + 153, p4(9_985));
     s.end(t0 + 160);
-    let spec = base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps);
+    let spec = base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)])], 0, 2, s.steps);
     let (t, mut chain) = honest(&spec);
     let last = t.batches.len() - 1;
     assert!(matches!(t.batches[last].kind, ::evaluator::BatchKind::ReportFail(engine::FailReason::StaticFloor)));

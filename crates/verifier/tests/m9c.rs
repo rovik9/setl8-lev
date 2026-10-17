@@ -5,8 +5,14 @@
 //! pipeline (the hand-written generator's journal, the archive, the intents) with an honest history, the nearest dishonest one
 //! and a boundary pair; the unit tests with the other boundaries are in `src/walk.rs` (`refusal_tests`).
 //!
-//! Numbers: S = $100,000, class 0 (50x), price 1.0, half-spread 0, no commission, so 1 EUR is 1e6 quantity units and a
-//! quantity in units is also its notional in micro-USD; 5,000,000 EUR needs exactly $100,000 of margin.
+//! Numbers: S = $100,000, class 0 (50x), mid 1.0, half-spread h = `TEST_HALF_SPREAD_E6` = 1 (decision 64: a market with 0 is
+//! unpriced and takes no new exposure), no commission, so 1 EUR is 1e6 quantity units. The ask is ceil(mid x (1 + h)) =
+//! 1_000_001_000_000 and the bid floor(mid x (1 - h)) = 999_999_000_000 (price e12); a long fills at the ask, a short at the
+//! bid, a close takes the other side, and an open position is marked at the bid (long) or the ask (short). The margin is
+//! `margin_micro(qty, fill price, 50)` and the notional cap is compared on qty x fill price. 5,000,000 EUR at the ask is
+//! $5,000,005 of notional and $100,000.1 of margin, plus $10 of open loss at the bid: no whole-dollar account holds exactly
+//! that (one 1,000-unit step is 20 micro-USD), so the tests that pin equity == margin scale the account and the quantity by
+//! ten (50,000,000 EUR with a size of $1,000,101) as in the evaluator's `exec_edges` tests.
 mod common;
 
 use common::*;
@@ -14,18 +20,46 @@ use journal_types::JournalEvent as E;
 use setl8_verify::FindingClass as C;
 
 const UNITS: u64 = 1_000_000;
+/// The half-spread of the test market (decision 64: 0 would make it unpriced and every opening Fill a `FillNotAllowed`).
+const TEST_HALF_SPREAD_E6: u16 = 1;
+/// The ask of mid 1.0 at `TEST_HALF_SPREAD_E6` (price e12); the bid is 999_999_000_000.
+const ASK: u64 = 1_000_001_000_000;
 
 fn flat_spec() -> Spec {
     let mut s = Spec::base();
-    s.markets[0].spread_e6 = 0;
+    s.markets[0].spread_e6 = TEST_HALF_SPREAD_E6;
     // a price that stands still for 100 s must not close the market in the flip test
     s.markets[0].max_age_secs = 900;
     s
 }
 
+/// `flat_spec` with a size of `usd` whole dollars (the tier size and the opening balance).
+fn sized(usd: i64) -> Spec {
+    let mut s = flat_spec();
+    s.size = usd * USD;
+    s
+}
+
+/// The sizes at which a position of 50,000,000 EUR (5e13 units, ten times the 5 M of the old numbers) lands exactly on
+/// equity == margin; one step (1,000 units) more is then short. All at mid 1.0, ask 1_000_001_000_000, bid 999_999_000_000.
+/// Long: margin = 5e13 x 1_000_001_000_000 / (1e12 x 50) = 1_000_001_000_000 micro-USD; marked at the bid the open loss is
+/// 5e13 x 2_000_000 / 1e12 = 100_000_000, so equity == margin needs 1_000_101_000_000 = $1,000,101.
+const FULL_LONG_USD: i64 = 1_000_101;
+/// Short: margin = 5e13 x 999_999_000_000 / 5e13 = 999_999_000_000; marked at the ask the open loss is again 100_000_000, so
+/// $1,000,099 (1_000_099_000_000).
+const FULL_SHORT_USD: i64 = 1_000_099;
+/// Flip of a 40 M EUR long (entry ask) into a 50 M EUR short (entry bid) at an unchanged price: the closing slice sells at the
+/// bid, 4e13 x (999_999_000_000 - 1_000_001_000_000) / 1e12 = -80_000_000 (a loss is credited whole), so
+/// equity == margin needs 999_999_000_000 + 100_000_000 + 80_000_000 = 1_000_179_000_000 = $1,000,179.
+const FULL_FLIP_USD: i64 = 1_000_179;
+
 /// One sample at 14:00:00 and one market buy of `qty` units at that second.
 fn buy(qty: u64) -> Bundle {
-    Gen::new(flat_spec()).run(&[
+    buy_in(flat_spec(), qty)
+}
+
+fn buy_in(spec: Spec, qty: u64) -> Bundle {
+    Gen::new(spec).run(&[
         Script::Sample { market: 0, t: T_1400, mid: eur(10_000) },
         Script::Order { t: T_1400, intent: market_order(0, true, qty, T_1400) },
         Script::Heartbeat { t: T_1400 },
@@ -49,10 +83,13 @@ fn with_rules(b: &Bundle, from: &str, to: &str) -> setl8_verify::Report {
 
 #[test]
 fn a_market_order_that_uses_exactly_all_the_margin_is_valid_and_one_step_more_is_not() {
-    let ok = buy(5_000_000 * UNITS);
+    // 50 M EUR at the ask: margin 1_000_001_000_000, open loss at the bid 100_000_000, balance $1,000,101 (see FULL_LONG_USD)
+    let ok = buy_in(sized(FULL_LONG_USD), 50_000_000 * UNITS);
     assert_eq!(classes_of(&ok), Vec::<C>::new(), "{:#?}", verify(&ok).findings);
-    assert_eq!(ok.final_state.b, 100_000_000_000);
-    let over = buy(5_000_000 * UNITS + 1_000);
+    assert_eq!(ok.final_state.b, 1_000_101_000_000);
+    // one step more: margin ceil(1_000_001_000_000 + 1_000 x 1_000_001_000_000 / 5e13 = 20.00002) = 1_000_001_000_021, open loss
+    // floor(-100_000_000.002) = -100_000_001, equity 1_000_000_999_999 < margin
+    let over = buy_in(sized(FULL_LONG_USD), 50_000_000 * UNITS + 1_000);
     assert_eq!(classes_of(&over), vec![C::FillWithoutMargin], "{:#?}", verify(&over).findings);
     // the finding names the Fill (the first event of the journal)
     let r = verify(&over);
@@ -63,29 +100,34 @@ fn a_market_order_that_uses_exactly_all_the_margin_is_valid_and_one_step_more_is
 
 #[test]
 fn a_flip_that_uses_exactly_all_the_margin_is_valid_and_one_step_more_is_not() {
-    let flip = |second_mid: u64, sell: u64| {
-        Gen::new(flat_spec()).run(&[
+    let flip = |spec: Spec, long: u64, second_mid: u64, sell: u64| {
+        Gen::new(spec).run(&[
             Script::Sample { market: 0, t: T_1400, mid: eur(10_000) },
-            Script::Order { t: T_1400, intent: market_order(0, true, 4_000_000 * UNITS, T_1400) },
+            Script::Order { t: T_1400, intent: market_order(0, true, long, T_1400) },
             Script::Sample { market: 0, t: T_1400 + 100, mid: second_mid },
-            // closes the 4 M long and opens a short of (sell - 4 M)
+            // closes the long and opens a short of (sell - long)
             Script::Order { t: T_1400 + 100, intent: market_order(0, false, sell, T_1400 + 100) },
             Script::Heartbeat { t: T_1400 + 100 },
         ])
     };
-    // price unchanged: the closing slice makes nothing, the short of 5 M EUR uses exactly the $100,000
-    let ok = flip(eur(10_000), 9_000_000 * UNITS);
+    // price unchanged: the 40 M long bought at the ask is closed at the bid for -80_000_000 (not quick: 100 s, so a loss is
+    // credited whole) and the short of 50 M EUR opened at the bid uses exactly the balance (see FULL_FLIP_USD)
+    let ok = flip(sized(FULL_FLIP_USD), 40_000_000 * UNITS, eur(10_000), 90_000_000 * UNITS);
     assert_eq!(classes_of(&ok), Vec::<C>::new(), "{:#?}", verify(&ok).findings);
-    let over = flip(eur(10_000), 9_000_000 * UNITS + 1_000);
+    // one step more: margin 999_999_000_000 + ceil(1_000 x 999_999_000_000 / 5e13 = 19.99998) = +20, open loss +1 (floor of
+    // -100_000_000.002), so 21 micro-USD short
+    let over = flip(sized(FULL_FLIP_USD), 40_000_000 * UNITS, eur(10_000), 90_000_000 * UNITS + 1_000);
     assert_eq!(classes_of(&over), vec![C::FillWithoutMargin], "{:#?}", verify(&over).findings);
     // the judgment comes with the Close{Flip}, once: no second finding for the Fill that is its other half
     assert_eq!(verify(&over).findings.len(), 1);
-    // at 1.0001 the closed 4 M long has made 4e12 x 0.0001 = 400,000,000 micro-USD (the slice is not quick: 100 s), so B is
-    // 100,400,000,000. The short's margin is ceil(r x 1.0001 / 50): r = 5,019,498,050,000 units needs 100,399,999,997,
-    // the next step 100,400,000,017.
-    let ok = flip(eur(10_001), 4_000_000 * UNITS + 5_019_498_050_000);
+    // at 1.0001 (S = $100,000 again; bid 1_000_098_999_900, ask 1_000_101_000_100) the 4 M long bought at the ask
+    // 1_000_001_000_000 and closed at that bid has made 4e12 x 97_999_900 / 1e12 = 391_999_600 micro-USD (the slice is not quick:
+    // 100 s), so B is 100_391_999_600. A short of r units opened at that bid, marked at that ask, needs margin
+    // ceil(r x 1_000_098_999_900 / 5e13) plus an open loss of r x 2_000_200 / 1e12: r = 5_018_601_228_000 units needs
+    // 100_381_961_381 and loses 10_038_207, so equity 100_381_961_393 (12 micro-USD to spare); the next step is 8 short.
+    let ok = flip(flat_spec(), 4_000_000 * UNITS, eur(10_001), 4_000_000 * UNITS + 5_018_601_228_000);
     assert_eq!(classes_of(&ok), Vec::<C>::new(), "the credit of the closing slice counts: {:#?}", verify(&ok).findings);
-    let over = flip(eur(10_001), 4_000_000 * UNITS + 5_019_498_051_000);
+    let over = flip(flat_spec(), 4_000_000 * UNITS, eur(10_001), 4_000_000 * UNITS + 5_018_601_229_000);
     assert_eq!(classes_of(&over), vec![C::FillWithoutMargin], "{:#?}", verify(&over).findings);
 }
 
@@ -93,11 +135,16 @@ fn a_flip_that_uses_exactly_all_the_margin_is_valid_and_one_step_more_is_not() {
 fn the_notional_cap_of_the_market_is_enforced_and_the_cap_itself_is_allowed() {
     let at_cap = buy(5_000 * UNITS);
     assert_eq!(classes_of(&at_cap), Vec::<C>::new());
-    // cap $5,000: 5,000 EUR is exactly the cap, 5,000.001 EUR is above it
-    let r = with_rules(&at_cap, "\"max_notional_usd\":1000000000000000", "\"max_notional_usd\":5000000000");
+    // the cap is compared on the notional at the FILL price (the ask): 5,000 EUR = 5e9 units x 1_000_001_000_000 / 1e12 =
+    // 5_000_005_000 micro-USD, so a cap of exactly that allows it ...
+    let r = with_rules(&at_cap, "\"max_notional_usd\":1000000000000000", "\"max_notional_usd\":5000005000");
     assert_eq!(r.classes(), Vec::<C>::new(), "{:#?}", r.findings);
+    // ... one micro-USD less (and the old cap of 5_000_000_000, the notional at the mid) does not
+    let r = with_rules(&at_cap, "\"max_notional_usd\":1000000000000000", "\"max_notional_usd\":5000004999");
+    assert_eq!(r.classes(), vec![C::FillNotAllowed], "{:#?}", r.findings);
+    // 5,000.001 EUR (one step more) is 5_000_001_000 x 1_000_001_000_000 / 1e12 = 5_000_006_000 micro-USD, above it
     let above = buy(5_000 * UNITS + 1_000);
-    let r = with_rules(&above, "\"max_notional_usd\":1000000000000000", "\"max_notional_usd\":5000000000");
+    let r = with_rules(&above, "\"max_notional_usd\":1000000000000000", "\"max_notional_usd\":5000005000");
     assert_eq!(r.classes(), vec![C::FillNotAllowed], "{:#?}", r.findings);
     assert!(r.findings[0].expected.contains("notional cap"), "{:?}", r.findings[0]);
 }
@@ -156,10 +203,11 @@ fn a_quantity_off_the_step_or_below_the_minimum_is_refused() {
 
 #[test]
 fn a_triggered_pending_order_the_cap_refuses_must_not_fill_and_a_fill_is_the_dishonest_variant() {
-    // a limit buy of 10,000 EUR at 1.0 triggers when the ask falls to it; the generator fills it (it has no cap)
+    // a limit buy of 10,000 EUR at the level ASK (the ask of mid 1.0) triggers when the ask falls to it (equality triggers), at
+    // mid 1.0; the generator fills it (it has no cap)
     let b = Gen::new(flat_spec()).run(&[
         Script::Sample { market: 0, t: T_1400, mid: eur(10_010) },
-        Script::Order { t: T_1400, intent: order(setl8_verify::intents::IntentKind::Limit, 0, 0, 10_000 * UNITS, eur(10_000), 0, 0, 0, T_1400) },
+        Script::Order { t: T_1400, intent: order(setl8_verify::intents::IntentKind::Limit, 0, 0, 10_000 * UNITS, ASK, 0, 0, 0, T_1400) },
         Script::Sample { market: 0, t: T_1400 + 10, mid: eur(10_000) },
         Script::Sample { market: 0, t: T_1400 + 20, mid: eur(10_001) },
         Script::Heartbeat { t: T_1400 + 20 },
@@ -169,9 +217,12 @@ fn a_triggered_pending_order_the_cap_refuses_must_not_fill_and_a_fill_is_the_dis
     // under a cap of $5,000 the evaluator refuses the order: its Fill is an execution that must not exist ...
     let r = with_rules(&b, "\"max_notional_usd\":1000000000000000", "\"max_notional_usd\":5000000000");
     assert_eq!(r.classes(), vec![C::FillNotAllowed], "{:#?}", r.findings);
-    // ... and under a cap of exactly $10,000 it is fine
-    let r = with_rules(&b, "\"max_notional_usd\":1000000000000000", "\"max_notional_usd\":10000000000");
+    // ... and under a cap of exactly its notional at the fill price, 1e10 units x 1_000_001_000_000 / 1e12 = 10_000_010_000, it
+    // is fine, one micro-USD less is not
+    let r = with_rules(&b, "\"max_notional_usd\":1000000000000000", "\"max_notional_usd\":10000010000");
     assert_eq!(r.classes(), Vec::<C>::new(), "{:#?}", r.findings);
+    let r = with_rules(&b, "\"max_notional_usd\":1000000000000000", "\"max_notional_usd\":10000009999");
+    assert_eq!(r.classes(), vec![C::FillNotAllowed], "{:#?}", r.findings);
     // the honest evaluator that refused it leaves no Fill and the verifier does not ask for one
     let mut honest = b.clone();
     let fill = honest.find(|e| matches!(e, E::Fill { .. }));
@@ -230,11 +281,11 @@ fn a_market_fill_on_a_held_account_is_refused_from_the_second_of_the_hold_until_
 
 #[test]
 fn a_triggered_pending_order_on_a_held_account_is_expected_not_to_fill() {
-    // a limit buy that triggers at T+10 and T+30 (the ask is at its level then, above it at T+20); the generator fills it at
-    // T+10 (it has no hold); the evaluator that held the account refused it and left it pending
+    // a limit buy at the level ASK (the ask of mid 1.0) that triggers at T+10 and T+30 (the ask is at its level then, above it
+    // at T+20); the generator fills it at T+10 (it has no hold); the evaluator that held the account refused it and left it pending
     let b = Gen::new(flat_spec()).run(&[
         Script::Sample { market: 0, t: T_1400, mid: eur(10_010) },
-        Script::Order { t: T_1400, intent: order(setl8_verify::intents::IntentKind::Limit, 0, 0, 100 * UNITS, eur(10_000), 0, 0, 0, T_1400) },
+        Script::Order { t: T_1400, intent: order(setl8_verify::intents::IntentKind::Limit, 0, 0, 100 * UNITS, ASK, 0, 0, 0, T_1400) },
         Script::Sample { market: 0, t: T_1400 + 10, mid: eur(10_000) },
         Script::Sample { market: 0, t: T_1400 + 20, mid: eur(10_001) },
         Script::Sample { market: 0, t: T_1400 + 30, mid: eur(10_000) },
@@ -318,50 +369,62 @@ fn hold_lines_that_the_program_could_not_have_emitted_are_state_mismatches() {
 
 #[test]
 fn the_side_of_a_fill_decides_whether_it_adds_or_reduces_and_a_short_is_judged_like_a_long() {
-    // long 4 M EUR, then a market BUY of 1 M (exactly the rest of the margin) is fine, 1 M + one step is not
+    // long 40 M EUR at the ask, then a market BUY of 10 M (exactly the rest of the margin of 50 M, see FULL_LONG_USD: the
+    // merged position is 5e13 units at the ask, the same numbers as the first test) is fine, 10 M + one step is not
     let add = |more: u64| {
-        Gen::new(flat_spec()).run(&[
+        Gen::new(sized(FULL_LONG_USD)).run(&[
             Script::Sample { market: 0, t: T_1400, mid: eur(10_000) },
-            Script::Order { t: T_1400, intent: market_order(0, true, 4_000_000 * UNITS, T_1400) },
+            Script::Order { t: T_1400, intent: market_order(0, true, 40_000_000 * UNITS, T_1400) },
             Script::Sample { market: 0, t: T_1400 + 10, mid: eur(10_000) },
             Script::Order { t: T_1400 + 10, intent: market_order(0, true, more, T_1400 + 10) },
             Script::Heartbeat { t: T_1400 + 10 },
         ])
     };
-    assert_eq!(classes_of(&add(1_000_000 * UNITS)), Vec::<C>::new());
-    assert_eq!(classes_of(&add(1_000_000 * UNITS + 1_000)), vec![C::FillWithoutMargin]);
-    // a short of exactly the whole margin, and one step more
+    assert_eq!(classes_of(&add(10_000_000 * UNITS)), Vec::<C>::new());
+    assert_eq!(classes_of(&add(10_000_000 * UNITS + 1_000)), vec![C::FillWithoutMargin]);
+    // a short of exactly the whole margin (50 M EUR at the bid, marked at the ask: FULL_SHORT_USD), and one step more (margin
+    // +20, open loss +1: 21 micro-USD short)
     let short = |qty: u64| {
-        Gen::new(flat_spec()).run(&[
+        Gen::new(sized(FULL_SHORT_USD)).run(&[
             Script::Sample { market: 0, t: T_1400, mid: eur(10_000) },
             Script::Order { t: T_1400, intent: market_order(0, false, qty, T_1400) },
             Script::Heartbeat { t: T_1400 },
         ])
     };
-    assert_eq!(classes_of(&short(5_000_000 * UNITS)), Vec::<C>::new());
-    assert_eq!(classes_of(&short(5_000_000 * UNITS + 1_000)), vec![C::FillWithoutMargin]);
+    assert_eq!(classes_of(&short(50_000_000 * UNITS)), Vec::<C>::new());
+    assert_eq!(classes_of(&short(50_000_000 * UNITS + 1_000)), vec![C::FillWithoutMargin]);
 }
 
 #[test]
 fn a_flip_is_judged_before_its_closing_slice_so_the_closing_commission_is_not_yet_paid() {
-    // 0.01% commission. Long 4 M EUR at 1.0 (fee $400, B = 99,600), then a market sell of 4 M + N EUR at 1.0. The evaluator checks
-    // the whole order BEFORE it books the closing slice and its fee: 99,600 - 2 x 0.0001 N - N / 50 >= 0, N up to 4,930,693 EUR.
-    // After the closing fee B would be 99,200 and N would have to stay under 4,910,891: the verifier must use the first.
+    // 0.01% commission (100 e6) of margin_micro(qty, price, 1). Long 4 M EUR at the ask (fee ceil(4_000_004_000_000 x 1e-4) =
+    // 400_000_400, B = 99_599_999_600), then a market sell of 4 M + r units at the same mid. The evaluator checks the whole order
+    // BEFORE it books the closing slice and its fee: the slice at the bid makes 4e12 x -2_000_000 / 1e12 = -8_000_000, so
+    // equity = 99_591_999_600 - open loss of the short (r x 2e-6, marked at the ask) - the reserve for closing it (1e-4 of r at the
+    // ask) - the fill commission (1e-4 of r at the bid) and the margin is r x 0.999999 / 50. At r = 4_929_813_790_000 units:
+    // 99_591_999_600 - 9_859_628 - 492_981_872 - 492_980_887 = 98_596_177_213 against a margin of 98_596_177_204 (9 micro-USD
+    // to spare); the next step is 12 short. After the closing fee (399_999_600) B would be lower and r would have to stay under
+    // 4_910_013_770_000 (17 to spare, the next step 4 short): the verifier must use the first. The third case below sits between the two
+    // limits.
     let mut spec = flat_spec();
     spec.commission[0] = 100;
-    let flip = |n: u64| {
+    let flip = |r: u64| {
         Gen::new(spec.clone()).run(&[
             Script::Sample { market: 0, t: T_1400, mid: eur(10_000) },
             Script::Order { t: T_1400, intent: market_order(0, true, 4_000_000 * UNITS, T_1400) },
             Script::Sample { market: 0, t: T_1400 + 100, mid: eur(10_000) },
-            Script::Order { t: T_1400 + 100, intent: market_order(0, false, (4_000_000 + n) * UNITS, T_1400 + 100) },
+            Script::Order { t: T_1400 + 100, intent: market_order(0, false, 4_000_000 * UNITS + r, T_1400 + 100) },
             Script::Heartbeat { t: T_1400 + 100 },
         ])
     };
-    let ok = flip(4_920_000);
+    let ok = flip(4_929_813_790_000);
     assert_eq!(classes_of(&ok), Vec::<C>::new(), "{:#?}", verify(&ok).findings);
-    let over = flip(4_931_000);
+    let over = flip(4_929_813_791_000);
     assert_eq!(classes_of(&over), vec![C::FillWithoutMargin], "{:#?}", verify(&over).findings);
+    // 4,920,000 EUR is over the limit that would apply if the closing fee were paid first (4,910,013.77 EUR), so it passes only
+    // if the verifier judges before the closing slice
+    let between = flip(4_920_000 * UNITS);
+    assert_eq!(classes_of(&between), Vec::<C>::new(), "{:#?}", verify(&between).findings);
 }
 
 #[test]
