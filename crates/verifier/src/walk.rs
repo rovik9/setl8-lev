@@ -32,10 +32,64 @@ use crate::finding::FindingClass;
 use crate::intents::{IntentKind, OrderIntent};
 use crate::replay::{Ctx, FloorKind, Pos, Replay};
 
-/// The margin verdict for a triggered pending order.
+/// Why the evaluator refuses an order that opens or adds exposure, as far as the verifier can reproduce it (M9c, B1 and B2).
+/// The order is the evaluator's own (`exec_trade`): lock, market status, the quantity of a flip's remainder, the number of
+/// open positions, the notional cap of the position the order leaves behind, and the margin. The hold comes from the
+/// `account_held` / `hold_released` lines of the log (an indexer's lines, dated with the block time).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The account is held (`account_held` line without a `hold_released` before the second).
+    Held,
+    /// `time < lock_until` (the 12 h breach lock).
+    Locked,
+    /// The market is disabled or reduce-only (`status != 1`).
+    NotTradable,
+    /// The quantity opened is not a multiple of the market's step or below its minimum (the whole order of a market fill, the
+    /// remainder of a flip).
+    Quantity,
+    /// Eight positions are open already and the order would open a ninth market.
+    TooManyPositions,
+    /// The position the order leaves behind is above the market's `max_notional_usd` (compared in micro-USD, as the evaluator does).
+    NotionalCap,
+    /// `b' + P' - closing commission - this fill's commission` is below the margin of the positions it leaves.
+    Margin,
+}
+
+impl Refusal {
+    pub fn describe(self) -> &'static str {
+        match self {
+            Refusal::Held => "an exposure increase on a held account",
+            Refusal::Locked => "an exposure increase during the breach lock",
+            Refusal::NotTradable => "an exposure increase in a market that is disabled or reduce-only",
+            Refusal::Quantity => "a quantity off the market's step or below its minimum",
+            Refusal::TooManyPositions => "a ninth open position",
+            Refusal::NotionalCap => "a position above the market's notional cap",
+            Refusal::Margin => "a position the account cannot margin",
+        }
+    }
+}
+
+/// Which of the evaluator's checks `open_refusal` runs.
+#[derive(Clone, Copy, Debug)]
+struct Check {
+    /// The breach lock (a pending order is not triggered while locked, the walk has already left it out).
+    lock: bool,
+    /// The quantity of the order itself (a pending order was validated when it was placed; a market order is judged here).
+    whole_qty: bool,
+}
+
+impl Check {
+    const PENDING: Check = Check { lock: false, whole_qty: false };
+    const MARKET: Check = Check { lock: true, whole_qty: true };
+}
+
+/// The evaluator's cap on simultaneously open positions (`evaluator::config::MAX_POSITIONS`); the program does not enforce it.
+pub const MAX_POSITIONS: usize = 8;
+
+/// The verdict for a triggered pending order.
 enum Sim {
-    /// The account cannot margin it: it stays pending and no event is expected.
-    Refused,
+    /// The evaluator refuses it for a reason the verifier reproduces: it stays pending and no event is expected.
+    Refused(Refusal),
     /// It fills; the simulated account afterwards, and whether the phase ended (the quick limit) on the way.
     Accepted(AccountState, BTreeMap<u16, Pos>, bool),
     /// Something did not compute: fall back to "it fills" (the pre-M9b expectation).
@@ -83,8 +137,10 @@ pub struct Walker {
     /// Pending orders the samples of the second being walked trigger: (market, nonce) -> (price, sample index). Judged for
     /// margin when the second is complete (`resolve_second`).
     cand: BTreeMap<(u16, u32), (u64, usize)>,
-    /// (second, market, nonce) of triggered pending orders refused for margin: the order stays pending, no event expected.
-    refused: Vec<(i64, u16, u32)>,
+    /// (second, market, nonce, reason) of triggered pending orders the evaluator refuses: the order stays pending, no event expected.
+    refused: Vec<(i64, u16, u32, Refusal)>,
+    /// For every sample walked so far (by archive index): the second its market's price last changed, as of that sample.
+    lc_at: Vec<i64>,
     /// (second, nonce) of a pending flip whose `Close` was seen: its opening `Fill` is the other half, not a second execution.
     flip_open: HashSet<(i64, u32)>,
 }
@@ -111,7 +167,7 @@ impl Walker {
 
     pub fn new(pending: Vec<(u32, OrderIntent)>, cancels: Vec<(i64, u32)>, mut sltp: Vec<(i64, OrderIntent)>) -> Walker {
         sltp.sort_by_key(|(t, _)| *t);
-        Walker { cursor: 0, marks: BTreeMap::new(), last_change: BTreeMap::new(), last_value: BTreeMap::new(), exp: vec![], filled: HashSet::new(), pending, cancels, sltp, sltp_cursor: 0, cand: BTreeMap::new(), refused: vec![], flip_open: HashSet::new() }
+        Walker { cursor: 0, marks: BTreeMap::new(), last_change: BTreeMap::new(), last_value: BTreeMap::new(), exp: vec![], filled: HashSet::new(), pending, cancels, sltp, sltp_cursor: 0, cand: BTreeMap::new(), refused: vec![], lc_at: Vec::new(), flip_open: HashSet::new() }
     }
 }
 
@@ -176,7 +232,7 @@ impl<'a> Replay<'a> {
     }
 
     fn expire(&mut self, w: &mut Walker, upto: i64, prev_seq: u64) {
-        w.refused.retain(|(s, _, _)| *s >= upto);
+        w.refused.retain(|(s, _, _, _)| *s >= upto);
         w.flip_open.retain(|(s, _)| *s >= upto);
         let old = std::mem::take(&mut w.exp);
         for e in old {
@@ -207,6 +263,7 @@ impl<'a> Replay<'a> {
             w.last_change.insert(m, sec);
         }
         w.last_value.insert(m, s.value);
+        w.lc_at.push(w.last_change.get(&m).copied().unwrap_or(sec));
         if self.terminal {
             return;
         }
@@ -422,7 +479,7 @@ impl<'a> Replay<'a> {
                 break;
             }
             match self.sim_pending(w, &st, &pos, m, nonce, price, si, sec) {
-                Sim::Refused => w.refused.push((sec, m, nonce)),
+                Sim::Refused(why) => w.refused.push((sec, m, nonce, why)),
                 Sim::Accepted(st2, pos2, over) => {
                     w.push(Expect { sec, kind: ExpKind::Pending(m, nonce, price), market: m, sample: si });
                     st = st2;
@@ -458,6 +515,92 @@ impl<'a> Replay<'a> {
         Some(false)
     }
 
+    /// The evaluator's checks for an order that opens or adds exposure (`exec_trade`, in its order), as far as the verifier
+    /// can reproduce them. `order_qty` is the whole order; if it is against an open position of this market the first
+    /// `|position|` of it only closes (a flip), the rest opens. `Err(())`: something did not compute (no mark, overflow).
+    ///
+    /// 0. `Held`: the log holds the account at this second.
+    /// 1. `Locked` (`check.lock`): `time < lock_until`. A pending order never gets here locked (the walk does not trigger it).
+    /// 2. `NotTradable`: the market is not enabled (disabled or reduce-only).
+    /// 3. `Quantity`: the quantity opened (the whole order of a plain open, the remainder of a flip) or, for a market order
+    ///    (`check.whole_qty`), the whole order is off the step or below the minimum.
+    /// 4. `TooManyPositions`: a new market while `MAX_POSITIONS` are open.
+    /// 5. `NotionalCap`: the position left behind is above `max_notional_usd`.
+    /// 6. `Margin`: `b' + P' - closing commission - this fill's commission >= sum of margins` over the positions it leaves,
+    ///    with the order's own sample as its market's mark and the walk's marks for the others (DESIGN 7.3, decision 27).
+    #[allow(clippy::too_many_arguments)]
+    fn open_refusal(
+        &self,
+        w: &Walker,
+        st: &AccountState,
+        pos: &BTreeMap<u16, Pos>,
+        market: u16,
+        long: bool,
+        order_qty: u64,
+        price: u64,
+        (bid, ask): (u64, u64),
+        sec: i64,
+        check: Check,
+    ) -> Result<Option<Refusal>, ()> {
+        let side = if long { engine::Side::Buy } else { engine::Side::Sell };
+        let existing = pos.get(&market).copied();
+        let (close_qty, open_qty) = match existing {
+            Some(p) if p.p.qty.is_positive() != long => {
+                let c = order_qty.min(p.p.qty.unsigned_abs());
+                (c, order_qty.saturating_sub(c))
+            }
+            _ => (0, order_qty),
+        };
+        if open_qty == 0 {
+            return Ok(None);
+        }
+        let mk = self.rules.markets.get(&market).ok_or(())?;
+        if self.held_at(sec) {
+            return Ok(Some(Refusal::Held));
+        }
+        if check.lock && !engine::can_increase_exposure(st, sec) {
+            return Ok(Some(Refusal::Locked));
+        }
+        if mk.status != 1 {
+            return Ok(Some(Refusal::NotTradable));
+        }
+        let bad = |q: u64| engine::validate_quantity(q, mk.qty_step, mk.qty_min).is_err();
+        if bad(open_qty) || (check.whole_qty && bad(order_qty)) {
+            return Ok(Some(Refusal::Quantity));
+        }
+        if existing.is_none() && pos.len() >= MAX_POSITIONS {
+            return Ok(Some(Refusal::TooManyPositions));
+        }
+        let day = engine::day_index(sec);
+        let mut b_after = st.b;
+        let mut base = existing.map(|p| p.p);
+        if close_qty > 0 {
+            let o = engine::apply_fill(base, side, close_qty, price, sec, day).map_err(|_| ())?;
+            b_after = b_after.checked_add(o.balance_delta).ok_or(())?;
+            base = o.position;
+        }
+        let o = engine::apply_fill(base, side, open_qty, price, sec, day).map_err(|_| ())?;
+        let np = o.position.ok_or(())?;
+        let mut after = pos.clone();
+        after.insert(market, Pos { p: np, sl: 0, tp: 0 });
+        let notional = engine::units::notional_micro(np.qty.unsigned_abs(), np.avg_entry_e12).map_err(|_| ())?;
+        if notional > i128::from(mk.max_notional_usd) {
+            return Ok(Some(Refusal::NotionalCap));
+        }
+        let (p_open, comm) = self.profit_for(w, &after, Some((market, bid, ask))).ok_or(())?;
+        let fill_comm = self.commission_of(market, open_qty, price).ok_or(())?;
+        let equity = i128::from(b_after) + i128::from(p_open) - i128::from(comm) - i128::from(fill_comm);
+        let mut used: i128 = 0;
+        for (m, p) in &after {
+            let lev = self.rules.class_of(*m).and_then(|c| self.rules.leverage_x.get(c).copied()).ok_or(())?;
+            used += i128::from(engine::margin_micro(p.p.qty.unsigned_abs(), p.p.avg_entry_e12, lev).map_err(|_| ())?);
+        }
+        if equity - used < 0 {
+            return Ok(Some(Refusal::Margin));
+        }
+        Ok(None)
+    }
+
     /// The evaluator's check for a triggered limit or stop order (DESIGN 7.3, decision 27): net the order into the position,
     /// then `b' + P' - closing commission - this fill's commission >= sum of margins` over the positions it leaves behind,
     /// with the trigger sample as the order's market's mark. Pure reduces skip the check.
@@ -477,29 +620,10 @@ impl<'a> Replay<'a> {
         let day = engine::day_index(sec);
         if open_qty > 0 {
             let Some((bid, ask)) = self.bid_ask_of_sample(si) else { return Sim::Unknown };
-            let mut b_after = st.b;
-            let mut base = existing.map(|p| p.p);
-            if close_qty > 0 {
-                let Ok(o) = engine::apply_fill(base, side, close_qty, price, sec, day) else { return Sim::Unknown };
-                let Some(b) = b_after.checked_add(o.balance_delta) else { return Sim::Unknown };
-                b_after = b;
-                base = o.position;
-            }
-            let Ok(o) = engine::apply_fill(base, side, open_qty, price, sec, day) else { return Sim::Unknown };
-            let Some(np) = o.position else { return Sim::Unknown };
-            let mut after = pos.clone();
-            after.insert(market, Pos { p: np, sl: 0, tp: 0 });
-            let Some((p_open, comm)) = self.profit_for(w, &after, Some((market, bid, ask))) else { return Sim::Unknown };
-            let Some(fill_comm) = self.commission_of(market, open_qty, price) else { return Sim::Unknown };
-            let equity = i128::from(b_after) + i128::from(p_open) - i128::from(comm) - i128::from(fill_comm);
-            let mut used: i128 = 0;
-            for (m, p) in &after {
-                let Some(lev) = self.rules.class_of(*m).and_then(|c| self.rules.leverage_x.get(c).copied()) else { return Sim::Unknown };
-                let Ok(mg) = engine::margin_micro(p.p.qty.unsigned_abs(), p.p.avg_entry_e12, lev) else { return Sim::Unknown };
-                used += i128::from(mg);
-            }
-            if equity - used < 0 {
-                return Sim::Refused;
+            match self.open_refusal(w, st, pos, market, long, it.qty, price, (bid, ask), sec, Check::PENDING) {
+                Ok(Some(why)) => return Sim::Refused(why),
+                Ok(None) => {}
+                Err(()) => return Sim::Unknown,
             }
         }
         // execution on the simulated account
@@ -522,6 +646,106 @@ impl<'a> Replay<'a> {
             st2 = d.state;
         }
         Sim::Accepted(st2, pos2, false)
+    }
+
+    // ------------------------------------------------------------------ M9c: the execution of a MARKET order
+
+    /// The trader's signed intent behind `nonce`, if it decodes.
+    fn intent_of(&self, nonce: u32) -> Option<OrderIntent> {
+        self.intents.get(nonce).and_then(|(_, l)| l.intent.clone().ok())
+    }
+
+    /// Whether `market` is closed at second `sec` as the sample `si` (the order's own sample) saw it: outside its session
+    /// windows, or no price change within `max_age_secs` (decision 49). `None` when the walk has not reached the sample.
+    fn market_closed(&self, w: &Walker, market: u16, sec: i64, si: usize) -> Option<bool> {
+        let mk = self.rules.markets.get(&market)?;
+        let last = *w.lc_at.get(si)?;
+        let count = u8::try_from(mk.sessions.len()).unwrap_or(u8::MAX);
+        Some(!market_open(&mk.sessions, count, sec, last, u32::from(mk.max_age_secs)))
+    }
+
+    /// B1 and B2 for the events of a market order that opens or adds exposure (a plain `Fill`, or the `Close{Flip}` that starts
+    /// a flip, judged before the close because the evaluator judges the whole order first): the market is open, and
+    /// `open_refusal` finds nothing. The account is the one the journal has left before this event, which is the state the
+    /// evaluator had when it ran the order (every change of state is an event). A margin shortfall is `FillWithoutMargin`,
+    /// the other reasons `FillNotAllowed`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn check_market_order(&mut self, ctx: Ctx, market: u16, long: bool, order_qty: u64, price: u64, time: i64) {
+        let Some(w) = self.walk.take() else { return };
+        let verdict = (|| {
+            let si = self.last_proof_si?;
+            let s = self.arch.samples.get(si)?;
+            let bid_ask = crate::replay::mid_pair(s.mid_e12()?, self.rules.spread(market))?;
+            if self.market_closed(&w, market, time, si) == Some(true) {
+                return Some(Some(None));
+            }
+            match self.open_refusal(&w, &self.st, &self.positions, market, long, order_qty, price, bid_ask, time, Check::MARKET) {
+                Ok(Some(why)) => Some(Some(Some(why))),
+                _ => Some(None),
+            }
+        })();
+        self.walk = Some(w);
+        match verdict {
+            Some(Some(None)) => self.f.add(
+                FindingClass::FillNotAllowed,
+                ctx,
+                "no execution: the market is closed (outside its sessions, or no price change within max_age_secs)",
+                format!("a market order executed in market {market}"),
+                "the evaluator refuses a market order in a closed market",
+            ),
+            Some(Some(Some(Refusal::Margin))) => self.f.add(
+                FindingClass::FillWithoutMargin,
+                ctx,
+                "no execution: the account cannot margin this order",
+                format!("a market order of {order_qty} executed in market {market}"),
+                "a market order was executed although `b + P - commissions` does not cover the margin of the position it leaves",
+            ),
+            Some(Some(Some(why))) => self.f.add(
+                FindingClass::FillNotAllowed,
+                ctx,
+                format!("no execution: {} is refused", why.describe()),
+                format!("a market order of {order_qty} executed in market {market}"),
+                format!("a market order was executed although the evaluator's own rules refuse it ({})", why.describe()),
+            ),
+            _ => {}
+        }
+    }
+
+    /// B2 for a market order that only reduces (a `Close{Manual}` under a market or close intent): the market must be open, and
+    /// a quantity the trader named (`order_qty`, 0 = all) must be on the step and at least the minimum.
+    pub fn check_market_close(&mut self, ctx: Ctx, market: u16, time: i64, order_qty: u64) {
+        let Some(w) = self.walk.take() else { return };
+        let closed = self.last_proof_si.and_then(|si| self.market_closed(&w, market, time, si));
+        self.walk = Some(w);
+        if closed == Some(true) {
+            self.f.add(
+                FindingClass::FillNotAllowed,
+                ctx,
+                "no execution: the market is closed (outside its sessions, or no price change within max_age_secs)",
+                format!("a market close executed in market {market}"),
+                "the evaluator refuses a market order in a closed market",
+            );
+            return;
+        }
+        let off = order_qty != 0 && self.rules.markets.get(&market).is_some_and(|mk| engine::validate_quantity(order_qty, mk.qty_step, mk.qty_min).is_err());
+        if off {
+            self.f.add(
+                FindingClass::FillNotAllowed,
+                ctx,
+                format!("no execution: {} is refused", Refusal::Quantity.describe()),
+                format!("a market close of {order_qty} units in market {market}"),
+                format!("an order was executed although the evaluator's own rules refuse it ({})", Refusal::Quantity.describe()),
+            );
+        }
+    }
+
+    /// The nonce of a market order and its intent, if `intent` is the signed intent of a MARKET or CLOSE order of `market`.
+    pub fn market_intent(&self, intent: u32, market: u16) -> Option<OrderIntent> {
+        if intent == 0 {
+            return None;
+        }
+        let it = self.intent_of(intent)?;
+        (it.market == market && matches!(it.kind, IntentKind::Market | IntentKind::Close)).then_some(it)
     }
 
     // ------------------------------------------------------------------ consumption at journal events
@@ -547,15 +771,25 @@ impl<'a> Replay<'a> {
                 w.exp.remove(i);
             }
             None => {
-                if let Some(r) = w.refused.iter().position(|(s, m, n)| *s == ctx.time && *m == market && *n == intent) {
-                    w.refused.remove(r);
-                    self.f.add(
-                        FindingClass::PendingFillWithoutMargin,
-                        ctx,
-                        "no execution: the account cannot margin this pending order, it stays pending",
-                        what.to_string(),
-                        "a pending order was executed although `b + P - commissions` does not cover the margin of the position it leaves",
-                    );
+                if let Some(r) = w.refused.iter().position(|(s, m, n, _)| *s == ctx.time && *m == market && *n == intent) {
+                    let (_, _, _, why) = w.refused.remove(r);
+                    if why == Refusal::Margin {
+                        self.f.add(
+                            FindingClass::PendingFillWithoutMargin,
+                            ctx,
+                            "no execution: the account cannot margin this pending order, it stays pending",
+                            what.to_string(),
+                            "a pending order was executed although `b + P - commissions` does not cover the margin of the position it leaves",
+                        );
+                    } else {
+                        self.f.add(
+                            FindingClass::FillNotAllowed,
+                            ctx,
+                            format!("no execution: {} is refused, the order stays pending", why.describe()),
+                            what.to_string(),
+                            format!("a pending order was executed although the evaluator's own rules refuse it ({})", why.describe()),
+                        );
+                    }
                 } else {
                     self.f.add(FindingClass::TriggerFalse, ctx, "a pending order the samples trigger at this second", what.to_string(), "the execution of a pending order that no sample of this second triggers");
                 }
@@ -925,8 +1159,8 @@ mod margin_tests {
         format!(
             r#"{{"version":1,"ruleset_version":1,"fee_bps":40,"leverage_x":[50,20,20,20,10,5,5,2],"holding_fee_e6":[0,0,0,0,0,0,0,0],
 "commission_e6":[{commission_e6},0,0,0,0,0,0,0],"tier_sizes":[100000000000],"spread_e6":{{"0":0,"1":0}},
-"markets":[{{"id":0,"class":0,"feed_id":"{feed}","max_age_secs":60,"status":1,"qty_step":1000,"qty_min":1000000,"max_notional_usd":5,"sessions":[[0,10080]]}},
-{{"id":1,"class":0,"feed_id":"{feed1}","max_age_secs":60,"status":1,"qty_step":1000,"qty_min":1000000,"max_notional_usd":5,"sessions":[[0,10080]]}}]}}"#
+"markets":[{{"id":0,"class":0,"feed_id":"{feed}","max_age_secs":60,"status":1,"qty_step":1000,"qty_min":1000000,"max_notional_usd":1000000000000000,"sessions":[[0,10080]]}},
+{{"id":1,"class":0,"feed_id":"{feed1}","max_age_secs":60,"status":1,"qty_step":1000,"qty_min":1000000,"max_notional_usd":1000000000000000,"sessions":[[0,10080]]}}]}}"#
         )
     }
 
@@ -1155,7 +1389,7 @@ mod margin_tests {
     fn a_refused_execution_is_matched_on_second_market_and_nonce() {
         with(0, &[smp(0, ONE)], |rp| {
             let mut w = Walker::new(vec![pending(1, 0, 0, 1)], vec![], vec![]);
-            w.refused.push((T0, 0, 1));
+            w.refused.push((T0, 0, 1, Refusal::Margin));
             rp.walk = Some(w);
             let at = |sec: i64| Ctx { seq: Some(3), idx: Some(2), time: sec };
             // other nonce, other market, other second: each is a TriggerFalse and the refusal stays
@@ -1167,6 +1401,492 @@ mod margin_tests {
             rp.walk_fill(at(T0), 0, OrderKind::Limit, 1);
             assert_eq!(rp.f.list.last().map(|f| f.class), Some(FindingClass::PendingFillWithoutMargin));
             assert_eq!(rp.f.list.len(), 4);
+        });
+    }
+}
+
+/// M9c (B1, B2, B3): the evaluator's own refusals, recomputed for the execution of MARKET orders and for triggered pending
+/// orders. Numbers: S = $100,000, class 0 leverage 50, spread 0, price 1.0 (1 EUR is 1e6 qty units, so a quantity in units is
+/// also its notional in micro-USD). Every check has its boundary pair.
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+    use crate::archive::{Archive, ArchiveWriter, Sample};
+    use crate::intents::{header_line, IntentFile};
+    use crate::log::OpenedRec;
+    use crate::replay::tests::T0;
+    use crate::rules::Rules;
+    use engine::Position;
+    use journal_types::{genesis_hash, NativeSha256};
+
+    const EUR: u64 = 1_000_000;
+    const ONE: u64 = 1_000_000_000_000;
+    const S: i64 = 100_000_000_000;
+
+    /// Rules with `n` markets (ids 0 to n-1, class 0, spread 0): `status` / `qty_step` / `qty_min` / `cap` / `sessions` of the
+    /// first one are the parameters, the others are ordinary.
+    fn rules_json(commission_e6: u32, n: u16, status: u8, qty_step: u64, qty_min: u64, cap: u64, sessions: &str) -> String {
+        let mut markets = Vec::new();
+        for id in 0..n {
+            let feed = crate::hexutil::encode(&[7 + id as u8; 32]);
+            let (st, step, min, cp, ses) = if id == 0 { (status, qty_step, qty_min, cap, sessions.to_string()) } else { (1, 1_000, 1_000_000, 1_000_000_000_000_000, "[[0,10080]]".to_string()) };
+            markets.push(format!(r#"{{"id":{id},"class":0,"feed_id":"{feed}","max_age_secs":60,"status":{st},"qty_step":{step},"qty_min":{min},"max_notional_usd":{cp},"sessions":{ses}}}"#));
+        }
+        let spreads: Vec<String> = (0..n).map(|id| format!(r#""{id}":0"#)).collect();
+        format!(
+            r#"{{"version":1,"ruleset_version":1,"fee_bps":40,"leverage_x":[50,20,20,20,10,5,5,2],"holding_fee_e6":[0,0,0,0,0,0,0,0],
+"commission_e6":[{commission_e6},0,0,0,0,0,0,0],"tier_sizes":[100000000000],"spread_e6":{{{}}},"markets":[{}]}}"#,
+            spreads.join(","),
+            markets.join(",")
+        )
+    }
+
+    fn smp(market: u16, mid: u64) -> Sample {
+        let ts_ns = u64::try_from(T0).unwrap() * 1_000_000_000;
+        Sample { market, source: 2, recv_ns: ts_ns, ts_ns, value: i128::from(mid) * 1_000_000, digest: [0; 32] }
+    }
+
+    struct P {
+        commission_e6: u32,
+        n: u16,
+        status: u8,
+        qty_step: u64,
+        qty_min: u64,
+        cap: u64,
+        sessions: &'static str,
+    }
+
+    impl P {
+        fn new() -> P {
+            P { commission_e6: 0, n: 2, status: 1, qty_step: 1_000, qty_min: 1_000_000, cap: 1_000_000_000_000_000, sessions: "[[0,10080]]" }
+        }
+    }
+
+    /// A replay over one sample per market (at price 1.0, second T0) with a walker that has walked them all.
+    fn with(p: &P, f: impl FnOnce(&mut Replay)) {
+        let rules = Rules::parse(rules_json(p.commission_e6, p.n, p.status, p.qty_step, p.qty_min, p.cap, p.sessions).as_bytes()).unwrap();
+        let mut aw = ArchiveWriter::new();
+        for m in 0..p.n {
+            aw.push(&smp(m, ONE));
+        }
+        let arch = Archive::parse(&aw.into_bytes()).unwrap();
+        let intents = IntentFile::parse(header_line().as_bytes()).unwrap();
+        let account = [1u8; 32];
+        let opened = OpenedRec {
+            account,
+            trader: [2; 32],
+            challenge_id: 0,
+            size_s: 100_000_000_000,
+            tier_index: 8,
+            phase: 2,
+            ruleset_version: 1,
+            genesis_hash: genesis_hash(&NativeSha256, &account),
+            time: T0 - 3_600,
+        };
+        let mut rp = Replay::new(&rules, &arch, &intents, opened, "primary", Default::default(), Default::default()).unwrap();
+        let mut w = Walker::new(vec![], vec![], vec![]);
+        for m in 0..p.n {
+            w.marks.insert(m, usize::from(m));
+            w.lc_at.push(T0);
+        }
+        rp.walk = Some(w);
+        f(&mut rp);
+    }
+
+    fn ctx() -> Ctx {
+        Ctx { seq: Some(5), idx: Some(1), time: T0 }
+    }
+
+    fn long(market_qty_eur: u64, avg: u64) -> Pos {
+        Pos { p: Position { qty: i64::try_from(market_qty_eur * EUR).unwrap(), avg_entry_e12: avg, timer_start: T0 - 1_000, opened_at: T0 - 1_000, fee_day: engine::day_index(T0) }, sl: 0, tp: 0 }
+    }
+
+    /// Judges a market order of `qty` units on market 0 at price 1.0 with the proof sample 0; returns the classes it reports.
+    fn judge(rp: &mut Replay, long: bool, qty: u64) -> Vec<FindingClass> {
+        rp.last_proof_si = Some(0);
+        rp.check_market_order(ctx(), 0, long, qty, ONE, T0);
+        rp.f.list.iter().map(|f| f.class).collect()
+    }
+
+    #[test]
+    fn the_whole_margin_is_enough_one_micro_usd_less_is_not() {
+        // 5,000,000 EUR is $5M of notional: margin exactly $100,000 = S
+        with(&P::new(), |rp| assert_eq!(judge(rp, true, 5_000_000 * EUR), vec![]));
+        // one micro-USD short: the closed balance is S - 1
+        with(&P::new(), |rp| {
+            rp.st.b = S - 1;
+            assert_eq!(judge(rp, true, 5_000_000 * EUR), vec![FindingClass::FillWithoutMargin]);
+        });
+        // one micro-USD of room more than needed is fine; one step (1,000 units = 20 micro-USD of margin) more is short
+        with(&P::new(), |rp| {
+            rp.st.b = S + 20;
+            assert_eq!(judge(rp, true, 5_000_000 * EUR + 1_000), vec![]);
+        });
+        with(&P::new(), |rp| {
+            rp.st.b = S + 19;
+            assert_eq!(judge(rp, true, 5_000_000 * EUR + 1_000), vec![FindingClass::FillWithoutMargin]);
+        });
+        // the finding names the order
+        with(&P::new(), |rp| {
+            judge(rp, false, 5_001_000 * EUR);
+            assert_eq!(rp.f.list.len(), 1);
+            assert_eq!((rp.f.list[0].seq, rp.f.list[0].event_index), (Some(5), Some(1)));
+        });
+    }
+
+    #[test]
+    fn both_commissions_are_charged_for_a_market_order() {
+        // 0.1%: equity = S - 2 x 0.001 N, margin N / 50: N at most 4,545,454.5 EUR; steps of 1,000 units
+        for (n, ok) in [(4_545_000u64, true), (4_546_000, false)] {
+            with(&P { commission_e6: 1_000, ..P::new() }, |rp| {
+                let c = judge(rp, true, n * EUR);
+                assert_eq!(c.is_empty(), ok, "{n} EUR: {c:?}");
+            });
+        }
+    }
+
+    #[test]
+    fn open_profit_of_the_other_markets_counts_at_the_walks_marks() {
+        // long 1 M EUR in market 0 at 1.0 now marked at 1.01 (+$10,000, margin $20,000); a market order in market 1
+        // (sample 1 at 1.0) of N EUR: 110,000 - 20,000 - N / 50 >= 0, N at most 4.5 M EUR
+        for (n, ok) in [(4_500_000u64, true), (4_501_000, false)] {
+            let rules = Rules::parse(rules_json(0, 2, 1, 1_000, 1_000_000, 1_000_000_000_000_000, "[[0,10080]]").as_bytes()).unwrap();
+            let mut aw = ArchiveWriter::new();
+            aw.push(&smp(0, 1_010_000_000_000));
+            aw.push(&smp(1, ONE));
+            let arch = Archive::parse(&aw.into_bytes()).unwrap();
+            let intents = IntentFile::parse(header_line().as_bytes()).unwrap();
+            let account = [1u8; 32];
+            let opened = OpenedRec { account, trader: [2; 32], challenge_id: 0, size_s: 100_000_000_000, tier_index: 8, phase: 2, ruleset_version: 1, genesis_hash: genesis_hash(&NativeSha256, &account), time: T0 - 3_600 };
+            let mut rp = Replay::new(&rules, &arch, &intents, opened, "primary", Default::default(), Default::default()).unwrap();
+            let mut w = Walker::new(vec![], vec![], vec![]);
+            w.marks.insert(0, 0);
+            w.marks.insert(1, 1);
+            w.lc_at = vec![T0, T0];
+            rp.walk = Some(w);
+            rp.positions.insert(0, long(1_000_000, ONE));
+            rp.last_proof_si = Some(1);
+            rp.check_market_order(ctx(), 1, true, n * EUR, ONE, T0);
+            assert_eq!(rp.f.list.is_empty(), ok, "{n} EUR");
+        }
+    }
+
+    #[test]
+    fn a_flip_is_judged_as_a_whole_before_its_closing_slice() {
+        // long 4 M EUR at 1.0, mark 1.0: a market sell of 9 M EUR closes the 4 M and opens a short of 5 M ($100,000 of margin):
+        // exactly enough. One step more is short.
+        with(&P::new(), |rp| {
+            rp.positions.insert(0, long(4_000_000, ONE));
+            assert_eq!(judge(rp, false, 9_000_000 * EUR), vec![]);
+        });
+        with(&P::new(), |rp| {
+            rp.positions.insert(0, long(4_000_000, ONE));
+            assert_eq!(judge(rp, false, 9_000_000 * EUR + 1_000), vec![FindingClass::FillWithoutMargin]);
+        });
+    }
+
+    #[test]
+    fn an_order_that_only_reduces_needs_nothing() {
+        // the account is far under water and the market is reduce-only: a sell of part of the long position is fine
+        with(&P { status: 2, ..P::new() }, |rp| {
+            rp.positions.insert(0, long(4_000_000, ONE));
+            rp.st.b = 1_000_000;
+            assert_eq!(judge(rp, false, 1_000_000 * EUR), vec![]);
+        });
+    }
+
+    #[test]
+    fn the_lock_blocks_an_exposure_increase_exactly_until_lock_until() {
+        with(&P::new(), |rp| {
+            rp.st.lock_until = T0;
+            assert_eq!(judge(rp, true, 10 * EUR), vec![], "the lock ends at lock_until");
+        });
+        with(&P::new(), |rp| {
+            rp.st.lock_until = T0 + 1;
+            assert_eq!(judge(rp, true, 10 * EUR), vec![FindingClass::FillNotAllowed]);
+            assert!(rp.f.list[0].expected.contains("breach lock"), "{:?}", rp.f.list[0]);
+        });
+    }
+
+    #[test]
+    fn a_disabled_or_reduce_only_market_takes_no_new_exposure() {
+        for (status, ok) in [(1u8, true), (2, false), (0, false)] {
+            with(&P { status, ..P::new() }, |rp| {
+                let c = judge(rp, true, 10 * EUR);
+                assert_eq!(c.is_empty(), ok, "status {status}: {c:?}");
+                if !ok {
+                    assert!(rp.f.list[0].expected.contains("disabled or reduce-only"));
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn the_quantity_must_be_on_the_step_and_at_least_the_minimum() {
+        // step 1,000 units, minimum 1,000,000 units
+        for (qty, ok) in [(1_000_000u64, true), (1_001_000, true), (999_000, false), (1_000_500, false), (1_000_001, false)] {
+            with(&P::new(), |rp| {
+                let c = judge(rp, true, qty);
+                assert_eq!(c.is_empty(), ok, "{qty} units: {c:?}");
+            });
+        }
+    }
+
+    #[test]
+    fn the_remainder_of_a_flip_is_judged_on_step_and_minimum() {
+        // long 1 M EUR; a market sell of 1,000,000 + r units flips with a remainder of r units
+        for (r, ok) in [(1_000_000u64, true), (999_000, false), (1_000, false), (1_000_500, false)] {
+            with(&P::new(), |rp| {
+                rp.positions.insert(0, long(1_000_000, ONE));
+                let c = judge(rp, false, 1_000_000 * EUR + r);
+                assert_eq!(c.is_empty(), ok, "remainder {r}: {c:?}");
+            });
+        }
+    }
+
+    #[test]
+    fn a_position_may_not_exceed_the_markets_notional_cap() {
+        // cap $5,000 = 5,000,000,000 micro-USD: a notional of exactly the cap is fine
+        let p = P { cap: 5_000_000_000, ..P::new() };
+        with(&p, |rp| assert_eq!(judge(rp, true, 5_000_000_000), vec![]));
+        with(&p, |rp| assert_eq!(judge(rp, true, 5_000_001_000), vec![FindingClass::FillNotAllowed]));
+        // the position left behind counts, not the order: 4,000 EUR held + 1,001 EUR bought is 5,001 EUR
+        with(&p, |rp| {
+            rp.positions.insert(0, long(4_000, ONE));
+            assert_eq!(judge(rp, true, 1_000 * EUR), vec![]);
+        });
+        with(&p, |rp| {
+            rp.positions.insert(0, long(4_000, ONE));
+            assert_eq!(judge(rp, true, 1_001 * EUR), vec![FindingClass::FillNotAllowed]);
+        });
+    }
+
+    #[test]
+    fn the_ninth_position_is_refused_and_an_add_to_an_open_market_is_not() {
+        // markets 0 to 9; positions of 1 EUR in markets 1 to 8 (eight), a buy in market 0 would be the ninth
+        let p = P { n: 10, ..P::new() };
+        with(&p, |rp| {
+            for m in 1..=8u16 {
+                rp.positions.insert(m, long(1, ONE));
+            }
+            assert_eq!(judge(rp, true, 10 * EUR), vec![FindingClass::FillNotAllowed]);
+        });
+        // seven positions: the eighth is fine
+        with(&p, |rp| {
+            for m in 1..=7u16 {
+                rp.positions.insert(m, long(1, ONE));
+            }
+            assert_eq!(judge(rp, true, 10 * EUR), vec![]);
+        });
+        // eight positions and an add to one of them
+        with(&p, |rp| {
+            for m in 0..=7u16 {
+                rp.positions.insert(m, long(1, ONE));
+            }
+            assert_eq!(judge(rp, true, 10 * EUR), vec![]);
+        });
+    }
+
+    #[test]
+    fn a_market_order_in_a_closed_market_is_refused_for_both_reasons_a_market_is_closed() {
+        // outside the session windows (Monday 00:00-00:10 only; T0 is later in the week)
+        with(&P { sessions: "[[0,10]]", ..P::new() }, |rp| {
+            assert_eq!(judge(rp, true, 10 * EUR), vec![FindingClass::FillNotAllowed]);
+            assert!(rp.f.list[0].expected.contains("closed"), "{:?}", rp.f.list[0]);
+        });
+        // no price change within max_age_secs (60): the price last changed at T0 - 61 / T0 - 60 as of the order's sample
+        for (last, ok) in [(T0 - 60, true), (T0 - 61, false)] {
+            with(&P::new(), |rp| {
+                rp.walk.as_mut().unwrap().lc_at[0] = last;
+                let c = judge(rp, true, 10 * EUR);
+                assert_eq!(c.is_empty(), ok, "last change {last}: {c:?}");
+            });
+        }
+        // a close of a position in a closed market is refused too, an open one is fine
+        with(&P { sessions: "[[0,10]]", ..P::new() }, |rp| {
+            rp.last_proof_si = Some(0);
+            rp.check_market_close(ctx(), 0, T0, 0);
+            assert_eq!(rp.f.list.iter().map(|f| f.class).collect::<Vec<_>>(), vec![FindingClass::FillNotAllowed]);
+        });
+        with(&P::new(), |rp| {
+            rp.last_proof_si = Some(0);
+            rp.check_market_close(ctx(), 0, T0, 0);
+            assert!(rp.f.list.is_empty());
+        });
+        // the quantity the trader named: on the step and at least the minimum (0 = all)
+        for (qty, ok) in [(0u64, true), (1_000_000, true), (1_001_000, true), (999_000, false), (1_000_500, false)] {
+            with(&P::new(), |rp| {
+                rp.last_proof_si = Some(0);
+                rp.check_market_close(ctx(), 0, T0, qty);
+                assert_eq!(rp.f.list.is_empty(), ok, "close of {qty} units");
+            });
+        }
+        with(&P::new(), |rp| {
+            // a flip's total quantity is validated as well as its remainder: 1.5 M EUR + 500 units against a 1 M EUR long
+            rp.positions.insert(0, long(1_000_000, ONE));
+            assert_eq!(judge(rp, false, 1_000_000 * EUR + 1_500_500), vec![FindingClass::FillNotAllowed]);
+        });
+    }
+
+    #[test]
+    fn nothing_is_judged_without_a_walker_a_proof_sample_or_a_mark() {
+        // no walker (the archive walk did not run): silent
+        with(&P::new(), |rp| {
+            rp.walk = None;
+            assert_eq!(judge(rp, true, 5_001_000 * EUR), vec![]);
+        });
+        // the proof did not resolve to a sample
+        with(&P::new(), |rp| {
+            rp.last_proof_si = None;
+            rp.check_market_order(ctx(), 0, true, 5_001_000 * EUR, ONE, T0);
+            assert!(rp.f.list.is_empty());
+        });
+        // a position in a market nobody can price: the check cannot compute and says nothing
+        with(&P::new(), |rp| {
+            rp.positions.insert(1, long(1, ONE));
+            rp.walk.as_mut().unwrap().marks.remove(&1);
+            assert_eq!(judge(rp, true, 5_001_000 * EUR), vec![]);
+        });
+    }
+
+    // ---- the same reasons for a triggered pending order: it stays pending and no event is expected
+
+    fn pending(nonce: u32, qty_units: u64, side: u8) -> (u32, OrderIntent) {
+        (nonce, OrderIntent { kind: IntentKind::Limit, market: 0, side, qty: qty_units, price_e12: ONE, sl_e12: 0, tp_e12: 0, target_nonce: 0, client_time: T0 - 10 })
+    }
+
+    fn resolve(rp: &mut Replay, order: (u32, OrderIntent)) -> Walker {
+        let mut w = Walker::new(vec![order], vec![], vec![]);
+        for m in 0..2u16 {
+            w.marks.insert(m, usize::from(m));
+            w.lc_at.push(T0);
+        }
+        w.cand.insert((0, order.0), (ONE, 0));
+        rp.resolve_second(&mut w, T0);
+        w
+    }
+
+    fn outcome(w: &Walker) -> (Vec<u32>, Vec<(u32, Refusal)>) {
+        let exp = w.exp.iter().filter_map(|e| if let ExpKind::Pending(_, n, _) = e.kind { Some(n) } else { None }).collect();
+        (exp, w.refused.iter().map(|r| (r.2, r.3)).collect())
+    }
+
+    #[test]
+    fn a_triggered_pending_order_the_evaluator_refuses_for_a_reproducible_reason_is_expected_not_to_fill() {
+        // notional cap: the position left behind
+        let capped = P { cap: 5_000_000_000, ..P::new() };
+        with(&capped, |rp| {
+            rp.positions.insert(0, long(4_000, ONE));
+            let w = resolve(rp, pending(1, 1_000 * EUR, 0));
+            assert_eq!(outcome(&w), (vec![1], vec![]), "5,000 EUR is the cap exactly");
+        });
+        with(&capped, |rp| {
+            rp.positions.insert(0, long(4_000, ONE));
+            let w = resolve(rp, pending(1, 1_001 * EUR, 0));
+            assert_eq!(outcome(&w), (vec![], vec![(1, Refusal::NotionalCap)]));
+        });
+        // the quantity left over by a flip: minimum 1,000,000 units
+        with(&P::new(), |rp| {
+            rp.positions.insert(0, long(1_000_000, ONE));
+            let w = resolve(rp, pending(1, 1_000_000 * EUR + 1_000_000, 1));
+            assert_eq!(outcome(&w), (vec![1], vec![]), "a remainder of exactly the minimum fills");
+        });
+        with(&P::new(), |rp| {
+            rp.positions.insert(0, long(1_000_000, ONE));
+            let w = resolve(rp, pending(1, 1_000_000 * EUR + 999_000, 1));
+            assert_eq!(outcome(&w), (vec![], vec![(1, Refusal::Quantity)]));
+        });
+        // a disabled or reduce-only market
+        with(&P { status: 2, ..P::new() }, |rp| {
+            let w = resolve(rp, pending(1, 10 * EUR, 0));
+            assert_eq!(outcome(&w), (vec![], vec![(1, Refusal::NotTradable)]));
+        });
+        // ... but a reduce in a reduce-only market is fine
+        with(&P { status: 2, ..P::new() }, |rp| {
+            rp.positions.insert(0, long(1_000_000, ONE));
+            let w = resolve(rp, pending(1, 500_000 * EUR, 1));
+            assert_eq!(outcome(&w), (vec![1], vec![]));
+        });
+        // the ninth position
+        let nine = P { n: 10, ..P::new() };
+        with(&nine, |rp| {
+            for m in 1..=8u16 {
+                rp.positions.insert(m, long(1, ONE));
+            }
+            let mut w = Walker::new(vec![pending(1, 10 * EUR, 0)], vec![], vec![]);
+            for m in 0..10u16 {
+                w.marks.insert(m, usize::from(m));
+                w.lc_at.push(T0);
+            }
+            w.cand.insert((0, 1), (ONE, 0));
+            rp.resolve_second(&mut w, T0);
+            assert_eq!(outcome(&w), (vec![], vec![(1, Refusal::TooManyPositions)]));
+        });
+    }
+
+    #[test]
+    fn an_exposure_increase_of_an_invalid_quantity_is_refused_for_a_pending_order_too_but_a_pure_reduce_is_not_judged() {
+        // a pending order the evaluator would never have accepted (1,000,500 units on a step of 1,000): not expected to fill
+        with(&P::new(), |rp| {
+            let w = resolve(rp, pending(1, 1_000_000 + 500, 0));
+            assert_eq!(outcome(&w), (vec![], vec![(1, Refusal::Quantity)]));
+        });
+        // ... while a pending order that only reduces is not a quantity check (its quantity is not an exposure increase)
+        with(&P::new(), |rp| {
+            rp.positions.insert(0, long(1_000_000, ONE));
+            let w = resolve(rp, pending(1, 500_500_000, 1));
+            assert_eq!(outcome(&w), (vec![1], vec![]));
+        });
+    }
+
+    #[test]
+    fn a_flip_the_first_order_of_a_second_makes_changes_the_account_the_second_order_sees() {
+        // long 4 M EUR at 1.0, market 0 marked at 1.01 (+$40,000 open profit). Order 1 sells 5 M EUR at 1.01: it closes the long
+        // (+$40,000 realized, B = 140,000) and opens a short of 1 M EUR (margin 20,200). Order 2 buys N EUR in market 1 at 1.0:
+        // 140,000 - 20,200 - N / 50 >= 0 means N up to 5,990,000; without the credit it would be 4,000,000 at most.
+        let sample = |m: u16, mid: u64| smp(m, mid);
+        for (n, ok) in [(5_900_000u64, true), (6_100_000, false)] {
+            let rules = Rules::parse(rules_json(0, 2, 1, 1_000, 1_000_000, 1_000_000_000_000_000, "[[0,10080]]").as_bytes()).unwrap();
+            let mut aw = ArchiveWriter::new();
+            aw.push(&sample(0, 1_010_000_000_000));
+            aw.push(&sample(1, ONE));
+            let arch = Archive::parse(&aw.into_bytes()).unwrap();
+            let intents = IntentFile::parse(header_line().as_bytes()).unwrap();
+            let account = [1u8; 32];
+            let opened = OpenedRec { account, trader: [2; 32], challenge_id: 0, size_s: 100_000_000_000, tier_index: 8, phase: 2, ruleset_version: 1, genesis_hash: genesis_hash(&NativeSha256, &account), time: T0 - 3_600 };
+            let mut rp = Replay::new(&rules, &arch, &intents, opened, "primary", Default::default(), Default::default()).unwrap();
+            rp.positions.insert(0, long(4_000_000, ONE));
+            let o1 = (1u32, OrderIntent { kind: IntentKind::Limit, market: 0, side: 1, qty: 5_000_000 * EUR, price_e12: 1_010_000_000_000, sl_e12: 0, tp_e12: 0, target_nonce: 0, client_time: T0 - 10 });
+            let o2 = (2u32, OrderIntent { kind: IntentKind::Limit, market: 1, side: 0, qty: n * EUR, price_e12: ONE, sl_e12: 0, tp_e12: 0, target_nonce: 0, client_time: T0 - 10 });
+            let mut w = Walker::new(vec![o1, o2], vec![], vec![]);
+            w.marks.insert(0, 0);
+            w.marks.insert(1, 1);
+            w.lc_at = vec![T0, T0];
+            w.cand.insert((0, 1), (1_010_000_000_000, 0));
+            w.cand.insert((1, 2), (ONE, 1));
+            rp.resolve_second(&mut w, T0);
+            let (exp, refused) = outcome(&w);
+            assert!(exp.contains(&1), "the flip itself fits");
+            assert_eq!(exp.contains(&2), ok, "{n} EUR: expected {exp:?} refused {refused:?}");
+        }
+    }
+
+    #[test]
+    fn the_fill_of_a_refused_pending_order_is_a_fill_not_allowed_and_a_margin_one_stays_pending_without_margin() {
+        let capped = P { cap: 5_000_000_000, ..P::new() };
+        with(&capped, |rp| {
+            rp.positions.insert(0, long(4_000, ONE));
+            let w = resolve(rp, pending(1, 1_001 * EUR, 0));
+            rp.walk = Some(w);
+            rp.walk_fill(Ctx { seq: Some(3), idx: Some(2), time: T0 }, 0, OrderKind::Limit, 1);
+            assert_eq!(rp.f.list.iter().map(|f| f.class).collect::<Vec<_>>(), vec![FindingClass::FillNotAllowed]);
+        });
+        with(&P::new(), |rp| {
+            let w = resolve(rp, pending(1, 5_001_000 * EUR, 0));
+            assert_eq!(outcome(&w), (vec![], vec![(1, Refusal::Margin)]));
+            rp.walk = Some(w);
+            rp.walk_fill(Ctx { seq: Some(3), idx: Some(2), time: T0 }, 0, OrderKind::Limit, 1);
+            assert_eq!(rp.f.list.iter().map(|f| f.class).collect::<Vec<_>>(), vec![FindingClass::PendingFillWithoutMargin]);
         });
     }
 }

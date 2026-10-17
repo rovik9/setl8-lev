@@ -490,11 +490,12 @@ fn a_flat_stored_flag_that_disagrees_makes_the_pass_not_flat() {
 
 #[test]
 fn a_failed_phase_cannot_pass() {
-    // 4,700,000 EUR, a quick profit of about 16,000: credited about 8,000 (>= 1.08 S) but above the quick limit
+    // 4,600,000 EUR (margin about 99,360 of the 99,850 the account has: M9c judges the margin of every fill), a quick profit of
+    // about 16,200: credited about 8,100 (>= 1.08 S) but above the quick limit
     let spec = Spec::base();
     let mut script = vec![
         Script::Sample { market: 0, t: T_1400, mid: eur(10_800) },
-        Script::Order { t: T_1400, intent: market_order(0, true, 4_700_000_000_000, T_1400) },
+        Script::Order { t: T_1400, intent: market_order(0, true, 4_600_000_000_000, T_1400) },
         Script::Sample { market: 0, t: T_1400 + 20, mid: eur(10_836) },
         Script::Order { t: T_1400 + 20, intent: order(IntentKind::Close, 0, 0, 0, 0, 0, 0, 0, T_1400 + 20) },
     ];

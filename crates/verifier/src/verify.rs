@@ -135,7 +135,7 @@ pub fn run(p: &Parsed, as_of: Option<u64>) -> Report {
 pub const ARCHIVE_TOLERANCE_E12: u64 = 0;
 
 /// The classes the second recorder can add: what the walk finds on the second archive.
-const WALK_CLASSES: [FindingClass; 11] = [
+const WALK_CLASSES: [FindingClass; 13] = [
     FindingClass::MissedBreach,
     FindingClass::MissedFail,
     FindingClass::FalseBreach,
@@ -147,6 +147,8 @@ const WALK_CLASSES: [FindingClass; 11] = [
     FindingClass::TriggerMissed,
     FindingClass::TriggerFalse,
     FindingClass::PendingFillWithoutMargin,
+    FindingClass::FillWithoutMargin,
+    FindingClass::FillNotAllowed,
 ];
 
 /// DESIGN 4.5 / 13.2 "dropped sample": replays the walk on the second archive and reports (a) the samples the two archives
@@ -240,6 +242,8 @@ pub fn drive(rp: &mut Replay, lines: &[LineAt], as_of: Option<u64>) {
                 rp.terminal = true;
             }
             Line::ViolationFail { .. } => rp.terminal = true,
+            Line::Held { time } => rp.on_hold(ctx, *time, true),
+            Line::HoldReleased { time } => rp.on_hold(ctx, *time, false),
             Line::Unknown { type_name } => rp.f.add(FindingClass::UnknownEvent, ctx, "a known line type", type_name.clone(), "unknown line type in the event log"),
         }
     }

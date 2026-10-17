@@ -2,7 +2,8 @@
 //!
 //! Line 1 is the header `{"type":"header","format":"setl8-lev-events","version":1}`. Every other line has a `"type"`:
 //! `opened`, `event` (the default when `type` is absent), `pass_requested`, `pass_confirmed`, `pass_rejected`,
-//! `pass_vetoed`, `phase_advanced`, `pass_finalized`, `account_failed`, `violation_fail`. File order is chain order.
+//! `pass_vetoed`, `phase_advanced`, `pass_finalized`, `account_failed`, `violation_fail`, and (M9c) `account_held` /
+//! `hold_released`. File order is chain order.
 //! Hashes and raw bytes are lower-case hex; accounts and wallets are base58.
 use serde_json::Value;
 
@@ -38,6 +39,10 @@ pub enum Line {
     PassFinalized { phase: u8, to_phase: u8, amount: u64, request_id: u64, time: i64 },
     AccountFailed { reason: u8, b: i64, seq: u64, journal_hash: [u8; 32] },
     ViolationFail { evidence_hash: [u8; 32] },
+    /// M9c: `hold_account` / `release_hold` (the program's `AccountHeld` / `HoldReleased`), dated with the block time of the
+    /// transaction. From that second on the account is held (no exposure increase) / no longer held.
+    Held { time: i64 },
+    HoldReleased { time: i64 },
     /// A line whose `type` this version does not know.
     Unknown { type_name: String },
 }
@@ -125,6 +130,8 @@ fn parse_line(v: &Value) -> Result<(Option<[u8; 32]>, Line), String> {
         },
         "account_failed" => Line::AccountFailed { reason: u8f(v, "reason")?, b: i64f(v, "b")?, seq: u64f(v, "seq")?, journal_hash: hexf::<32>(v, "journal_hash")? },
         "violation_fail" => Line::ViolationFail { evidence_hash: hexf::<32>(v, "evidence_hash")? },
+        "account_held" => Line::Held { time: i64f(v, "time")? },
+        "hold_released" => Line::HoldReleased { time: i64f(v, "time")? },
         other => Line::Unknown { type_name: other.to_string() },
     };
     Ok((account, line))
@@ -171,6 +178,11 @@ pub fn event_line(account: &[u8; 32], seq: u64, event: &[u8], proof: &[u8], slot
         crate::hexutil::encode(event),
         crate::hexutil::encode(proof)
     )
+}
+
+/// The `account_held` / `hold_released` line of an indexer.
+pub fn hold_line(account: &[u8; 32], time: i64, held: bool) -> String {
+    format!("{{\"type\":\"{}\",\"account\":\"{}\",\"time\":{time}}}\n", if held { "account_held" } else { "hold_released" }, base58(account))
 }
 
 pub fn opened_line(o: &OpenedRec) -> String {

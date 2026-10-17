@@ -944,7 +944,8 @@ pub fn vector_files(b: &Bundle) -> Vec<(&'static str, Vec<u8>)> {
 /// Linear interpolation (integer) between waypoints `(second offset, value)`, with a 1-unit wobble so the price changes
 /// on every sample (a price that stands still for more than `max_age_secs` closes the market).
 pub fn path(points: &[(i64, u64)], k: i64) -> u64 {
-    let wobble = u64::from(k.rem_euclid(2) == 1) * 7;
+    // the samples are 10 s apart: alternate the wobble sample by sample (M9c judges the market state of every market order)
+    let wobble = u64::from((k / 10).rem_euclid(2) == 1) * 7;
     for w in points.windows(2) {
         let ((t0, v0), (t1, v1)) = (w[0], w[1]);
         if k >= t0 && k <= t1 {

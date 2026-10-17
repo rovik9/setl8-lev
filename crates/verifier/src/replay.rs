@@ -99,6 +99,12 @@ pub struct Replay<'a> {
     pub walk: Option<crate::walk::Walker>,
     /// The largest event or Meta time seen (the walk runs up to it).
     pub max_time: i64,
+    /// M9c: the intervals `[from, to)` in which the account was held (`to` is None while it still is).
+    holds: Vec<(i64, Option<i64>)>,
+    /// The archive index of the sample the last accepted price proof refers to (M9c: the market state a market order saw).
+    pub(crate) last_proof_si: Option<usize>,
+    /// (second, nonce) of a market flip whose margin was judged at its `Close{Flip}`: its opening `Fill` is the other half.
+    flip_checked: HashSet<(i64, u32)>,
 }
 
 /// Collects findings with the cap and the miss de-duplication.
@@ -219,6 +225,9 @@ impl<'a> Replay<'a> {
             quick_fail_due: false,
             walk: None,
             max_time: opened.time,
+            holds: Vec::new(),
+            last_proof_si: None,
+            flip_checked: HashSet::new(),
             opened,
         })
     }
@@ -325,6 +334,7 @@ impl<'a> Replay<'a> {
         // the proof must be a recorded sample
         match self.arch.find(mid, proof.timestamp_ns, proof.quantized_value) {
             Some(i) => {
+                self.last_proof_si = Some(i);
                 let s = self.arch.samples.get(i);
                 let digest_ok = match s {
                     Some(s) => s.source == proof.source && (proof.source != 3 || proof.signed_update.as_slice() == s.digest.as_slice()),
@@ -353,6 +363,7 @@ impl<'a> Replay<'a> {
     }
 
     fn proof_for(&mut self, ctx: Ctx, ev: &JournalEvent, proof: &Option<PriceProof>, market: Option<u16>, time: i64) -> Option<(u16, u64)> {
+        self.last_proof_si = None;
         match (ev.proof_ref(), proof) {
             (Some(p), Some(pr)) if p != journal_types::NO_PROOF => self.check_proof(ctx, pr, market, time),
             _ => {
@@ -687,6 +698,11 @@ impl<'a> Replay<'a> {
         }
         self.check_intent(ctx, intent, market, qty, time, IntentUse::Fill { side, order_kind: kind, sl, tp });
         self.walk_fill(ctx, market, kind, intent);
+        // M9c: a market order the evaluator's own rules refuse (margin, caps, status, lock, closed market). The opening half of
+        // a flip was judged with its `Close{Flip}`.
+        if kind == OrderKind::Market && priced.is_some() && !self.flip_checked.remove(&(time, intent)) {
+            self.check_market_order(ctx, market, side == Side::Long, qty, price, time);
+        }
         let existing = self.positions.get(&market).copied();
         let out = match engine::apply_fill(existing.map(|p| p.p), eside(side), qty, price, time, engine::day_index(time)) {
             Ok(o) => o,
@@ -738,6 +754,19 @@ impl<'a> Replay<'a> {
         }
         self.check_intent(ctx, intent, market, qty, time, IntentUse::Close { reason, position_side: side });
         self.walk_close(ctx, market, reason, intent, qty);
+        // M9c: the execution of a MARKET order that reduces or flips: the market must be open; a flip is judged as a whole
+        // here (the evaluator checks margin, caps and lock before it books the closing slice)
+        if priced.is_some() && matches!(reason, CloseReason::Manual | CloseReason::Flip) {
+            if let Some(it) = self.market_intent(intent, market) {
+                if reason == CloseReason::Flip {
+                    self.flip_checked.retain(|(t, _)| *t >= time);
+                    self.flip_checked.insert((time, intent));
+                    self.check_market_order(ctx, market, it.side == 0, it.qty, exit, time);
+                } else {
+                    self.check_market_close(ctx, market, time, it.qty);
+                }
+            }
+        }
         let Some(pos) = self.positions.get(&market).copied() else {
             self.f.add(FindingClass::PositionMismatch, ctx, "an open position in this market", "none", "Close without a position");
             return;
@@ -815,6 +844,31 @@ impl<'a> Replay<'a> {
             self.commission_expectation(market, qty, exit, time, "close");
         }
         self.bump_epoch();
+    }
+
+    /// M9c: `hold_account` / `release_hold`. A hold on a held account and a release of one that is not held are refused by the
+    /// program, so they are findings; a hold line after the account ended changes nothing.
+    pub fn on_hold(&mut self, ctx: Ctx, time: i64, held: bool) {
+        let open = self.holds.last().is_some_and(|(_, to)| to.is_none());
+        if held {
+            if open {
+                self.f.add(FindingClass::StateMismatch, ctx, "an account that is not held", "a second account_held line", "hold_account on an account that is already held");
+                return;
+            }
+            self.holds.push((time, None));
+        } else {
+            let Some(last) = self.holds.last_mut().filter(|(_, to)| to.is_none()) else {
+                self.f.add(FindingClass::StateMismatch, ctx, "a held account", "a hold_released line", "release_hold on an account that is not held");
+                return;
+            };
+            last.1 = Some(time);
+        }
+    }
+
+    /// Whether the account is held during second `sec`: from the second of the `account_held` line on, up to (excluding) the
+    /// second of the `hold_released` line.
+    pub fn held_at(&self, sec: i64) -> bool {
+        self.holds.iter().any(|(from, to)| sec >= *from && to.is_none_or(|t| sec < t))
     }
 
     fn on_fee(&mut self, ctx: Ctx, kind: FeeKind, market: u16, amount: u64, time: i64) {
