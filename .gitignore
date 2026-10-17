@@ -14,3 +14,7 @@ tools/hl-probe/target/
 
 # launch-config build output
 tools/launch-config/target/
+
+# session observer raw data and build output
+tools/session-observer/data/
+tools/session-observer/target/

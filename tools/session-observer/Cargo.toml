@@ -1,0 +1,24 @@
+[package]
+name = "session-observer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Long-running read-only measurement of the launch markets' sessions, breaks, gaps and cross-source offsets (handover/prompts/P20-session-observer.md). Not part of the program or the engine."
+
+# Standalone workspace (own Cargo.lock and target dir), same pattern as tools/gmx-probe and tools/hl-probe.
+[workspace]
+
+[lib]
+name = "session_observer"
+
+[[bin]]
+name = "session-observer"
+path = "src/main.rs"
+
+[dependencies]
+# pure helpers of the GMX probe (price conversion, ISO parsing, UTC dates, percentiles): reused, not copied
+gmx-probe = { path = "../gmx-probe" }
+ureq = "2"
+serde_json = "1"
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+ctrlc = { version = "3", features = ["termination"] }
