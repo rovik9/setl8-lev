@@ -166,7 +166,7 @@ Phase fails once Q > $2,800.
 ### 2.9 Prohibited conduct: coordinated hedging (decision 36, Rovik 2026-10-09)
 **Rule:** holding opposite positions in the SAME market across accounts or wallets controlled by one person or one group is not allowed.
 **Process:** (1) the backend detects it and **holds** the flagged accounts (`hold_account`): no new exposure, no pass request, confirmation or payout finalization for them until review; (2) both admins review the evidence;
-(3a) confirmed: both admins sign `fail_for_violation` for each flagged account (account Failed, vault `flag_trader_failed`, wallet banned) and, if needed, `ban_wallet` for linked wallets; no refund, no reset, no payout;
+(3a) confirmed: both admins sign `fail_for_violation` for each flagged account (account Failed, vault `flag_trader_failed`, wallet banned) and, if needed, `ban_wallet` for linked wallets; no refund, no reset, no payout (a violation-failed account carries a marker, `pass_pending = 3`, and `reset_account` refuses it for good with `ViolationNoReset` 6108, also after `unban_wallet`; decision 60);
 (3b) not confirmed: both admins `release_hold` and the account carries on exactly as it was.
 Correlated markets (EURUSD against GBPUSD) are NOT covered (Rovik's choice). The numeric thresholds (minimum size, time overlap, wallet-link evidence) are an evaluator policy to be written in the public terms. ASSUMPTION A-RULE-4 (OPEN_QUESTIONS #7).
 
@@ -394,7 +394,7 @@ Rent for a new `TradingAccount` (about $0.35 at an assumed $150/SOL; SOL price i
 | `phase` | u8 | 1 | 1 to 5 |
 | `latch` | u8 | 1 | static floor shifted to 0.96 S |
 | `flat` | u8 | 1 | evaluator's assertion after the last batch (I-12) |
-| `pass_pending` | u8 | 1 | 0 none, 1 requested by the trader and awaiting the evaluator, 2 confirmed and waiting out the delay |
+| `pass_pending` | u8 | 1 | 0 none, 1 requested by the trader and awaiting the evaluator, 2 confirmed and waiting out the delay, 3 = the violation marker (written only by `fail_for_violation` on the Failed account it ends; no pass state; decision 60) |
 | `vetoes` | u8 | 1 | count of vetoed passes (saturating) |
 | `bump` | u8 | 1 | |
 | `tight_on` | u8 | 1 | |
@@ -712,7 +712,7 @@ Increases only on `Paid`, checked arithmetic (fail on overflow), never decreased
 For scale: the largest single payout is $16,000 (0.08 x $200K), so any cap below that would block that tier; the largest sum of the vault cap per account is $64,000.
 
 ### 10.7 Veto (decision 33)
-`veto_pass` requires both admin signatures in one transaction and `pass_pending != 0`. It sets `pass_pending = 0`, increments `vetoes` (saturating), emits `PassVetoed{admin keys, slot}`. It never touches `b`, phase, payouts or the vault, and it cannot be used to confirm or finalize anything.
+`veto_pass` requires both admin signatures in one transaction and `pass_pending` 1 or 2 (the violation marker 3 of a failed account is not a pending pass and stays). It sets `pass_pending = 0`, increments `vetoes` (saturating), emits `PassVetoed{admin keys, slot}`. It never touches `b`, phase, payouts or the vault, and it cannot be used to confirm or finalize anything.
 The trader may press the button again. **What admins do after a veto (investigate, reset, ban) is policy, not code, and it is in tension with "no manual overrides"; see OPEN_QUESTIONS #8.** A veto can delay a trader indefinitely; the `vetoes` counter and event make that visible.
 
 ### 10.8 Vault pause (decision 25)
@@ -788,6 +788,7 @@ This costs fees (8.4) but no safety: every transaction extends the same hash cha
 | 6105 | `ResetPhaseOutOfRange` | `reset_account`: the failed phase is beyond the registered reset ladder |
 | 6106 | `ResetPriceOverflow` | `reset_account`: the reset price does not fit in a u64 |
 | 6107 | `AccountAlreadyReset` | `reset_account`: the previous account was already reset (`ResetNotAllowed` 6027 stays the error for an account that is not Failed) |
+| 6108 | `ViolationNoReset` | `reset_account`: the previous account was failed by `fail_for_violation` (DESIGN 2.9: no reset), checked before any CPI |
 
 ---
 

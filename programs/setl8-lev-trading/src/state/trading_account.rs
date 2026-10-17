@@ -104,6 +104,12 @@ impl TradingAccount {
         self.pass_requested_at
     }
 
+    /// Whether `fail_for_violation` ended this account (it leaves `PASS_VIOLATION` in `pass_pending`, which no other path
+    /// writes on a terminal account). Such an account is never resettable (DESIGN 2.9, decision 60).
+    pub fn violation_failed(&self) -> bool {
+        self.pass_pending == crate::constants::PASS_VIOLATION
+    }
+
     /// `terminal_at`: when the account became Failed, Abandoned or Graduated (M7, RESOLVE (b)). Stored in `pass_proposed_at`,
     /// which is meaningless once nothing can be pending; every transition into a terminal state sets it (`end_account`).
     pub fn terminal_at(&self) -> i64 {
@@ -355,6 +361,17 @@ mod tests {
         assert_eq!(a.reset_at(), 44);
         a.pass_requested_at = 0;
         assert_eq!(a.reset_at(), 0);
+    }
+
+    #[test]
+    fn violation_failed_is_exactly_pass_pending_3() {
+        let mut a = full();
+        for v in 0..=255u8 {
+            a.pass_pending = v;
+            assert_eq!(a.violation_failed(), v == 3, "{v}");
+        }
+        assert_eq!(crate::constants::PASS_VIOLATION, 3);
+        assert!(![crate::constants::PASS_NONE, crate::constants::PASS_REQUESTED, crate::constants::PASS_CONFIRMED].contains(&crate::constants::PASS_VIOLATION));
     }
 
     #[test]

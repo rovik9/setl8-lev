@@ -40,6 +40,7 @@ pub struct FailForViolation<'info> {
 
 /// Both admins; a non-zero evidence hash; `held == 1`. Failed + `terminal_at`, any pending pass cleared (also state 2),
 /// the hold cleared (`held_count - 1`), `flag_trader_failed`, `active_count - 1`, the wallet banned. Works while paused.
+/// The only writer of `PASS_VIOLATION` in `pass_pending` (the violation marker, decision 60).
 pub fn handle_fail_for_violation(ctx: Context<FailForViolation>, evidence_hash: [u8; 32]) -> Result<()> {
     require_both_admins(&ctx.accounts.config, &ctx.accounts.admin_a, &ctx.accounts.admin_b)?;
     require!(evidence_hash != [0u8; 32], Setl8Error::EvidenceMissing);
@@ -49,6 +50,8 @@ pub fn handle_fail_for_violation(ctx: Context<FailForViolation>, evidence_hash: 
     require!(flag(acct.held)?, Setl8Error::NotHeld);
     let (account_key, trader, challenge_id) = (acct.key(), acct.trader, acct.challenge_id);
     end_account(acct, &mut ctx.accounts.wallet, STATUS_FAILED, now)?;
+    // the marker: a violation-failed account is never resettable, banned wallet or not (decision 60)
+    acct.pass_pending = PASS_VIOLATION;
     ctx.accounts.wallet.banned = 1;
     flag_failed_cpi(
         &ctx.accounts.vault_program.to_account_info(),

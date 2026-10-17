@@ -464,7 +464,8 @@ fn fail_for_violation_clears_a_confirmed_pass_bans_the_wallet_and_fails_in_the_v
     }
     let m = w.ok(|w| w.violation(t + 2, hash(9)));
     let a = w.account();
-    assert_eq!((a.status, a.pass_pending, a.held), (c::STATUS_FAILED, 0, 0));
+    assert_eq!((a.status, a.pass_pending, a.held), (c::STATUS_FAILED, c::PASS_VIOLATION, 0));
+    assert!(a.violation_failed());
     assert_eq!(a.terminal_at(), t + 2);
     let wl = w.wallet_profile();
     assert_eq!((wl.banned, wl.active_count, wl.held_count), (1, 0, 0));

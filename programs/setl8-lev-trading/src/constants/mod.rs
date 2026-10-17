@@ -31,6 +31,9 @@ pub const EVENT_FUTURE_SKEW_SECS: i64 = 2;
 pub const PASS_NONE: u8 = 0;
 pub const PASS_REQUESTED: u8 = 1;
 pub const PASS_CONFIRMED: u8 = 2;
+/// Not a pending-pass state: the marker `fail_for_violation` (and nothing else) leaves on the Failed account it ends, so
+/// `reset_account` can refuse it for good (decision 60). Every reader that tests `pass_pending` only knows 0, 1 and 2.
+pub const PASS_VIOLATION: u8 = 3;
 
 /// `cancel_pass` is allowed this many seconds after the request (the evaluator never answered), DESIGN 6.2.
 pub const CANCEL_PASS_AFTER_SECS: i64 = 3_600;

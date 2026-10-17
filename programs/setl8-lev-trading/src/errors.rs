@@ -225,6 +225,8 @@ pub enum Setl8Error {
     ResetPriceOverflow,
     #[msg("the previous account was already reset")]
     AccountAlreadyReset,
+    #[msg("an account failed for a violation can never be reset")]
+    ViolationNoReset,
 }
 
 #[cfg(test)]
@@ -306,5 +308,6 @@ mod tests {
         assert_eq!(u32::from(Setl8Error::ResetPhaseOutOfRange), 6105);
         assert_eq!(u32::from(Setl8Error::ResetPriceOverflow), 6106);
         assert_eq!(u32::from(Setl8Error::AccountAlreadyReset), 6107);
+        assert_eq!(u32::from(Setl8Error::ViolationNoReset), 6108);
     }
 }

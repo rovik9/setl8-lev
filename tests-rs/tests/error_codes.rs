@@ -11,4 +11,5 @@ fn error_code_anchors_match_design_section_12() {
     assert_eq!(u32::from(Setl8Error::ResetPhaseOutOfRange), 6105);
     assert_eq!(u32::from(Setl8Error::ResetPriceOverflow), 6106);
     assert_eq!(u32::from(Setl8Error::AccountAlreadyReset), 6107);
+    assert_eq!(u32::from(Setl8Error::ViolationNoReset), 6108);
 }

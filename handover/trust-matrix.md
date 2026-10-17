@@ -12,7 +12,7 @@ An honest history is scripted (samples and signed orders), run through the refer
 
 Honest outputs of all ten base scenarios are accepted by both (`honest_outputs_are_accepted_by_both`).
 
-Summary (after M9c): BOTH 28, PROGRAM 3, VERIFIER 35, NEITHER 3, plus 4 chain-level PROGRAM rows and the 10 Reset (M8) rows below. M9c moved four rows: "fill in a closed session", "fill on a held account" and "fill during the 12 h lock after a breach" from PROGRAM to BOTH, and "a market fill the account cannot margin" from NEITHER to VERIFIER; it added "a market fill above the market's notional cap" (VERIFIER). Before that (M9b): BOTH 25, PROGRAM 6, VERIFIER 33, NEITHER 4. M9b (decisions D1 to D5 of design decision 53) added 14 rows: 5 BOTH, 8 VERIFIER, 1 NEITHER; the NEITHER row is NOT a row that moved: it is a limit the work on D3 made visible (below). No existing row changed class.
+Summary (after M9c): BOTH 28, PROGRAM 3, VERIFIER 35, NEITHER 3, plus 4 chain-level PROGRAM rows and the 11 Reset (M8) rows below. M9c moved four rows: "fill in a closed session", "fill on a held account" and "fill during the 12 h lock after a breach" from PROGRAM to BOTH, and "a market fill the account cannot margin" from NEITHER to VERIFIER; it added "a market fill above the market's notional cap" (VERIFIER). Before that (M9b): BOTH 25, PROGRAM 6, VERIFIER 33, NEITHER 4. M9b (decisions D1 to D5 of design decision 53) added 14 rows: 5 BOTH, 8 VERIFIER, 1 NEITHER; the NEITHER row is NOT a row that moved: it is a limit the work on D3 made visible (below). No existing row changed class.
 
 ## Caught by the program, and also by the verifier (BOTH)
 
@@ -128,12 +128,13 @@ Rows of `reset_account`, asserted in `tests-rs/tests/trust_reset.rs`. A reset ha
 | reset: a second reset of the same failed record | Program | AccountAlreadyReset (6107) | Before any CPI. |
 | reset: a second reset of the same failed record with the local mark wiped (the vault is the backstop) | Vault | ResetNotAllowed (6011) | Only reachable by editing the account, which no instruction does; shows the vault holds the line on its own. |
 | reset: by a banned wallet | Program | WalletBanned (6035) | |
+| reset: a violation-failed account after the wallet was unbanned (DESIGN 2.9: no reset) | Program | ViolationNoReset (6108) | P19 / decision 60. `fail_for_violation` leaves `pass_pending = 3` on the Failed account; `reset_account` refuses it before any CPI, banned wallet or not (while the ban lasts `WalletBanned` answers first). `report_fail`, Abandoned and Graduated never set it. |
 | reset: while the sector is paused | Program | Paused (6001) | |
 | reset: while the vault pauses this product | Vault | ProductNotActive | The whole transaction reverts, nothing is marked. |
 | reset into a higher phase: the new account copies the failed phase (there is no phase argument) | Program | phase = failed phase | For every phase 1 to 5 the new account's phase is the failed account's. The ladder entry the vault prices with is the failed phase minus one, so a wrong phase would also be a wrong price (WrongAmount). |
 | reset: an evaluator log that opens the new account in a higher phase than the chain's account | Verifier | StateMismatch | The `opened` line of the log says phase 4, the chain's account (the snapshot) says 3. The link between the failed account and its successor is the `AccountReset` event (previous account, phase); the verifier of one account does not follow it, an auditor compares `Opened.phase` with the last phase of the previous account's log. |
 
-Not a tamper class, but a policy point the matrix makes visible: a violation-failed account (`fail_for_violation`) can be reset once the wallet is unbanned, because nothing on the account records HOW it failed. While the ban lasts `reset_account` refuses it (`WalletBanned`). Rovik decides whether unbanning should also forbid the reset (it would need a marker on the account).
+A policy point that used to be open here is closed (P19, decision 60): a violation-failed account can no longer be reset once the wallet is unbanned; the row above is the proof. `unban_wallet` still lets the trader open NEW accounts (and reset accounts that failed normally); it never revives a failed one.
 
 ## Residual trust
 

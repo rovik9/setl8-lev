@@ -24,4 +24,4 @@ Values and checks that live outside the code; none is set by this repo. The per-
 - Evaluator operations, rent and fees, open policy items: see `module-7.md`.
 
 ## Still open (not decided by this change)
-- The 0.4% fee on top of resets (A-FEE-1; `reset_account` charges it with the same `ruleset.fee_bps` as `open_account`, one constant to change if it is dropped); whether a violation-failed account may be reset once the ban is lifted (M8 allows it, see `handover/module-8.md`); the reset price after a wrongful fail (OPEN_QUESTIONS #9); what admins do after a veto (#8); hedging thresholds (#7).
+- The 0.4% fee on top of resets (A-FEE-1; `reset_account` charges it with the same `ruleset.fee_bps` as `open_account`, one constant to change if it is dropped); the reset price after a wrongful fail (OPEN_QUESTIONS #9); what admins do after a veto (#8); hedging thresholds (#7).

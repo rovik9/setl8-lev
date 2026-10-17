@@ -131,6 +131,7 @@ Survivor: "report_fail: flat not set" removes `acct.flat = 1;`. It is equivalent
 6. `AccountFailed`, `AccountHeld`, `HoldReleased`, `ViolationFail` and the existing `AccountAbandoned` use `emit_cpi!`.
 7. `hold_account` is allowed in every `pass_pending` state; `close_account` never touches the wallet profile.
 8. The hardening of RESOLVE (d) checks only the final state of the batch.
+9. (P19, decision 60) `fail_for_violation` leaves `pass_pending = 3` (`PASS_VIOLATION`) on the account it fails, after `end_account` zeroed it: the one marker that tells `reset_account` HOW an account failed. The layout is unchanged (207 bytes). `report_fail`, the Abandoned mark and a graduation leave `pass_pending = 0`. `veto_pass` now needs `pass_pending` 1 or 2 (it used to need "not 0"; identical for every state the program writes, and the marker cannot be erased by a veto). The Active-account rule of every pass instruction is unchanged. Tests: `tests-rs/tests/violation_reset.rs`.
 
 ## Deploy checklist (values that live outside the code; none is set by this repo)
 - **Program id**: replace the placeholder `9NAdnJ7ySQqPYuPKu6d6wCbcaHHMnzwFT6xEcRfXX2a7` in `declare_id!` and `Anchor.toml` with the real keypair's id (generated locally, never printed or committed); register THAT id as the vault product.

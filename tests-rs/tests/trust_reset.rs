@@ -150,6 +150,24 @@ fn rows() -> Vec<Row> {
             },
         },
         Row {
+            name: "reset: a violation-failed account after the wallet was unbanned (DESIGN 2.9: no reset)",
+            who: Who::Program,
+            caught_by: "6108",
+            run: || {
+                let mut w = JEnv::new();
+                let t = w.t0 + 1_000;
+                w.ok(|w| w.hold(t, [1; 32]));
+                w.ok(|w| w.violation(t + 1, [2; 32]));
+                let tk = w.trader.pubkey();
+                let admins = Admins::both(&w.v.e);
+                assert_ok(w.v.e.send_admins(unban_wallet_ix(admins, tk), admins));
+                let before = w.pass_digest();
+                let r = w.reset(t + 100);
+                assert_eq!(w.pass_digest(), before);
+                code_of(&r)
+            },
+        },
+        Row {
             name: "reset: while the sector is paused",
             who: Who::Program,
             caught_by: "6001",
