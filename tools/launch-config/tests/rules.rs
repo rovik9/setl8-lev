@@ -306,6 +306,40 @@ fn an_unpriced_market_is_refused() {
     assert!(has(&check::numbers(&i, &l), "a half-spread is set for a market id that does not exist"));
 }
 
+/// Decision 64 (P21): a market with a half-spread of 0 in the rule set is untradable for every account of that version, so `verify`
+/// must refuse it for EVERY market id below `market_count`, not just for the ones a test happened to pick.
+#[test]
+fn the_unpriced_check_covers_every_market_id_below_market_count() {
+    let i = base();
+    let n = i.market.len();
+    assert_eq!(n, 21);
+    for k in 0..n {
+        let sym = &i.market[k].symbol;
+        let want = format!("{sym}: half-spread 0 in the rule set: an unpriced market");
+        // through the input: the market's own half-spread
+        let mut j = base();
+        j.market[k].half_spread_e6 = 0;
+        let v = all(&j, false);
+        assert_eq!(v.len(), 1, "id {k} ({sym}): exactly one violation, got {v:?}");
+        assert!(has(&v, &want), "id {k}: {v:?}");
+        // through the generated rule set: the entry `spread_e6[k]` (the array the chain gets)
+        let mut l = launch(&i);
+        assert!(l.ruleset.spread_e6[k] > 0, "id {k}");
+        l.ruleset.spread_e6[k] = 0;
+        let v = check::numbers(&i, &l);
+        assert_eq!(v.len(), 1, "id {k} ({sym}): {v:?}");
+        assert!(has(&v, &want), "id {k}: {v:?}");
+    }
+    // the entries at and above market_count are NOT markets: a non-zero one is the other violation, a zero one is fine
+    let l = launch(&i);
+    assert!(l.ruleset.spread_e6[n..].iter().all(|s| *s == 0));
+    assert!(check::numbers(&i, &l).is_empty());
+    // all of them at once: one violation per market, in id order
+    let mut j = base();
+    j.market.iter_mut().for_each(|m| m.half_spread_e6 = 0);
+    assert_eq!(all(&j, false).iter().filter(|v| v.contains("an unpriced market")).count(), n);
+}
+
 #[test]
 fn structural_errors_of_the_input() {
     let mut i = base();
@@ -455,7 +489,9 @@ fn the_markdown_carries_the_numbers_the_report_needs() {
     assert!(md().contains("| 9 | xyz:JP225 | JP225 (Nikkei 225) | 4 | 3 Indices | 40 |"));
     assert!(md().contains("| xyz:COIN | p95 | median 5.72 bp, p95 14.74 bp, freeze 24.349 s |"));
     assert!(md().contains("PLACEHOLDER-ADMIN-TUNABLE"));
-    assert!(md().contains("Adding a market after launch requires a new rule set version"));
+    assert!(md().contains("Adding a market after launch requires a NEW rule set version that prices it, and only NEW accounts"));
+    assert!(md().contains("`MarketUnpriced` (6109)"), "the unpriced-market consequence is stated with its error code");
+    assert!(md().contains("$200,000 x class leverage rounded down to 1-2-5"), "the cap basis (decision 64) is stated");
     assert!(md().contains("## VERIFY items"));
 }
 

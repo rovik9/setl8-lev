@@ -25,9 +25,9 @@ golive_p95_bp = 12.0
 # PLACEHOLDER-ADMIN-TUNABLE: quantity step = minimum = the smallest 1-2-5 quantity worth at least this many USD
 order_notional_usd = 10
 # PLACEHOLDER-ADMIN-TUNABLE: max_notional_usd = this account size x class leverage, rounded down to 1-2-5, within the ceilings.
-# NOTE: the instruction said "the 10K tier"; a cap from the 10K tier is far below what a 100K or 200K account may hold at its
-# class leverage (see launch.md). Raise this to 200000 to let the biggest tier use its full leverage.
-cap_basis_tier_usd = 10000
+# Decision 64 (P21): the basis is the BIGGEST tier ($200,000), so that tier can use its class leverage; the absolute ceilings below
+# still bind. (P19 started at the 10K tier, which capped a $200,000 account far below its leverage; see launch.md.)
+cap_basis_tier_usd = 200000
 cap_ceiling_usd = 5000000
 cap_ceiling_stock_usd = 500000
 

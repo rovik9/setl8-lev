@@ -27,14 +27,14 @@ CU = the worst case measured; bytes = the largest signed transaction; accounts =
 | `unban_wallet` | 6,075 | 469 | 6 | 3 | 1 | 7,000 | 540 | |
 | `open_account` | 135,595 | 838 | 20 | 2 | 3 | 156,000 | 970 | first account of a wallet, worst key |
 | `reset_account` | 158,200 | 911 | 22 | 2 | 3 | 182,000 | 1,050 | failed in phase 1, worst key |
-| `post_journal` | 125,263 | 1,181 | 14 | 1 | 2 | 144,100 | 1,232 | heaviest mix (CU); 3 proofs of source 3 and 8 markets (bytes) |
+| `post_journal` | 125,276 | 1,181 | 14 | 1 | 2 | 144,100 | 1,232 | heaviest mix (CU); 3 proofs of source 3 and 8 markets (bytes) |
 | `request_advance` | 45,937 | 539 | 11 | 2 | 2 | 52,900 | 620 | |
 | `cancel_pass` | 4,699 | 307 | 4 | 2 | 1 | 5,500 | 360 | |
 | `confirm_pass` | 23,971 | 374 | 6 | 2 | 2 | 27,600 | 440 | phase 2 to 5 (phase 1 starts phase 2 at once) |
 | `reject_pass` | 21,688 | 375 | 6 | 2 | 2 | 25,000 | 440 | |
 | `veto_pass` | 22,643 | 471 | 7 | 3 | 2 | 26,100 | 550 | |
 | `finalize_pass` | 84,594 | 671 | 15 | 2 | 3 | 97,300 | 780 | phase 2 to 5 (phase 5 graduates), worst key |
-| `report_fail` | 151,304 | 1,149 | 12 | 1 | 2 | 174,000 | 1,232 | 8 events, 3 proofs, source 3 (the 15 % would pass the byte limit; capped) |
+| `report_fail` | 151,317 | 1,149 | 12 | 1 | 2 | 174,000 | 1,232 | 8 events, 3 proofs, source 3 (the 15 % would pass the byte limit; capped) |
 | `hold_account` | 24,633 | 439 | 7 | 2 | 2 | 28,400 | 510 | |
 | `release_hold` | 24,600 | 504 | 8 | 3 | 2 | 28,300 | 580 | |
 | `fail_for_violation` | 44,035 | 668 | 12 | 3 | 2 | 50,700 | 770 | held account |
@@ -42,7 +42,7 @@ CU = the worst case measured; bytes = the largest signed transaction; accounts =
 | `release_account` | 52,151 | 539 | 11 | 2 | 2 | 60,000 | 620 | with the vault call, worst key |
 | `close_account` | 3,337 | 307 | 4 | 2 | 1 | 3,900 | 360 | |
 
-`post_journal` by shape, as the 300-path campaign saw it (CU / bytes): 1 event 31,208 / 440; 4 events 64,827 to 79,389 / 533 to 952; 7 events up to 116,654 / 1,055; the hand-built heaviest mix 125,263 CU; 3 proofs of source 3 with 8 markets 1,181 bytes. Source 3 costs 32 bytes more per proof (the digest) and about 100 to 1,000 CU more than sources 2 and 4. `report_fail` is `post_journal` plus the vault's `flag_trader_failed` call (+20,000 to +40,000) and 5 more fixed accounts.
+`post_journal` by shape, as the 300-path campaign saw it (CU / bytes): 1 event 31,208 / 440; 4 events 64,827 to 79,389 / 533 to 952; 7 events up to 116,654 / 1,055; the hand-built heaviest mix 125,276 CU; 3 proofs of source 3 with 8 markets 1,181 bytes. Source 3 costs 32 bytes more per proof (the digest) and about 100 to 1,000 CU more than sources 2 and 4. `report_fail` is `post_journal` plus the vault's `flag_trader_failed` call (+20,000 to +40,000) and 5 more fixed accounts.
 
 ## Compute-unit request per instruction
 
@@ -51,7 +51,7 @@ Every row is below the default of 200,000 units per instruction, so **no `SetCom
 ## Close to a limit, and why
 
 1. **`post_journal` bytes: 1,181 of 1,232 (96 %).** The worst case is three proofs of source 3 (93 bytes each with the 32-byte digest) and eight market accounts (32 bytes each as account keys). The evaluator's batch policy (`BatchPolicy::MAX`: 8 events, 3 proofs, 8 markets, 1,232 bytes, 200,000 CU) keeps every batch inside it; `crates/evaluator/src/batch.rs` models the size exactly (one signature, no budget instruction) and the compute with a bound that this table stays below (30,000 + 12,500 per event + 8,000 per proof, + 40,000 for `report_fail`).
-2. **`report_fail`: 1,149 B (93 %) and 151,304 CU (76 %).** Eleven fixed accounts (the wallet, the sector authority, the vault program, the registry, the vault record) and the vault CPI on top of the batch.
+2. **`report_fail`: 1,149 B (93 %) and 151,317 CU (76 %).** Eleven fixed accounts (the wallet, the sector authority, the vault program, the registry, the vault record) and the vault CPI on top of the batch.
 3. **`reset_account`: 158,200 CU (79 %).** The vault's `deposit_reset` is about 42,000 of it; the rest is the new addresses found by bump search, the token transfers and account creations, and the registry decoded by hand. Its stack frame (2,944 bytes) is also the largest of the program.
 4. `create_ruleset`: 984 bytes (80 %); the arguments are the whole 552-byte rule set (the 128 half-spreads are 256 bytes), so it needs a transaction of its own, as DESIGN 6.1 already said.
 
@@ -87,3 +87,8 @@ Opening the first account of a wallet at the $100,000 tier, end to end: **5,303,
 4. **Keys:** the worst-case search uses bump depth of the program's and the vault's addresses for account ids 0 and 1 and request ids 1 to 4; it is a hand-built worst case, not a proof that no key is worse.
 5. The campaign uses 150 paths in `cargo test` (10,000 in the gate, whose larger shapes are already in the grid).
 6. **Not measured:** priority fees, address lookup tables, compute units of the mainnet vault build (the fixture is the localnet build of core commit 9a5c179).
+
+## P21 (decision 64): what the unpriced-market check cost
+`post_journal` worst case 125,263 -> **125,276 CU** and `report_fail` 151,304 -> **151,317 CU** (+13 CU each: one comparison and one `require!` on the half-spread the `Fill` arm already reads); bytes unchanged (1,181 and 1,149). Both are far under their asserted ceilings (144,100 / 1,232 and 174,000 / 1,232), and no ceiling was raised. The budget grid's fills in markets 5 and up are priced at the ask or the bid (`1_000_001_000_000`, `999_999_000_000`) now, since a fill at the mid of a zero-spread market is refused.
+
+The ceilings are kept as they were (the measurement moved by 13 CU of about 18,800 CU of headroom); nothing in `budget.rs` changed except the fill prices.

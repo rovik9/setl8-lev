@@ -151,3 +151,22 @@ fn each_probe_csv_alone_triggers_its_comparison() {
     std::fs::write(&g1, "recv_ms,symbol,usd\n1,BTC,81131.526567\n").unwrap();
     assert_eq!(out(&run(&root, &["verify", "--gmx-1min", g1.to_str().unwrap()])).0, 0);
 }
+
+#[test]
+fn verify_refuses_an_unpriced_market_for_every_id_through_the_command_line() {
+    // the process-level proof: a zero half-spread for market `k`, regenerated (so the files are consistent) or not, fails `verify`
+    // with that market named; `generate` itself refuses to write such a rule set
+    for (k, _) in toml().lines().enumerate().filter(|(_, l)| l.starts_with("half_spread_e6")) {
+        let symbol_line = toml().lines().take(k + 1).filter(|l| l.starts_with("symbol")).last().unwrap().to_string();
+        let sym = symbol_line.split('"').nth(1).unwrap().to_string();
+        let root = scratch(&format!("unpriced-{k}"));
+        let edited: String = toml().lines().enumerate().map(|(i, l)| if i == k { "half_spread_e6 = 0".to_string() } else { l.to_string() }).collect::<Vec<_>>().join("\n") + "\n";
+        std::fs::write(root.join("config/launch-markets.toml"), edited).unwrap();
+        let (code, _, se) = out(&run(&root, &["verify"]));
+        assert_eq!(code, 1, "{sym}: {se}");
+        assert!(se.contains(&format!("VIOLATION: {sym}: half-spread 0 in the rule set: an unpriced market")), "{sym}: {se}");
+        let (code, _, se) = out(&run(&root, &["generate"]));
+        assert_eq!(code, 1, "{sym}: generate must refuse");
+        assert!(se.contains("an unpriced market"), "{se}");
+    }
+}

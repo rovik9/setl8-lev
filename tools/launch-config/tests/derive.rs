@@ -85,21 +85,27 @@ fn quantity_placeholder_with_hand_numbers() {
 
 #[test]
 fn cap_placeholder_with_hand_numbers() {
-    let r = rules(); // basis 10,000 USD, ceiling 5,000,000, stocks 500,000
-    assert_eq!(cap_micro(2, 20, &r), 200_000 * 1_000_000);
-    assert_eq!(cap_micro(4, 10, &r), 100_000 * 1_000_000);
-    assert_eq!(cap_micro(6, 5, &r), 50_000 * 1_000_000);
-    assert_eq!(cap_micro(0, 50, &r), 500_000 * 1_000_000);
-    let mut big = r.clone();
-    big.cap_basis_tier_usd = 200_000;
+    // the committed basis is the biggest tier, 200,000 USD (decision 64); ceilings 5,000,000 and, for stocks, 500,000
+    let r = rules();
+    assert_eq!(r.cap_basis_tier_usd, 200_000);
     // 200,000 x 20 = 4,000,000: rounded down to 2,000,000 (1-2-5 steps), under the 5,000,000 ceiling
-    assert_eq!(cap_micro(2, 20, &big), 2_000_000 * 1_000_000);
+    assert_eq!(cap_micro(2, 20, &r), 2_000_000 * 1_000_000);
+    // energy 1:10: exactly 2,000,000
+    assert_eq!(cap_micro(4, 10, &r), 2_000_000 * 1_000_000);
+    // crypto 1:5: exactly 1,000,000
+    assert_eq!(cap_micro(6, 5, &r), 1_000_000 * 1_000_000);
     // 200,000 x 50 = 10,000,000: clipped to 5,000,000
-    assert_eq!(cap_micro(0, 50, &big), 5_000_000 * 1_000_000);
-    // stocks: 200,000 x 5 = 1,000,000 -> clipped to 500,000
-    assert_eq!(cap_micro(5, 5, &big), 500_000 * 1_000_000);
-    // the stock ceiling applies to class 5 only
-    assert_eq!(cap_micro(6, 5, &big), 1_000_000 * 1_000_000);
+    assert_eq!(cap_micro(0, 50, &r), 5_000_000 * 1_000_000);
+    // stocks: 200,000 x 5 = 1,000,000 -> clipped to 500,000; the stock ceiling applies to class 5 only
+    assert_eq!(cap_micro(5, 5, &r), 500_000 * 1_000_000);
+    // the P19 basis (the 10K tier) for comparison: far below what the biggest tier may hold at its leverage
+    let mut small = r.clone();
+    small.cap_basis_tier_usd = 10_000;
+    assert_eq!(cap_micro(2, 20, &small), 200_000 * 1_000_000);
+    assert_eq!(cap_micro(4, 10, &small), 100_000 * 1_000_000);
+    assert_eq!(cap_micro(6, 5, &small), 50_000 * 1_000_000);
+    assert_eq!(cap_micro(0, 50, &small), 500_000 * 1_000_000);
+    assert_eq!(cap_micro(5, 5, &small), 50_000 * 1_000_000);
 }
 
 #[test]
@@ -145,27 +151,27 @@ fn feed_ids_are_pinned_hex_constants_and_equal_the_journal_types_function() {
 fn every_derived_number_of_every_market_against_an_independent_computation() {
     // (symbol, max_age_secs, qty_step = qty_min, max_notional_usd in micro-USD), computed outside this crate
     const WANT: [(&str, u16, u64, u64); 21] = [
-        ("BTC", 15, 200, 50000000000),
-        ("ETH", 15, 5000, 50000000000),
-        ("SOL", 15, 100000, 50000000000),
-        ("GOLD", 35, 5000, 200000000000),
-        ("SILVER", 45, 200000, 200000000000),
-        ("WTIOIL", 30, 200000, 100000000000),
-        ("BRENTOIL", 40, 100000, 100000000000),
-        ("SPY", 30, 20000, 200000000000),
-        ("QQQ", 20, 20000, 200000000000),
-        ("xyz:JP225", 40, 200, 200000000000),
-        ("xyz:KR200", 35, 20000, 200000000000),
-        ("xyz:AAPL", 20, 50000, 50000000000),
-        ("xyz:AMD", 20, 20000, 50000000000),
-        ("xyz:AMZN", 25, 50000, 50000000000),
-        ("xyz:GOOGL", 20, 50000, 50000000000),
-        ("xyz:META", 20, 20000, 50000000000),
-        ("xyz:MSFT", 20, 20000, 50000000000),
-        ("xyz:NFLX", 20, 200000, 50000000000),
-        ("xyz:NVDA", 20, 50000, 50000000000),
-        ("xyz:PLTR", 20, 100000, 50000000000),
-        ("xyz:TSLA", 20, 50000, 50000000000),
+        ("BTC", 15, 200, 1000000000000),
+        ("ETH", 15, 5000, 1000000000000),
+        ("SOL", 15, 100000, 1000000000000),
+        ("GOLD", 35, 5000, 2000000000000),
+        ("SILVER", 45, 200000, 2000000000000),
+        ("WTIOIL", 30, 200000, 2000000000000),
+        ("BRENTOIL", 40, 100000, 2000000000000),
+        ("SPY", 30, 20000, 2000000000000),
+        ("QQQ", 20, 20000, 2000000000000),
+        ("xyz:JP225", 40, 200, 2000000000000),
+        ("xyz:KR200", 35, 20000, 2000000000000),
+        ("xyz:AAPL", 20, 50000, 500000000000),
+        ("xyz:AMD", 20, 20000, 500000000000),
+        ("xyz:AMZN", 25, 50000, 500000000000),
+        ("xyz:GOOGL", 20, 50000, 500000000000),
+        ("xyz:META", 20, 20000, 500000000000),
+        ("xyz:MSFT", 20, 20000, 500000000000),
+        ("xyz:NFLX", 20, 200000, 500000000000),
+        ("xyz:NVDA", 20, 50000, 500000000000),
+        ("xyz:PLTR", 20, 100000, 500000000000),
+        ("xyz:TSLA", 20, 50000, 500000000000),
     ];
     let l = launch(&base());
     for (m, (sym, age, q, cap)) in l.markets.iter().zip(WANT) {

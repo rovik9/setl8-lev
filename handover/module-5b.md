@@ -58,6 +58,7 @@ Events: `EventLog { account, seq, event_bytes, proof_bytes }` per journal event 
 | 6081 | MetaNotLast | I-12 |
 | 6082 | MetaTwice | I-12 |
 | 6083 | EngineVersionMismatch | I-12 |
+| 6109 | MarketUnpriced | I-1 / decision 64 (P21): an exposure-increasing `Fill` in a market whose `spread_e6` in the account's rule set is 0 |
 
 Older codes reused where they were already exactly the reason: `Unauthorized` (I-1 signer), `AccountNotActive`, `PassPending` (pass_pending == 2), `AccountHeld`, `AccountLocked` (I-10), `BadSequence` (I-2 `first_seq`), `TimeBackwards`, `TimeInFuture` (I-3), `MarketUnknown`, `PnlMismatch`, `QuickMismatch` (I-5), `FeeInvalid` (I-6), `QuickLimitExceeded` (I-8), `BatchTooLarge` (limits), `MathOverflow`.
 
@@ -79,7 +80,7 @@ By invariant: 4.9 (`design_4_9_worked_example_in_three_transactions`, `the_execu
 | C (close + breach) | 97,935.26 | 0 | 0 | 0 | 0 | 0 | t+12 h | 1 | 8 | 1 |
 Close pnl -2,064.74 (age 150 s, not quick). The head after each transaction equals the independent `journal_types` computation; after C it equals `verify_chain` over the 8 EventLogs read from the inner instructions.
 
-## Compute units (whole transaction incl. the 150 CU compute-budget instruction; numbers only; M11 set the budgets: `post_journal` worst case 125,263 CU and 1,181 bytes, handover/module-11.md)
+## Compute units (whole transaction incl. the 150 CU compute-budget instruction; numbers only; M11 set the budgets: `post_journal` worst case 125,276 CU and 1,181 bytes, handover/module-11.md)
 1 event ([Meta]): 30,760 · 4 events ([Fee x3, Meta]): 65,056 · 8 events ([Fee x7, Meta]): 107,685 · 8 events with 3 proofs (2 Fill, 2 Close, TightStart, FloorRaised, Fee, Meta): 124,445. Stack: `scripts/build-test-so.sh` and `scripts/anchor-build-checked.sh` report no frame over 4096 bytes (default and localnet builds).
 
 ## Mutation testing
@@ -141,3 +142,9 @@ Fee on unknown market allowed                      KILLED by 1: i4_markets_must_
 
 ## Harness (`tests-rs/tests/common/journal.rs`)
 `JEnv` (real vault + a $100k account of a fresh trader; markets: EUR 0, BTC 1, reduce-only 2, disabled 3, one-minute-session 4; spreads EUR 30, BTC 50, others 10), batch builder using `journal_types::apply_batch` with `NativeSha256` (never program code), `post*` (compute-budget instruction first), `post_rejected` (exact error + unchanged digest), `edit_account`, `add_market(id, source, symbol, status)`, `raw_batch` for malformed bytes, `event_logs` from inner instructions, `chain_head_from_logs` via `verify_chain`, and `set_clock`. `VaultEnv` now creates an `evaluator` keypair and passes it to `init_config`.
+
+## P21 (decision 64): unpriced markets are untradable
+* **Where**: the `Fill` arm of the shared batch loop (`run_batch`, so `post_journal` and `report_fail` alike), after `acct.held`, the lock and `check_open_allowed` (market status and session), BEFORE `required_proof`, the quantity check, the proof check and the price check. `require!(half_spread != 0, Setl8Error::MarketUnpriced)` on the half-spread the arm reads anyway for the expected price (`env.half_spread(market)`, `spread_e6[market]` of the account's rule set, 0 for an id the version never listed). The `Close` arm is untouched: a close is never refused by this rule.
+* **Why before the proof, price and quantity**: the refusal is about the market and the account's rule set, not about the evidence; pinning it first makes the error stable whatever else is wrong with the event (`the_unpriced_check_answers_before_the_price_the_proof_and_the_quantity`, both sides: the same fill in a priced market is refused for the later check).
+* **No new account, no new instruction data, no layout change.** Compute: the check is a comparison on a value already loaded; the budget ceilings of `tests-rs/tests/budget.rs` hold (numbers in handover/module-11.md).
+* Tests: `error_codes.rs` pins 6109; `tests-rs/tests/launch_config.rs` has the rule's executable paths (forged fills refused with `MarketUnpriced`, spread 1 accepted and 0 refused, a close accepted, `report_fail`); `trust_matrix.rs` three rows. The program test harness (`common/journal.rs`) has `TEST_HALF_SPREAD_E6 = 1` and `spread_ruleset()` gives every harness market (ids 5 and up) that half-spread; the fills of `post_journal.rs` and `budget.rs` that were priced at the mid are at `1_000_001_000_000` (long) and `999_999_000_000` (short).

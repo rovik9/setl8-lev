@@ -197,11 +197,12 @@ program takes it as data (`create_market`), nothing market-specific is hardcoded
 - **`RuleSet`** (PDA `["ruleset", version u16]`, **immutable once created**): leverage per class, half-spread per market,
   commission per class (pending numbers), holding-fee rate per class, tier price table, reset ladder, fee rate. A `TradingAccount`
   stores its `ruleset_version` at purchase. This is the "per-account parameter snapshot": publishing version N+1 never changes an
-  account created under version N. The evaluator reads the rule set of each account's version; the chain does not use most of it (it uses the tier table, ladder, fee rate and the constants of section 2).
+  account created under version N. The evaluator reads the rule set of each account's version; the chain does not use most of it (it uses the tier table, ladder, fee rate, the half-spread of the market of a `Fill` and the constants of section 2).
+  **Unpriced markets are untradable (decision 64).** `spread_e6` is indexed by market id and the rule set is immutable, so a market created after version N has a half-spread of 0 in version N and in every older version. A market whose half-spread in the ACCOUNT'S OWN rule set is 0 takes no new exposure: an exposure-increasing `Fill` there is refused by the program (`MarketUnpriced`, 6109), the evaluator and the public verifier (`FillNotAllowed`, "unpriced market"); closes are never refused by this rule. Accounts of an older rule set version therefore cannot trade a later-added market; they keep trading every market their rule set prices. Adding a market after launch = a new rule set version that prices it, for NEW accounts.
 - **`Market`** (PDA `["market", market_id u16]`): class, `status` (0 disabled, 1 enabled, 2 reduce-only), `feed_id [u8;32]`
   (**either admin can change it at any time, decision 24**), `max_age_secs`, quantity step and minimum, `max_notional_usd` (per-position
   cap, see OPEN_QUESTIONS), up to 6 weekly session windows, optional `quote_conv_market` (see 3.5). The chain uses a market only to check that a journal event
-  names an existing market and that a price proof carries that market's current `feed_id`. Changing `feed_id` emits `MarketFeedChanged{old,new,slot}`.
+  names an existing market and that a price proof carries that market's current `feed_id` (and, for a `Fill`, that the market is priced in the account's rule set, 3.2 above). Changing `feed_id` emits `MarketFeedChanged{old,new,slot}`.
 
 Rate units: all rates are fixed-point with 6 decimals ("e6") of the notional. Example: holding fee 0.10% per night = 1,000 e6.
 
@@ -210,7 +211,7 @@ Rate units: all rates are fixed-point with 6 decimals ("e6") of the notional. Ex
 **Where prices come from.** The evaluator subscribes to Stork's signed price stream (Stork's own API/WebSocket; the Solana feed account holds only the latest value, so it is not the source).
 Each update it receives is a signed message: feed id, timestamp (ns), value (18 decimals), publisher signature(s). The evaluator:
 1. keeps **every update it uses** in an append-only sample file per market (`samples-<market>-<date>.bin`), and publishes the file hash in each journal batch (4.5);
-2. converts to `price_e12 = floor(quantized_value / 10^6)` and applies the half-spread (section 7.1);
+2. converts to `price_e12 = floor(quantized_value / 10^6)` and applies the half-spread (section 7.1; a `Fill` in a market whose half-spread is 0 in the account's rule set is refused before this step, decision 64);
 3. attaches to every **decisive** event the original signed update as a `PriceProof` (format in section 8.2).
 
 **What the chain does with a `PriceProof` (v1):** checks that `feed_id` equals the market's current feed, that `price_e12` equals the proof's own value field, that the proof time is not in the future and not older than the market's `max_age_secs` before the event time,
@@ -272,7 +273,7 @@ This section says exactly what protects against that, and what does not.
 Let `acct` be the stored account and `ev` an event of the batch, processed in order. Any failure reverts the whole batch.
 | Id | Invariant |
 |---|---|
-| I-1 | Signer is `config.evaluator`. Account status is `Active`. An exposure-increasing `Fill` also needs `held == 0` (`AccountHeld`). `pass_pending != 2` (a confirmed pass freezes the journal; `pass_pending == 1` still allows posting so the evaluator can bring the journal up to date before confirming). |
+| I-1 | Signer is `config.evaluator`. Account status is `Active`. An exposure-increasing `Fill` also needs `held == 0` (`AccountHeld`) and a market that is priced in the account's rule set, `spread_e6[market] != 0` (`MarketUnpriced`, decision 64; checked right after the open-allowed checks and before the proof and quantity checks, in `post_journal` and `report_fail` alike). A `Close` never needs it. `pass_pending != 2` (a confirmed pass freezes the journal; `pass_pending == 1` still allows posting so the evaluator can bring the journal up to date before confirming). |
 | I-2 | `batch.first_seq == acct.seq + 1` and `batch.prev_hash == acct.journal_hash`; each event extends the hash (8.3). `acct.seq` and `acct.journal_hash` are updated at the end. |
 | I-3 | Time: `ev.time >= acct.last_batch_time` (never backwards) and `ev.time <= now + 2 s`. |
 | I-4 | Each referenced market exists, and every `PriceProof` carries that market's current `feed_id`, a value equal to the event price (3.3), and `ev.time - max_age_secs <= proof.time <= ev.time + 2 s` (a price older than the market's `max_age_secs` cannot justify an event). |
@@ -485,7 +486,7 @@ Units: `qty` is a signed `i64` in 1e-6 base units (long > 0). Prices are `u64` i
 Tradovate style: **one net position per (account, market)**.
 
 ### 7.1 Execution price
-Buy fills at `ask = ceil(mid x (1 + h))`, sell at `bid = floor(mid x (1 - h))`, with `h` the half-spread of the market in the account's rule set (e6 units).
+Buy fills at `ask = ceil(mid x (1 + h))`, sell at `bid = floor(mid x (1 - h))`, with `h` the half-spread of the market in the account's rule set (e6 units). `h = 0` is not a price: an exposure-increasing fill in such a market is refused (decision 64, 3.2); a closing fill never is, and its price at `h = 0` would be the mid.
 
 ### 7.2 Fill algorithm (`apply_fill(side, dq, p, T)`; `q` current signed qty, `A` avg entry)
 1. `q == 0` -> open: `q = dq`, `A = p`, `timer_start = T`, `opened_at = T`.
@@ -601,7 +602,7 @@ Retention depends on RPC/archive providers. Setl8 keeps its own full copy of eve
 ### 9.1 Spread (decision 14, numbers PENDING from Rovik's friend)
 Oracles give one price. The program synthesises bid and ask: `ask = mid x (1 + h)`, `bid = mid x (1 - h)`, `h` = per-market half-spread in the rule set (e6 units). Longs are marked at bid, shorts at ask, so a position
 starts slightly negative (see the -$64.80 in 4.9, which is 0.003% half-spread each side on $1.08M). Spread and commission are simulated balance deductions; no tokens move. Until the friend's numbers arrive the
-build uses placeholders marked `PENDING` in the test fixtures, never in production data.
+build uses placeholders marked `PENDING` in the test fixtures, never in production data. A market must have `h > 0` in the rule set an account trades under (decision 64); the test fixtures use the named constant `TEST_HALF_SPREAD_E6 = 1` where they need the smallest priced market.
 
 ### 9.2 Purchase price and the 0.4% fee (decisions 15, 16)
 The vault charges exactly the tier `cost` (`deposit_fee.amount` must equal it). The 0.4% fee is a **separate SPL transfer** by the trader to the SL8 wallet's token account of the same mint, rounded UP to a micro-dollar, charged to every buyer on top of the price.
@@ -726,8 +727,8 @@ The vault freezes inactivity clocks during a pause. The sector `set_paused` is a
 **MEASURED (M11, P19 part C; handover/module-11.md has the full table and how it is produced; `tests-rs/tests/budget.rs` asserts a ceiling per instruction: the measured worst case + 15 %, never above 200,000 CU or 1,232 bytes).** Worst cases, compute units / signed-transaction bytes, with traders of fixed keys and the worst bump-search keys found:
 | Instruction | CU | bytes | Notes |
 |---|---|---|---|
-| `post_journal` | 125,263 | 1,181 | worst CU: 8 events, 3 proofs (2 fills, 2 closes, tight start, floor raise, fee, meta); worst bytes: 3 proofs of source 3 and 8 market accounts. One signature (evaluator = fee payer), no budget instruction. A 1-event batch is about 31,000 CU. |
-| `report_fail` | 151,304 | 1,149 | 8 events, 3 proofs; the `flag_trader_failed` call and 5 more fixed accounts on top of `post_journal`. |
+| `post_journal` | 125,276 | 1,181 | worst CU: 8 events, 3 proofs (2 fills, 2 closes, tight start, floor raise, fee, meta); worst bytes: 3 proofs of source 3 and 8 market accounts. One signature (evaluator = fee payer), no budget instruction. A 1-event batch is about 31,000 CU. |
+| `report_fail` | 151,317 | 1,149 | 8 events, 3 proofs; the `flag_trader_failed` call and 5 more fixed accounts on top of `post_journal`. |
 | `open_account` | 135,595 | 838 | first account of a wallet, worst key (typical 100,000 to 120,000); the vault's `deposit_fee` creates the `TraderState`. |
 | `reset_account` | 158,200 | 911 | worst key (typical 125,000 to 145,000); the vault's `deposit_reset` is about 42,000 of it. |
 | `request_advance` | 45,937 | 539 | one `record_activity` call. |
@@ -796,6 +797,7 @@ Every instruction is below the default 200,000 units, so no compute-budget instr
 | 6106 | `ResetPriceOverflow` | `reset_account`: the reset price does not fit in a u64 |
 | 6107 | `AccountAlreadyReset` | `reset_account`: the previous account was already reset (`ResetNotAllowed` 6027 stays the error for an account that is not Failed) |
 | 6108 | `ViolationNoReset` | `reset_account`: the previous account was failed by `fail_for_violation` (DESIGN 2.9: no reset), checked before any CPI |
+| 6109 | `MarketUnpriced` | `post_journal` / `report_fail`: an exposure-increasing `Fill` in a market whose half-spread in the account's rule set is 0 (decision 64; a `Close` is never refused by it) |
 
 ---
 
@@ -839,6 +841,7 @@ Every instruction is below the default 200,000 units, so no compute-budget instr
 - Both admins must be able to sign a veto within 2 days (including weekends). A pair of mobile-ready signing setups is required (OPEN_QUESTIONS #12).
 - Evaluator key in a hardware-backed signer or a managed KMS, with a rotation runbook (OPEN_QUESTIONS #11).
 - A second, independent price recorder (4.5).
+- **Deploy rule for a new market (decision 64).** A market added after launch is traded only by accounts whose rule set prices it. Create it as `status = 0`, publish the rule set version that gives it a non-zero half-spread, enable the market when that version is current. `launch-config verify` refuses a launch rule set with a zero half-spread for any market id.
 
 ---
 
