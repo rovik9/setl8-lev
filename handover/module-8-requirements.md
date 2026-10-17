@@ -8,7 +8,7 @@ Vault core commit 9a5c179, shared-interfaces v0.5.0. M8 is no longer blocked by 
 - `reset_account` computes the amount ONLY with `reset_price::reset_amount_micro(tiers, account_size, failed_phase_idx, ladder_bps)` (it calls `setl8_shared_interfaces::reset_price`; no other rounding copy anywhere).
 - `tiers` = the `challenge_sizes` of the vault's `ProductRegistry`, read from the account passed in and checked as the vault-owned registry PDA of this product (the same account the CPI uses), as it is NOW. `ladder_bps` = its `reset_price_bps`. `account_size` = the failed `TradingAccount.size_s`; `failed_phase_idx` = the phase it failed in minus 1.
 - The vault `DepositResetArgs` carries `amount`, `trader_wallet`, `product_program_id`, `prev_challenge_id`, `new_challenge_id`, `reset_phase`. The sector passes NEITHER `payout_count` NOR `account_size`: the vault copies both from the failed record. `reset_phase` is used by the vault only to pick the ladder entry.
-- The 0.4% fee goes on top of the reset price (assumption A-FEE-1, still to confirm), `ceil(price x fee_bps / 10_000)` as in `open_account`.
+- The 0.4% fee goes on top of the reset price (A-FEE-1, confirmed 2026-10-17, decision 63), `ceil(price x fee_bps / 10_000)` as in `open_account`.
 - Errors: the helper's `ResetTierInvalid` (6104, no tier or a duplicate size), `ResetPhaseOutOfRange` (6105), `ResetPriceOverflow` (6106). Vault errors the CPI can return: `InvalidChallengeTier` 6006, `WrongAmount` 6007, `ResetNotAllowed` 6011 (not Failed or already reset), `InvalidResetPhase` 6012.
 - The new account starts in the SAME phase with fresh state; the previous account must be locally `Failed`.
 

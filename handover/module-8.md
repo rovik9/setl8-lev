@@ -36,7 +36,7 @@ No spare byte exists in the 207-byte layout. `reset_at` is stored in `pass_reque
 `Opened` (the record every purchase emits, with `phase` = the failed phase and `tier_index` = the position of the size in the current rule set, 255 if it is not there) then `AccountReset { prev_account, account, trader, prev_challenge_id, challenge_id, phase, price, fee, payout_count, time }`. Neither is part of the hash chain. **Indexer story:** a log consumer that already turns `Opened` into the `opened` line of `events.jsonl` needs nothing new for a reset: the line carries `phase` (the verifier and the evaluator already start an account in any phase 1 to 5). `AccountReset` is the link between two logs (previous account, phase, price paid); the verifier of ONE account does not follow it, an auditor compares `Opened.phase` with the last phase of the previous account's log (trust-matrix row "an evaluator log that opens the new account in a higher phase").
 
 ### Fee decision (one line)
-The 0.4% is charged on top of the reset price with the same `ruleset.fee_bps` field and the same `swap_fee_micro` as `open_account` (assumption A-FEE-1, still unconfirmed): a plain SPL transfer trader -> SL8 fee account, not part of the vault deposit, so there is one constant to change if Rovik drops the fee on resets.
+The 0.4% is charged on top of the reset price with the same `ruleset.fee_bps` field and the same `swap_fee_micro` as `open_account` (A-FEE-1, confirmed by Rovik 2026-10-17, decision 63): a plain SPL transfer trader -> SL8 fee account, not part of the vault deposit, so there is one constant to change if Rovik drops the fee on resets.
 
 ## Prices asserted (100K tier; 2.5K tier), each = price + fee, the vault's 65/35 split, same phase, vault record with the failed record's size and payouts
 | failed in | price 100K | fee 100K | price 2.5K | fee 2.5K |
@@ -108,7 +108,7 @@ Survivors, argued equivalent (cannot be observed):
 
 ## Open points for Rovik
 * (closed by P19 part A) A violation-failed account could be reset after `unban_wallet`; it cannot any more, see decision 9 above and decision 60.
-* A-FEE-1 (the 0.4% on resets) and OPEN_QUESTIONS #9 (the price of a reset after a wrongful fail) are unchanged.
+* OPEN_QUESTIONS #9 (the price of a reset after a wrongful fail) are unchanged.
 
 ## P19 part A: the violation marker (decision 60), tests and mutation
 

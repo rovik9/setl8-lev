@@ -55,7 +55,7 @@ Warning (said once): detection is heuristic. Different sizes, staggered timing, 
 **16. Upgrade-authority burn.** Decided: 2-of-2 now. Burn (immutable program) after the audit: yes or no.
 **17. Multisig tooling** for the upgrade authority and the veto. Any crypto-native on-chain multisig with no KYC; choose in BUILD_PLAN M0.
 **18. 45 s timer restarts on every same-direction add.** You said later; re-confirm at review.
-**19. 0.4% fee on resets as well as purchases** (A-FEE-1). Default yes.
+**19. RESOLVED 2026-10-17 (decision 63): the 0.4% fee applies on resets as well as purchases** (A-FEE-1).
 **20. Either admin may change markets and feeds** (A-ADM-1); both for rule sets, limits, veto, evaluator rotation and upgrade. Default yes.
 **21. Marketing copy.** "No overnight swap fees, no weekend holding fees" (May plan) is false under decision 22. Needs a copy change; not code. Also: payouts are now "delayed 2 days plus the vault's up-to-5-day heartbeat" and the account is frozen during the first 2 days.
 **22. Holding-fee approximation** (A-FEE-2): fee uses the mark at the time it is applied. Default: approximation.

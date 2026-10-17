@@ -867,7 +867,7 @@ No instruction in this program takes an admin-supplied or evaluator-supplied amo
 | A-RULE-3 | RESOLVED (decision 31): `l_start = min(f_static + 0.04 S, R)` | 2.3, 4.4 |
 | A-ORA-1 | Stork signed-update format, size, fee and access for non-enterprise users (all UNVERIFIED) | 3.3, 11 |
 | A-ORA-2 | The backend can obtain Stork's signed stream without an enterprise contract | 3.3 |
-| A-FEE-1 | The 0.4% fee also applies on resets | 9.5 |
+| A-FEE-1 | CONFIRMED by Rovik 2026-10-17 (decision 63): the 0.4% fee also applies on resets | 9.5 |
 | A-FEE-2 | Holding fee uses the mark at application time, not at 22:00 | 9.3 |
 | A-MKT-1 | Launch with USD-quoted markets; cross pairs and non-USD indices wait for conversion feeds | 3.5 |
 | A-CAP-1 | At most 10 pending orders per account and 8 open positions (engine limits, enforced off-chain; the open-position cap exists to bound valuation work and per-account proofs) | 16 |
