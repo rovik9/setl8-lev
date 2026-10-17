@@ -36,6 +36,10 @@ pub const SOURCE_GMX: u8 = 2;
 pub const H_EUR: u32 = 30;
 pub const H_BTC: u32 = 50;
 pub const H_OTHER: u32 = 10;
+/// Decision 64: a market whose half-spread is 0 in the account's rule set cannot be opened, so every market a test trades
+/// carries at least this half-spread (the smallest non-zero value, 1 e6 = 0.0001 %). At the mid 1.0 (`MID`) a long fill is
+/// ceil(1e12 x (1 + 1e-6)) = 1_000_001_000_000 and a short fill floor(1e12 x (1 - 1e-6)) = 999_999_000_000.
+pub const TEST_HALF_SPREAD_E6: u32 = 1;
 pub const S100K: i64 = 100_000_000_000;
 
 pub fn usd(d: i64) -> i64 {
@@ -133,6 +137,10 @@ pub fn spread_ruleset() -> journal_types_args::Args {
     a.spread_e6[usize::from(MARKET_BTC)] = u16::try_from(H_BTC).unwrap();
     for m in [MARKET_REDUCE_ONLY, MARKET_DISABLED, MARKET_SHORT_SESSION] {
         a.spread_e6[usize::from(m)] = u16::try_from(H_OTHER).unwrap();
+    }
+    // the markets a test adds with `add_market` (ids 5 and up) are priced at the smallest non-zero half-spread
+    for h in a.spread_e6.iter_mut().skip(5) {
+        *h = u16::try_from(TEST_HALF_SPREAD_E6).unwrap();
     }
     a
 }

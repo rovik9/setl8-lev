@@ -471,8 +471,10 @@ fn i4_unsupported_sources_are_refused_and_the_mock_follows_the_build() {
     let mut p = proof(MARKET_EUR, t, MID);
     p.source = 255;
     p.feed_id = journal_types::feed_id(&journal_types::NativeSha256, 255, "MOCK");
-    // spread_e6[5] is 0 in the test rule set, so the executed price of a long fill is the mid itself
-    let b = w.batch(vec![fill(5, true, MEUR, MID, t, 0), meta(t, false)], vec![p]);
+    // spread_e6[5] is TEST_HALF_SPREAD_E6 (1 e6) in the test rule set, so the executed price of a long fill is
+    // ceil(1e12 x (1 + 1e-6)) = 1_000_001_000_000, written out by hand
+    assert_eq!(ask(MID, TEST_HALF_SPREAD_E6), 1_000_001_000_000);
+    let b = w.batch(vec![fill(5, true, MEUR, 1_000_001_000_000, t, 0), meta(t, false)], vec![p]);
     w.post_ok(t + 1, &b, &[5]);
 }
 
@@ -490,10 +492,10 @@ fn i4_signed_update_shape_by_source() {
     p4.source = 4;
     p4.feed_id = journal_types::feed_id(&journal_types::NativeSha256, 4, "HL");
     p4.signed_update = vec![9; 32];
-    let b = w.batch(vec![fill(5, true, MEUR, MID, t, 0), meta(t, false)], vec![p4.clone()]);
+    let b = w.batch(vec![fill(5, true, MEUR, 1_000_001_000_000, t, 0), meta(t, false)], vec![p4.clone()]);
     w.post_rejected(t + 1, &b, &[5], E::ProofBadSignedUpdate);
     p4.signed_update = vec![];
-    let b = w.batch(vec![fill(5, true, MEUR, ask(MID, 0), t, 0), meta(t, false)], vec![p4]);
+    let b = w.batch(vec![fill(5, true, MEUR, 1_000_001_000_000, t, 0), meta(t, false)], vec![p4]);
     w.post_ok(t + 1, &b, &[5]);
     // source 3 needs exactly 32 bytes
     w.add_market(6, 3, "SIGNED", 1);
@@ -502,14 +504,14 @@ fn i4_signed_update_shape_by_source() {
         p3.source = 3;
         p3.feed_id = journal_types::feed_id(&journal_types::NativeSha256, 3, "SIGNED");
         p3.signed_update = vec![7; len];
-        let b = w.batch(vec![fill(6, true, MEUR, ask(MID, 0), t + 2, 0), meta(t + 2, false)], vec![p3]);
+        let b = w.batch(vec![fill(6, true, MEUR, 1_000_001_000_000, t + 2, 0), meta(t + 2, false)], vec![p3]);
         w.post_rejected(t + 3, &b, &[6], E::ProofBadSignedUpdate);
     }
     let mut p3 = proof(MARKET_EUR, t + 2, MID);
     p3.source = 3;
     p3.feed_id = journal_types::feed_id(&journal_types::NativeSha256, 3, "SIGNED");
     p3.signed_update = vec![7; 32];
-    let b = w.batch(vec![fill(6, true, MEUR, ask(MID, 0), t + 2, 0), meta(t + 2, false)], vec![p3]);
+    let b = w.batch(vec![fill(6, true, MEUR, 1_000_001_000_000, t + 2, 0), meta(t + 2, false)], vec![p3]);
     w.post_ok(t + 3, &b, &[6]);
 }
 

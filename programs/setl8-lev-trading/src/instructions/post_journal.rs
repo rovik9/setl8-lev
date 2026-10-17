@@ -263,10 +263,14 @@ fn apply_event(env: &Env, run: &mut Run, acct: &TradingAccount, ev: &JournalEven
             require!(engine::can_increase_exposure(&run.st, *time), Setl8Error::AccountLocked);
             let m = env.market(*market)?;
             env.check_open_allowed(m, *time)?;
+            // decision 64: a market the account's own rule set does not price (half-spread 0) cannot be opened or added to;
+            // rule sets are immutable, so a market added after this account's version stays untradable for it
+            let half_spread = env.half_spread(*market)?;
+            require!(half_spread != 0, Setl8Error::MarketUnpriced);
             let proof = env.required_proof(ev)?;
             engine::validate_quantity(*qty, m.qty_step, m.qty_min).map_err(|_| error!(Setl8Error::QuantityInvalid))?;
             let mid = env.check_market_proof(proof, m, *time)?;
-            let expected = engine::fill_price_e12(mid, env.half_spread(*market)?, *side == Side::Long).map_err(|_| error!(Setl8Error::MathOverflow))?;
+            let expected = engine::fill_price_e12(mid, half_spread, *side == Side::Long).map_err(|_| error!(Setl8Error::MathOverflow))?;
             require!(*price_e12 != 0, Setl8Error::PriceInvalid);
             require!(*price_e12 == expected, Setl8Error::EventPriceMismatch);
         }

@@ -161,6 +161,9 @@ fn sproof(source: u8, symbol: &str, time: i64, mid: u64) -> PriceProof {
 /// every run: the first `plain` seeds and the `WORST` keys whose program-derived addresses need the most bump attempts (found by
 /// searching the first 8,000 seeds natively; a hand-built worst case).
 const WORST: usize = 8;
+/// Fills at the mid 1.0 in a market with the test half-spread 1 e6 (decision 64), by hand: long ceil(1e12 x (1 + 1e-6)), short floor(1e12 x (1 - 1e-6)).
+const LONG_AT_MID: u64 = 1_000_001_000_000;
+const SHORT_AT_MID: u64 = 999_999_000_000;
 
 fn bump_depth(trader: &solana_pubkey::Pubkey) -> u32 {
     use setl8_shared_interfaces as si;
@@ -220,7 +223,7 @@ fn post_grid(t: &mut Table) {
                     continue;
                 }
                 now += 10;
-                let mut events: Vec<JournalEvent> = (0..k).map(|i| fill(market, i % 2 == 0, MEUR, MID, now, u8::try_from(i).unwrap())).collect();
+                let mut events: Vec<JournalEvent> = (0..k).map(|i| fill(market, i % 2 == 0, MEUR, if i % 2 == 0 { LONG_AT_MID } else { SHORT_AT_MID }, now, u8::try_from(i).unwrap())).collect();
                 events.extend((0..n - 1 - k).map(|_| fee(market, 1, now)));
                 events.push(meta(now, false));
                 assert_eq!(events.len(), n);
@@ -317,7 +320,7 @@ fn post_kinds(t: &mut Table) {
         w.add_market(id, 2, "EURUSD", 1);
     }
     let all: Vec<u16> = [vec![5u16], vec![MARKET_EUR], (6..=11u16).collect()].concat();
-    let events = vec![fill(5, true, MEUR, MID, now, 0), fill(5, false, MEUR, MID, now, 1), fill(5, true, MEUR, MID, now, 2), meta(now, false)];
+    let events = vec![fill(5, true, MEUR, LONG_AT_MID, now, 0), fill(5, false, MEUR, SHORT_AT_MID, now, 1), fill(5, true, MEUR, LONG_AT_MID, now, 2), meta(now, false)];
     let b = w.batch(events, vec![sproof(3, "EURUSD", now, MID), sproof(3, "EURUSD", now, MID), sproof(3, "EURUSD", now, MID)]);
     let (m, s) = post_prod(&mut w, now + 1, &b, &all);
     t.rec("post_journal", "largest transaction with source 3: 3 proofs of 32-byte digests, 8 market accounts", &m, s);
@@ -356,7 +359,7 @@ fn report_fail(t: &mut Table, seed: u32) {
             w.add_market(id, if id == 5 { 2 } else { 3 }, "EURUSD", 1);
         }
         w.edit_account(|a| a.b = 92_000_000_000);
-        let (long, short) = if market == MARKET_EUR { (eur_ask(), eur_bid()) } else { (MID, MID) };
+        let (long, short) = if market == MARKET_EUR { (eur_ask(), eur_bid()) } else { (LONG_AT_MID, SHORT_AT_MID) };
         let mut events = vec![fill(market, true, MEUR, long, now, 0), fill(market, false, MEUR, short, now, 1)];
         events.extend((0..4).map(|_| fee(market, 0, now)));
         events.push(JournalEvent::Fail { time: now, reason: FailReason::StaticFloor, b_after: 92_000_000_000, proof: 2 });

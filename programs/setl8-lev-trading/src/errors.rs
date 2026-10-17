@@ -227,6 +227,8 @@ pub enum Setl8Error {
     AccountAlreadyReset,
     #[msg("an account failed for a violation can never be reset")]
     ViolationNoReset,
+    #[msg("the market has no half-spread in the account's rule set: an exposure-increasing fill is refused")]
+    MarketUnpriced,
 }
 
 #[cfg(test)]
@@ -309,5 +311,6 @@ mod tests {
         assert_eq!(u32::from(Setl8Error::ResetPriceOverflow), 6106);
         assert_eq!(u32::from(Setl8Error::AccountAlreadyReset), 6107);
         assert_eq!(u32::from(Setl8Error::ViolationNoReset), 6108);
+        assert_eq!(u32::from(Setl8Error::MarketUnpriced), 6109);
     }
 }
