@@ -28,6 +28,7 @@ struct Cover {
     verifier_invalid: u64,
     m9b: M9bCover,
     resets: ResetCover,
+    m9c: M9cCover,
 }
 
 impl Cover {
@@ -49,6 +50,7 @@ impl Cover {
         self.verifier_invalid += o.verifier_invalid;
         self.m9b.add(&o.m9b);
         self.resets.add(&o.resets);
+        self.m9c.add(&o.m9c);
     }
 }
 
@@ -110,6 +112,7 @@ fn cover_of(spec: &PathSpec, r: &RunResult) -> Cover {
     c.closed_market = u64::from(st.closed_market_rejects > 0 || st.closed_with_position > 0);
     let lines: Vec<String> = r.items.iter().filter_map(|i| if let Item::Line(l) = i { Some(l.clone()) } else { None }).collect();
     c.m9b = m9b_cover(spec, w, &r.items, &lines);
+    c.m9c = m9c_cover(w);
     c
 }
 
@@ -177,6 +180,12 @@ fn engine_only_campaign() {
     // the M9b stories must be exercised (floors scale with the number of paths; 100 each at 10,000, 150 for the margin refusal)
     let short: Vec<String> = M9bCover::floors(n).into_iter().filter(|(name, floor)| c.m9b.value_of(name) < *floor).map(|(name, floor)| format!("{name} {} < {floor}", c.m9b.value_of(name))).collect();
     let mut short = short;
+    for (name, floor) in M9cCover::floors(n) {
+        println!("coverage {name}: {} (floor {floor})", c.m9c.value_of(name));
+        if c.m9c.value_of(name) < floor {
+            short.push(format!("{name} {} < {floor}", c.m9c.value_of(name)));
+        }
+    }
     for (name, floor) in ResetCover::floors(n) {
         println!("coverage {name}: {} (floor {floor})", c.resets.value_of(name));
         if c.resets.value_of(name) < floor {

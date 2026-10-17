@@ -6,9 +6,7 @@
 //! book, the archive and intents bytes, and the CONTENT of the events (all events except the `Meta`s, with their proofs).
 mod common;
 use common::runner::*;
-use common::*;
 use evaluator::testkit::{generate, Step};
-use evaluator::*;
 use journal_types::JournalEvent;
 use proptest::prelude::*;
 
@@ -68,10 +66,9 @@ proptest! {
         prop_assert_eq!(content(&a.items), content(&b.items));
         prop_assert_eq!(a.world.ev.status(), b.world.ev.status());
         // and the verifier is as happy with one as with the other
-        let ba: Vec<Batch> = a.items.iter().filter_map(|i| if let Item::Batch(b) = i { Some(b.clone()) } else { None }).collect();
-        let bb: Vec<Batch> = b.items.iter().filter_map(|i| if let Item::Batch(b) = i { Some(b.clone()) } else { None }).collect();
-        prop_assert!(verify(&a.world, &ba).verdict == setl8_verify::Verdict::Valid);
-        prop_assert!(verify(&b.world, &bb).verdict == setl8_verify::Verdict::Valid);
+        // (with the hold lines of the story: M9c judges the account's hold from the log)
+        prop_assert!(verify_items(&a.world, &a.items, None, None).verdict == setl8_verify::Verdict::Valid);
+        prop_assert!(verify_items(&b.world, &b.items, None, None).verdict == setl8_verify::Verdict::Valid);
     }
 
     /// A history is a pure function of its seed.

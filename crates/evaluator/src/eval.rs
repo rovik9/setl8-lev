@@ -59,6 +59,8 @@ pub struct Stats {
     pub refused_fills: u32,
     /// Sequences the program cannot accept (an overshoot of the quick tally before the last close).
     pub unpostable: u32,
+    /// MARKET orders that passed the margin check with `equity - margin used == 0` exactly (M9c coverage).
+    pub margin_exact: u32,
     /// Accepted market orders that could not execute when their second closed (margin, a market that closed, a lock).
     pub exec_refused: u32,
     pub orders_accepted: u32,

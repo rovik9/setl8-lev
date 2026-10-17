@@ -12,7 +12,7 @@ An honest history is scripted (samples and signed orders), run through the refer
 
 Honest outputs of all ten base scenarios are accepted by both (`honest_outputs_are_accepted_by_both`).
 
-Summary: BOTH 25, PROGRAM 6, VERIFIER 33, NEITHER 4, plus 4 chain-level PROGRAM rows. M9b (decisions D1 to D5 of design decision 53) added 14 rows: 5 BOTH, 8 VERIFIER, 1 NEITHER; the NEITHER row is NOT a row that moved: it is a limit the work on D3 made visible (below). No existing row changed class.
+Summary (after M9c): BOTH 28, PROGRAM 3, VERIFIER 35, NEITHER 3, plus 4 chain-level PROGRAM rows and the 10 Reset (M8) rows below. M9c moved four rows: "fill in a closed session", "fill on a held account" and "fill during the 12 h lock after a breach" from PROGRAM to BOTH, and "a market fill the account cannot margin" from NEITHER to VERIFIER; it added "a market fill above the market's notional cap" (VERIFIER). Before that (M9b): BOTH 25, PROGRAM 6, VERIFIER 33, NEITHER 4. M9b (decisions D1 to D5 of design decision 53) added 14 rows: 5 BOTH, 8 VERIFIER, 1 NEITHER; the NEITHER row is NOT a row that moved: it is a limit the work on D3 made visible (below). No existing row changed class.
 
 ## Caught by the program, and also by the verifier (BOTH)
 
@@ -34,7 +34,10 @@ Summary: BOTH 25, PROGRAM 6, VERIFIER 33, NEITHER 4, plus 4 chain-level PROGRAM 
 | proof carries another market's feed | Both | ProofWrongFeed (6048) | [ProofFeed] |  |
 | proof older than the market's max_age | Both | ProofTooOld (6049) | [ProofAge] |  |
 | batch of nine events | Both | BatchTooLarge (6032) | [FeeMismatch] | Encoded by hand (the encoder refuses it). The verifier only sees the extra fees. |
-| fill quantity not a multiple of the step | Both | QuantityInvalid (6060) | [ForgedTrade] | The verifier does not check step/minimum; the changed quantity no longer adds up to the intent (`ForgedTrade`). |
+| fill quantity not a multiple of the step | Both | QuantityInvalid (6060) | [ForgedTrade, FillNotAllowed] | M9c: the verifier now also checks step and minimum, so it names the quantity itself (`FillNotAllowed`) as well as the intent total that no longer adds up (`ForgedTrade`). |
+| fill in a closed session | Both | MarketClosed (6059) | [FillNotAllowed] | M9c (was PROGRAM): the verifier knows the sessions and the price's last change as of the order's sample. |
+| fill on a held account | Both | AccountHeld (6037) | [FillNotAllowed] | M9c (was PROGRAM): the log now carries `account_held` / `hold_released` lines dated with the block time. |
+| fill during the 12 h lock after a breach | Both | AccountLocked (6005) | [FillNotAllowed] | M9c (was PROGRAM): the verifier judges a market fill against the replayed `lock_until`. |
 | static-floor fail on an account above the floor | Both | FailStaticFloorNotReached (6097) | [FalseFail] |  |
 | quick-limit fail on an account below the limit | Both | FailQuickNotExceeded (6098) | [FalseFail] |  |
 | fill on an account that already failed | Both | AccountNotActive (6004) | [StateMismatch] | Program: `AccountNotActive`. The verifier reports events after the account ended. |
@@ -51,9 +54,6 @@ Summary: BOTH 25, PROGRAM 6, VERIFIER 33, NEITHER 4, plus 4 chain-level PROGRAM 
 | wrong prev_hash | Program | BadPrevHash (6043) | - | `prev_hash` is a batch field, not an event: it is in no log line, so only the program ever sees it. |
 | posted by a key that is not the evaluator | Program | Unauthorized (6000) | - | The signer is an account of the transaction, not part of the journal. |
 | event dated 30 s after the block time | Program | TimeInFuture (6009) | - | The verifier has no clock; the program compares with the cluster time (I-3, +2 s). |
-| fill in a closed session | Program | MarketClosed (6059) | - | Order-time market status and sessions are not re-checked by the verifier (module 9, decision 12). |
-| fill on a held account | Program | AccountHeld (6037) | - | `held` is account state set by `hold_account`; it is in no journal event. |
-| fill during the 12 h lock after a breach | Program | AccountLocked (6005) | - | The verifier replays the breach but does not judge a later Fill against `lock_until` (only pending triggers use it). A verifier gap, covered by the program. |
 
 ## Caught by the verifier only (VERIFIER)
 
@@ -94,6 +94,8 @@ These are the classes the chain cannot see (DESIGN 1.6 right-hand column): price
 | phase_advanced to another phase after pass_finalized | Verifier | - | [StateMismatch] | D5: log lines are indexer output; the program never sees them. |
 | phase_advanced repeated after pass_finalized | Verifier | - | [StateMismatch] | D5. |
 | phase_advanced with no pass line before it | Verifier | - | [StateMismatch] | D5. |
+| a market fill the account cannot margin | Verifier | - | [FillWithoutMargin] | M9c, B1 (was NEITHER): neither the program (DESIGN 7.3 puts margin off-chain) nor, until M9c, the verifier said no. The verifier now judges every exposure-increasing execution with the evaluator's own formula. Exactly enough margin is accepted, one micro-USD short is not (`crates/verifier/src/walk.rs refusal_tests`, `tests/m9c.rs`). |
+| a market fill above the market's notional cap | Verifier | - | [FillNotAllowed] | M9c, B2: the cap is an evaluator rule (`max_notional_usd`, micro-USD); the program does not check it. |
 
 ## Chain-level rows (the pass flow; PROGRAM)
 
@@ -106,12 +108,13 @@ These are the classes the chain cannot see (DESIGN 1.6 right-hand column): price
 
 ## NEITHER (the honest limits of option C)
 
+Unchanged by M9c except for one row that left it ("a market fill the account cannot margin", now VERIFIER). Each row that stays is one sentence under "Residual trust": a dropped sample is invisible without a second recorder; the older-sample price is inside `max_age_secs`; a silent market order leaves no trace the files can contradict.
+
 | class | who | program (error code) | verifier (finding class) | note |
 |---|---|---|---|---|
 | a sample that caused a breach dropped from the archive, breach omitted (no second recorder) | Neither | - | - |  |
 | market order executed at an older sample inside max_age (worse price) | Neither | - | - |  |
 | a trader's market order ignored (no fill, intent on file) | Neither | - | - |  |
-| a market fill the account cannot margin | Neither | - | - |  |
 
 ## Reset (M8)
 
@@ -138,8 +141,6 @@ Every NEITHER row, with the reason it stays open. These are what a user of optio
 
 * **a sample that caused a breach dropped from the archive, breach omitted (no second recorder)**: A malicious evaluator that rewrites its own sample stream and its own journal consistently leaves nothing to contradict (DESIGN 4.5 "Honest limit", R-2): only an independent second recorder (next row) exposes it.
 * **market order executed at an older sample inside max_age (worse price)**: The proof only has to be a real sample no older than `max_age_secs` (A-1, A-7); nothing says it must be the NEWEST one at the order's time, so the evaluator can pick the worst price of the window (up to 900 s in this test's markets). Bounded by `max_age_secs` and the spread; shorten it per market to shrink the slack.
-* **a trader's market order ignored (no fill, intent on file)**: A signed market or close intent with no trade under it is indistinguishable from an order the evaluator never received or that was rejected for margin; the intents file proves what was signed, not that it was executed (censorship). Pending orders are different: those are checked (`TriggerMissed`).
-
-* **a market fill the account cannot margin**: neither the program (DESIGN 7.3 puts margin sufficiency off-chain; it checks the margin FIELD of a fill, not that the account can carry it) nor the verifier (module 9 decision 12; D3 checks only the triggered PENDING orders, whose absence of an event needs a ruling) says no. A malicious evaluator can post a market fill for an account that cannot margin it; the signed intent on file shows the trader asked for the trade, the loss from the leverage follows from the formulas, and the account breaches or fails normally. Closing it would be one more verifier check (the same function D3 uses, applied to market fills). Found while writing the D3 rows; not caused by D1 to D5.
+* **a trader's market order ignored (no fill, intent on file)**: A signed market or close intent with no trade under it is indistinguishable from an order the evaluator never received or that was rejected for margin; the intents file proves what was signed, not that it was executed (censorship). Pending orders are different: those are checked (`TriggerMissed`). M9c recomputes the reasons that depend on the account and the rules (margin, hold, lock, status, step and minimum, caps, a closed market) for every execution and for every triggered pending order; what stays out of reach for a market order is why NOTHING happened: the evaluator may refuse at arrival or at execution for reasons that depend on the moment (the newest sample older than `max_age_secs`, an invalid stop or take-profit level, the order sample it saw), none of which the files record.
 
 Two more limits follow from the table without being separate rows: a verifier that is not run catches nothing (the watchdog is an operational duty, DESIGN 13.3), and the unsigned price sources (decision 46: GMX tickers, Hyperliquid) prove only what the evaluator saw, not what was true.

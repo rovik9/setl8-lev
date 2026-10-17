@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use common::evaluator::shared::runner::{completed_a_pass, m9b_cover, run_path, spec_rules, M9bCover, ResetCover, RunResult};
+use common::evaluator::shared::runner::{completed_a_pass, m9b_cover, m9c_cover, run_path, spec_rules, M9bCover, M9cCover, ResetCover, RunResult};
 use common::evaluator::shared::{self, World};
 use common::evaluator::*;
 use common::launch_ruleset_args;
@@ -41,6 +41,7 @@ struct Cover {
     graduated: u64,
     m9b: M9bCover,
     resets: ResetCover,
+    m9c: M9cCover,
 }
 
 impl Cover {
@@ -64,6 +65,7 @@ impl Cover {
         self.graduated += o.graduated;
         self.m9b.add(&o.m9b);
         self.resets.add(&o.resets);
+        self.m9c.add(&o.m9c);
     }
 }
 
@@ -136,6 +138,7 @@ fn cover_of(spec: &PathSpec, chain: &LiteChain, r: &RunResult) -> Cover {
     c.passes_vetoed = u64::from(r.pass.vetoed > 0);
     c.graduated = u64::from(r.pass.graduated);
     c.m9b = m9b_cover(spec, w, &r.items, &chain.lines);
+    c.m9c = m9c_cover(w);
     c
 }
 
@@ -298,6 +301,13 @@ fn differential_campaign() {
         }
         for (name, floor) in M9bCover::floors(n) {
             let v = c.m9b.value_of(name);
+            println!("coverage {name}: {v} (floor {floor})");
+            if v < floor {
+                short.push(format!("{name} {v} < {floor}"));
+            }
+        }
+        for (name, floor) in M9cCover::floors(n) {
+            let v = c.m9c.value_of(name);
             println!("coverage {name}: {v} (floor {floor})");
             if v < floor {
                 short.push(format!("{name} {v} < {floor}"));

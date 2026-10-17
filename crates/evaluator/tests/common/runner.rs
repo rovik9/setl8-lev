@@ -45,6 +45,8 @@ pub trait Chain {
     fn cancel_pass(&mut self, w: &World, t: i64);
     fn veto_pass(&mut self, w: &World, t: i64);
     fn finalize_pass(&mut self, w: &World, t: i64);
+    /// M9c: `hold_account` (`held`) or `release_hold` at second `t`; the chain writes its own `account_held` / `hold_released` line.
+    fn hold(&mut self, _w: &World, _t: i64, _held: bool) {}
 }
 
 #[derive(Default, Clone, Debug)]
@@ -80,9 +82,9 @@ pub fn spec_rules(spec: &PathSpec) -> RulesCfg {
             feed_id: journal_types::feed_id(&journal_types::NativeSha256, m.source, &m.symbol),
             max_age_secs: m.max_age_secs,
             status: STATUS_ENABLED,
-            qty_step: 1_000,
-            qty_min: 1_000,
-            max_notional_micro: 1_000_000_000_000_000,
+            qty_step: m.qty_step,
+            qty_min: m.qty_min,
+            max_notional_micro: m.max_notional_micro,
             sessions: m.sessions.clone(),
             half_spread_e6: m.spread_e6,
         })
@@ -186,6 +188,14 @@ pub fn run_path<C: Chain>(spec: &PathSpec, w0: World, chain: &mut C) -> RunResul
             Step::Post { sec, heartbeat } => {
                 w.ev.tick(*sec);
                 post_all(&mut w, chain, &mut r, &policy_for(spec, *heartbeat));
+            }
+            Step::Hold { sec, held } => {
+                // every second before the hold is processed and posted first (the program refuses a held account's Fill)
+                w.ev.tick(*sec);
+                post_all(&mut w, chain, &mut r, &policy_for(spec, false));
+                chain.hold(&w, *sec, *held);
+                r.items.push(Item::Line(setl8_verify::log::hold_line(&account, *sec, *held)));
+                w.ev.set_held(*held);
             }
             Step::Pass { sec, plan } => {
                 let t = *sec;
@@ -516,4 +526,84 @@ pub fn reset_params(failed: &AccountParams, phase: u8, reset_time: i64) -> Accou
 /// Whether a finished path completed a pass in its account.
 pub fn completed_a_pass(r: &RunResult, started_phase: u8) -> bool {
     r.pass.finalized > 0 || (started_phase == 1 && r.pass.confirmed > 0)
+}
+
+
+// ---------------------------------------------------------------------------------------------- M9c coverage
+
+/// What the 10,000-path gate counts for the verifier hardening (M9c): paths in which it happened at least once.
+#[derive(Default, Debug, Clone, Copy)]
+pub struct M9cCover {
+    /// A MARKET order passed the margin check with `equity - margin used == 0` exactly (accepted; the verifier must accept it).
+    pub market_margin_exact: u64,
+    /// A MARKET order was refused for margin (an intent on file, no event).
+    pub market_margin_refused: u64,
+    /// A triggered pending order was refused: the position it leaves is above the market's notional cap.
+    pub pending_notional_refused: u64,
+    /// ... the quantity left over by a flip is below the market's minimum.
+    pub pending_quantity_refused: u64,
+    /// ... the account is held.
+    pub pending_held_refused: u64,
+}
+
+impl M9cCover {
+    pub fn add(&mut self, o: &M9cCover) {
+        self.market_margin_exact += o.market_margin_exact;
+        self.market_margin_refused += o.market_margin_refused;
+        self.pending_notional_refused += o.pending_notional_refused;
+        self.pending_quantity_refused += o.pending_quantity_refused;
+        self.pending_held_refused += o.pending_held_refused;
+    }
+
+    /// Floors of the gate run over `n` paths (100 each, 150 for the market margin refusal at 10,000 paths; scaled down, never below 1).
+    pub fn floors(n: u64) -> Vec<(&'static str, u64)> {
+        let scale = |x: u64| ((x * n).div_ceil(10_000)).max(1);
+        vec![
+            ("market_margin_exact", scale(100)),
+            ("market_margin_refused", scale(150)),
+            ("pending_notional_refused", scale(100)),
+            ("pending_quantity_refused", scale(100)),
+            ("pending_held_refused", scale(100)),
+        ]
+    }
+
+    pub fn value_of(&self, name: &str) -> u64 {
+        match name {
+            "market_margin_exact" => self.market_margin_exact,
+            "market_margin_refused" => self.market_margin_refused,
+            "pending_notional_refused" => self.pending_notional_refused,
+            "pending_quantity_refused" => self.pending_quantity_refused,
+            "pending_held_refused" => self.pending_held_refused,
+            _ => 0,
+        }
+    }
+}
+
+/// The nonces of the limit and stop orders in the intents file (the pending orders the evaluator accepted).
+fn pending_nonces(w: &World) -> std::collections::HashSet<u32> {
+    setl8_verify::intents::IntentFile::parse(w.ev.intents_bytes())
+        .map(|f| {
+            f.lines
+                .iter()
+                .filter_map(|l| match &l.intent {
+                    Ok(it) if matches!(it.kind, setl8_verify::intents::IntentKind::Limit | setl8_verify::intents::IntentKind::Stop) => Some(l.nonce),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The M9c counters of one finished path, from what the evaluator refused and accepted.
+pub fn m9c_cover(w: &World) -> M9cCover {
+    let pending = pending_nonces(w);
+    let refusals = w.ev.refusals();
+    let n = |reason: OrderReject, pending_order: bool| u64::from(refusals.iter().any(|r| r.reason == reason && pending.contains(&r.nonce) == pending_order));
+    M9cCover {
+        market_margin_exact: u64::from(w.ev.stats().margin_exact > 0),
+        market_margin_refused: n(OrderReject::InsufficientMargin, false),
+        pending_notional_refused: n(OrderReject::NotionalCap, true),
+        pending_quantity_refused: n(OrderReject::InvalidRemainder, true),
+        pending_held_refused: n(OrderReject::AccountHeld, true),
+    }
 }

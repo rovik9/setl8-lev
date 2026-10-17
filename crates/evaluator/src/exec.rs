@@ -287,6 +287,9 @@ impl Evaluator {
             if equity - used < 0 {
                 return Ok(Err(OrderReject::InsufficientMargin));
             }
+            if equity == used && kind == OrderKind::Market {
+                self.stats.margin_exact = self.stats.margin_exact.saturating_add(1);
+            }
         }
         // ---- execution
         if close_qty > 0 && open_qty == 0 {

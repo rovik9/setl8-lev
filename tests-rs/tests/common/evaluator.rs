@@ -141,9 +141,9 @@ fn market_args(spec: &PathSpec, i: usize) -> CreateMarketArgs {
             status: 1,
             feed_id: journal_types::feed_id(&journal_types::NativeSha256, m.source, &m.symbol),
             max_age_secs: m.max_age_secs,
-            qty_step: 1_000,
-            qty_min: 1_000,
-            max_notional_usd: 1_000_000_000_000_000,
+            qty_step: m.qty_step,
+            qty_min: m.qty_min,
+            max_notional_usd: m.max_notional_micro,
             session_count: u8::try_from(m.sessions.len()).unwrap(),
             sessions,
             quote_conv_market: c::NO_QUOTE_CONV,
@@ -484,6 +484,17 @@ impl Chain for LiteChain {
     fn veto_pass(&mut self, _w: &World, t: i64) {
         self.set_clock(t);
         self.j.veto(self.clock).expect("veto_pass");
+    }
+
+    fn hold(&mut self, _w: &World, t: i64, held: bool) {
+        self.set_clock(t);
+        if held {
+            self.j.hold(self.clock, [0x5A; 32]).expect("hold_account");
+        } else {
+            self.j.release_hold(self.clock).expect("release_hold");
+        }
+        self.txs += 1;
+        self.lines.push(::setl8_verify::log::hold_line(&self.account, self.clock, held));
     }
 
     fn finalize_pass(&mut self, _w: &World, t: i64) {

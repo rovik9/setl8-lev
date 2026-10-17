@@ -67,6 +67,19 @@ pub struct MarketSpec {
     pub max_age_secs: u16,
     pub spread_e6: u32,
     pub sessions: Vec<(u16, u16)>,
+    /// Quantity step and minimum in 1e-6 units (1,000 and 1,000 for the ordinary markets).
+    pub qty_step: u64,
+    pub qty_min: u64,
+    /// The per-position notional cap in micro-USD (1e15 for the ordinary markets).
+    pub max_notional_micro: u64,
+}
+
+impl MarketSpec {
+    /// The ordinary market parameters (step 1,000, minimum 1,000, a cap nobody reaches).
+    #[allow(clippy::too_many_arguments)]
+    pub fn plain(id: u16, class: u8, symbol: String, source: u8, start_price: u64, max_age_secs: u16, spread_e6: u32, sessions: Vec<(u16, u16)>) -> MarketSpec {
+        MarketSpec { id, class, symbol, source, start_price, max_age_secs, spread_e6, sessions, qty_step: 1_000, qty_min: 1_000, max_notional_micro: 1_000_000_000_000_000 }
+    }
 }
 
 /// One input of a history, in arrival order.
@@ -80,6 +93,9 @@ pub enum Step {
     Post { sec: i64, heartbeat: bool },
     /// The trader presses "request payout and move to the next phase" at `sec`.
     Pass { sec: i64, plan: PassPlan },
+    /// The evaluator holds (`held`) or releases the account at `sec` (`hold_account` / `release_hold`): every second before `sec`
+    /// has been processed and posted first, every second from `sec` on is held (or no longer held).
+    Hold { sec: i64, held: bool },
 }
 
 /// What happens after the button is pressed.
@@ -113,6 +129,18 @@ pub enum Scenario {
     Convert,
     /// M9b: the margin of a triggered pending order is short (decision D3); the order stays pending and may fill later.
     Margin,
+    /// M9c: market orders that use exactly all the margin (price 1.0, no spread, no commission) and one more step that is
+    /// refused; the same at the end of a flip and of an add.
+    Edge,
+    /// M9c: a pending order that is individually under the market's notional cap but not together with the position it adds
+    /// to: refused at the trigger, filled later when the position is gone.
+    Cap,
+    /// M9c: a pending reverse order three steps larger than the position: the remainder of the flip is below the market's
+    /// minimum, the order is refused at the trigger and filled when the position is gone.
+    Remainder,
+    /// M9c: the account is held for review while a pending order triggers and a market order arrives; the order is refused,
+    /// stays pending and fills when the hold is released.
+    Hold,
 }
 
 /// A complete history.
@@ -384,7 +412,7 @@ fn markets_for(rng: &mut Rng, closed_scenario: bool, two: bool) -> Vec<MarketSpe
     } else {
         (3, rng.range(3_000, 6_000) as u64 * E12, rng.range(15, 60) as u32, 900)
     };
-    v.push(MarketSpec { id: 0, class, symbol: symbol_of(class, 0), source: pick_source(rng), start_price: price, max_age_secs: age, spread_e6: spread, sessions: FULL_WEEK.to_vec() });
+    v.push(MarketSpec::plain(0, class, symbol_of(class, 0), pick_source(rng), price, age, spread, FULL_WEEK.to_vec()));
     for i in 1..n {
         let id = i as u16;
         let (class, price) = *[(6u8, 30_000u64 * E12), (0, 1_100_000_000_000), (4, 80 * E12), (5, 150 * E12)].get(rng.range(0, 3) as usize).unwrap_or(&(0, E12));
@@ -394,7 +422,7 @@ fn markets_for(rng: &mut Rng, closed_scenario: bool, two: bool) -> Vec<MarketSpe
         } else {
             FULL_WEEK.to_vec()
         };
-        v.push(MarketSpec { id, class, symbol: symbol_of(class, id), source: pick_source(rng), start_price: price, max_age_secs: 900, spread_e6: rng.range(10, 100) as u32, sessions });
+        v.push(MarketSpec::plain(id, class, symbol_of(class, id), pick_source(rng), price, 900, rng.range(10, 100) as u32, sessions));
     }
     v
 }
@@ -430,6 +458,10 @@ fn generate_inner(seed: u64, wild: bool) -> PathSpec {
         490..=599 => Scenario::TightClean,
         940..=999 => Scenario::Convert,
         900..=939 => Scenario::Margin,
+        760..=819 => Scenario::Edge,
+        820..=869 => Scenario::Cap,
+        870..=899 => Scenario::Remainder,
+        740..=759 => Scenario::Hold,
         _ => Scenario::Noise,
     };
     let tier = if matches!(scenario, Scenario::Pass) { rng.range(3, 9) as usize } else { rng.range(0, 9) as usize };
@@ -438,11 +470,12 @@ fn generate_inner(seed: u64, wild: bool) -> PathSpec {
         Scenario::Pass => rng.range(1, 5) as u8,
         _ => rng.range(1, 5) as u8,
     };
-    let markets = markets_for(&mut rng, matches!(scenario, Scenario::Closed), matches!(scenario, Scenario::Convert));
+    let mut markets = markets_for(&mut rng, matches!(scenario, Scenario::Closed), matches!(scenario, Scenario::Convert));
+    shape_markets(&mut markets, scenario, size);
     let mut commission = [0u32; 8];
     // commission on some paths; more often on the quick-limit stories, where the overshooting slice has no fee (decision D2)
     let comm_ppm = if wild { 600_000 } else if matches!(scenario, Scenario::QuickFail | Scenario::Convert) { 500_000 } else { 250_000 };
-    if rng.chance(comm_ppm) {
+    if rng.chance(comm_ppm) && scenario != Scenario::Edge {
         commission = [rng.range(5, 40) as u32, 30, 30, 30, 40, 50, 60, 80];
     }
     let opened_time = match scenario {
@@ -472,6 +505,10 @@ fn build_path(seed: u64, scenario: Scenario, tier: usize, size: i64, phase: u8, 
         Scenario::TightClean => tight_clean(&mut p, &ctx),
         Scenario::Convert => convert(&mut p, &ctx),
         Scenario::Margin => margin(&mut p, &ctx),
+        Scenario::Edge => edge(&mut p, &ctx),
+        Scenario::Cap => cap(&mut p, &ctx),
+        Scenario::Remainder => remainder(&mut p, &ctx),
+        Scenario::Hold => hold(&mut p, &ctx),
     }
     // a final tick one second after the last input closes the last second
     let end = p.last + 2;
@@ -699,6 +736,165 @@ fn convert_flip(p: &mut Plot, ctx: &Ctx) {
     p.long = !long;
     p.run(20, 5, 0, 100, 20_000);
     p.post(false);
+}
+
+/// The market parameters a story needs (M9c): exact arithmetic for `Edge`, a notional cap for `Cap`, a quantity minimum for
+/// `Remainder`. All three trade a single FX market (class 0, 50x).
+fn shape_markets(markets: &mut Vec<MarketSpec>, scenario: Scenario, size: i64) {
+    if !matches!(scenario, Scenario::Edge | Scenario::Cap | Scenario::Remainder) {
+        return;
+    }
+    markets.truncate(1);
+    let Some(m) = markets.first_mut() else { return };
+    m.class = 0;
+    m.sessions = FULL_WEEK.to_vec();
+    m.max_age_secs = 900;
+    if m.start_price < 800 * E12 / 1000 || m.start_price > 1_500 * E12 / 1000 {
+        m.start_price = 1_100_000_000_000;
+    }
+    match scenario {
+        Scenario::Edge => {
+            // price 1.0 and no spread: the fill price is the mid and the open profit is zero, so equity is exactly S
+            m.start_price = E12;
+            m.spread_e6 = 0;
+        }
+        Scenario::Cap => m.max_notional_micro = u64::try_from(size.saturating_mul(3)).unwrap_or(u64::MAX),
+        _ => m.qty_min = 1_000_000,
+    }
+}
+
+/// Market orders that use exactly all the margin: `equity - margin == 0` is accepted (the verifier must accept it), one step
+/// more is refused by the evaluator (an intent on file, no event). Three shapes: a single order, an add to a smaller
+/// position, and a flip whose remainder uses it.
+fn edge(p: &mut Plot, ctx: &Ctx) {
+    let lev = ctx.lev0;
+    let long = p.rng.chance(500_000);
+    let full = lev * 1_000;
+    p.run(20, 5, 0, 0, 0);
+    match p.rng.range(0, 2) {
+        0 => p.open_main(long, full, 0, 0),
+        1 => {
+            p.open_main(long, lev * 600, 0, 0);
+            p.run(10, 5, 0, 0, 0);
+            p.post(false);
+            let q = p.qty_for(0, lev * 400);
+            p.market_order(0, long, q, 0, 0);
+        }
+        _ => {
+            p.open_main(!long, lev * 300, 0, 0);
+            p.run(10, 5, 0, 0, 0);
+            p.post(false);
+            // closes the short in full and opens the long that uses the whole margin
+            let q = p.qty_for(0, lev * 300) + p.qty_for(0, full);
+            p.market_order(0, long, q, 0, 0);
+        }
+    }
+    p.run(10, 5, 0, 0, 0);
+    p.post(false);
+    // one step more, same side: refused for margin
+    p.market_order(0, long, 1_000, 0, 0);
+    p.run(10, 5, 0, 0, 0);
+    p.post(false);
+    p.close_order(0, 0);
+    p.run(10, 5, 0, 0, 0);
+}
+
+/// A position of 2 S under a notional cap of 3 S, and a pending order of 2 S: alone it is fine, added to the position it
+/// would make 4 S. It triggers when the position loses a little, is refused (`NotionalCap`), and in most stories the trader
+/// closes the position so the order, still triggered, fills at the next sample.
+fn cap(p: &mut Plot, _ctx: &Ctx) {
+    let long = p.rng.chance(500_000);
+    p.run(20, 5, 0, 100, 20_000);
+    p.open_main(long, 2_000, 0, 0);
+    p.run(10, 5, 0, 50, 20_000);
+    let off = p.rng.range(300, 600);
+    let level = p.scaled(0, if long { -off } else { off });
+    let q = p.qty_for(0, 2_000);
+    p.limit_order(0, long, q, level, false, 0, 0);
+    let loss = i64::try_from(i128::from(2_000) * i128::from(off) / 1000).unwrap_or(0) + 1_500;
+    p.run(20, 5, -loss, 50, 20_000);
+    p.post(false);
+    p.run(15, 5, 0, 50, 20_000);
+    if p.rng.chance(700_000) {
+        p.close_order(0, 0);
+        p.run(20, 5, 0, 50, 20_000);
+        p.post(false);
+        p.close_order(0, 0);
+    }
+    p.run(20, 5, 0, 50, 20_000);
+}
+
+/// A position of `k` thousandths of S and a pending reverse limit order for three steps (3,000 units) more than the position:
+/// the order is valid when placed (a multiple of the step, above the minimum), but at the trigger the flip's remainder of
+/// 3,000 units is below the market's minimum of 1,000,000: refused (`Quantity`), still pending. When the trader closes the
+/// position the order, still triggered, opens a position of its own size.
+fn remainder(p: &mut Plot, _ctx: &Ctx) {
+    let long = p.rng.chance(500_000);
+    let k = p.rng.range(400, 1_500);
+    p.run(20, 5, 0, 100, 20_000);
+    // the position's quantity is the one the order must exceed by three steps: take it before the price moves
+    p.long = long;
+    p.k_milli = k;
+    let q_main = p.qty_for(0, k);
+    p.market_order(0, long, q_main, 0, 0);
+    p.run(10, 5, 0, 50, 20_000);
+    let off = p.rng.range(300, 600);
+    // the reverse order closes the position at a level in its profit direction
+    let level = p.scaled(0, if long { off } else { -off });
+    p.limit_order(0, !long, q_main + 3_000, level, false, 0, 0);
+    let gain = i64::try_from(i128::from(k) * i128::from(off) / 1000).unwrap_or(0) + 1_500;
+    p.run(20, 5, gain, 50, 20_000);
+    p.post(false);
+    p.run(15, 5, 0, 50, 20_000);
+    if p.rng.chance(700_000) {
+        p.close_order(0, 0);
+        p.run(20, 5, 0, 50, 20_000);
+        p.post(false);
+        p.close_order(0, 0);
+    }
+    p.run(20, 5, 0, 50, 20_000);
+}
+
+/// A pending order is triggered while the account is held (`hold_account`): the evaluator refuses it, it stays pending and
+/// nothing is journalled; a market order that adds exposure arrives during the hold and is refused too (its intent is on file),
+/// a market order that closes works. After `release_hold` the pending order, still triggered, fills at the next sample.
+fn hold(p: &mut Plot, _ctx: &Ctx) {
+    let long = p.rng.chance(500_000);
+    p.run(20, 5, 0, 100, 20_000);
+    p.open_main(long, 1_000, 0, 0);
+    p.run(10, 5, 0, 50, 20_000);
+    p.post(false);
+    let off = p.rng.range(300, 600);
+    let level = p.scaled(0, if long { -off } else { off });
+    let q = p.qty_for(0, 500);
+    p.limit_order(0, long, q, level, false, 0, 0);
+    p.run(5, 5, 0, 30, 20_000);
+    // the hold starts one second after the last input: everything before it is posted first
+    let from = p.last + 1;
+    p.steps.push(Step::Hold { sec: from, held: true });
+    p.t = from;
+    p.last = from;
+    // the main position loses `off` of the price: the pending order triggers during the hold
+    let loss = i64::try_from(i128::from(1_000) * i128::from(off) / 1000).unwrap_or(0) + 1_500;
+    p.run(20, 5, -loss, 50, 20_000);
+    // an order that adds exposure arrives during the hold; so does one that closes a part of the position
+    let q2 = p.qty_for(0, 200);
+    p.market_order(0, long, q2, 0, 0);
+    p.run(10, 5, 0, 30, 20_000);
+    p.post(false);
+    let to = p.last + 1;
+    p.steps.push(Step::Hold { sec: to, held: false });
+    p.t = to;
+    p.last = to;
+    p.run(20, 5, 0, 30, 20_000);
+    p.post(false);
+    if p.rng.chance(600_000) {
+        p.close_order(0, 0);
+        p.run(20, 5, 0, 30, 20_000);
+        p.post(false);
+        p.close_order(0, 0);
+    }
+    p.run(10, 5, 0, 30, 20_000);
 }
 
 /// The main position uses 78% to 88% of the margin capacity; a pending order of the same side asking for 25% to 40% more is

@@ -70,7 +70,7 @@ impl Script {
 }
 
 fn eur_spec(id: u16, symbol: &str, spread: u32, max_age: u16, sessions: Vec<(u16, u16)>) -> MarketSpec {
-    MarketSpec { id, class: 0, symbol: symbol.to_string(), source: 2, start_price: E12, max_age_secs: max_age, spread_e6: spread, sessions }
+    MarketSpec::plain(id, 0, symbol.to_string(), 2, E12, max_age, spread, sessions)
 }
 
 fn base_spec(markets: Vec<MarketSpec>, commission0: u32, phase: u8, steps: Vec<Step>) -> ::evaluator::testkit::PathSpec {
@@ -360,6 +360,17 @@ fn sc_flat_two() -> ::evaluator::testkit::PathSpec {
     base_spec(vec![eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
 }
 
+/// Like `sc_flat_two`, but market 0 caps a position at $5,000 of notional (the program has no such rule).
+fn sc_flat_capped() -> ::evaluator::testkit::PathSpec {
+    let mut s = Script::new();
+    s.s(0, T_1400, p4(10_000)).s(1, T_1400 + 1, p4(10_000));
+    s.s(0, T_1400 + 10, p4(10_000)).s(1, T_1400 + 11, p4(10_000));
+    s.end(T_1400 + 15);
+    let mut m0 = eur_spec(0, "EURUSD", 0, 900, vec![(0, 10_080)]);
+    m0.max_notional_micro = 5_000_000_000;
+    base_spec(vec![m0, eur_spec(1, "GBPUSD", 0, 900, vec![(0, 10_080)])], 0, 2, s.steps)
+}
+
 // ------------------------------------------------------------------------------------------------- the tampering view
 
 struct T {
@@ -499,6 +510,8 @@ fn run_case(t: &T, chain: &mut LiteChain) -> Outcome {
     // ---- program
     let mut rejected = None;
     let mut chain_lines: Vec<String> = Vec::new();
+    // the `account_held` line of a hold the chain saw (M9c: the log carries it, dated with the block time)
+    let mut hold_line: Option<(usize, String)> = None;
     for (pos, &bi) in t.order.iter().enumerate() {
         if t.hold_before == Some(pos) {
             let hash = [9u8; 32];
@@ -506,6 +519,7 @@ fn run_case(t: &T, chain: &mut LiteChain) -> Outcome {
             let ev = dup(&chain.j.v.evaluator);
             let ix = chain.j.hold_ix(ev.pubkey(), hash);
             assert_ok(chain.j.v.e.send(&[ix], &[&ev]));
+            hold_line = Some((pos, ::setl8_verify::log::hold_line(&t.params.account, chain.clock, true)));
         }
         match chain.try_post_bytes(&t.batches[bi], t.raw.get(&bi).cloned(), t.signer.map(Keypair::new_from_array).as_ref()) {
             Ok(_) => {}
@@ -525,7 +539,15 @@ fn run_case(t: &T, chain: &mut LiteChain) -> Outcome {
         }
     }
     // ---- verifier, over everything the malicious evaluator published (as if all had been accepted)
-    let mut items: Vec<Item> = t.order.iter().map(|&i| Item::Batch(t.batches[i].clone())).collect();
+    let mut items: Vec<Item> = Vec::new();
+    for (pos, &i) in t.order.iter().enumerate() {
+        if let Some((at, line)) = &hold_line {
+            if *at == pos {
+                items.push(Item::Line(line.clone()));
+            }
+        }
+        items.push(Item::Batch(t.batches[i].clone()));
+    }
     for l in chain.lines.drain(..) {
         items.push(Item::Line(l));
     }
@@ -1074,9 +1096,9 @@ fn rows() -> Vec<Row> {
                 t.batches[0].intents_committed_bytes = t.intents_text().len();
                 t.fix();
             },
-            who: Program,
+            who: Both,
             program: Some(Setl8Error::MarketClosed),
-            verifier: &[],
+            verifier: &[F::FillNotAllowed],
         },
         Row {
             name: "fill quantity not a multiple of the step",
@@ -1090,7 +1112,7 @@ fn rows() -> Vec<Row> {
             },
             who: Both,
             program: Some(Setl8Error::QuantityInvalid),
-            verifier: &[F::ForgedTrade],
+            verifier: &[F::ForgedTrade, F::FillNotAllowed],
         },
         // ---------------------------------------------------------------- what only the verifier sees (the program cannot)
         Row {
@@ -1488,9 +1510,9 @@ fn rows() -> Vec<Row> {
             tamper: |t| {
                 t.hold_before = Some(0);
             },
-            who: Program,
+            who: Both,
             program: Some(Setl8Error::AccountHeld),
-            verifier: &[],
+            verifier: &[F::FillNotAllowed],
         },
         Row {
             name: "fill during the 12 h lock after a breach",
@@ -1510,9 +1532,9 @@ fn rows() -> Vec<Row> {
                 t.append(::evaluator::BatchKind::PostJournal, vec![fill, fee], proofs, time, false, vec![0]);
                 t.fix();
             },
-            who: Program,
+            who: Both,
             program: Some(Setl8Error::AccountLocked),
-            verifier: &[],
+            verifier: &[F::FillNotAllowed],
         },
         Row {
             name: "fill on an account that already failed",
@@ -1772,7 +1794,7 @@ fn rows() -> Vec<Row> {
             program: None,
             verifier: &[F::StateMismatch],
         },
-        // ---------------------------------------------------------------- the honest limit M9b made visible
+        // ---------------------------------------------------------------- the honest limit M9b made visible, closed by M9c (B1)
         Row {
             name: "a market fill the account cannot margin",
             sc: sc_flat_two,
@@ -1790,9 +1812,30 @@ fn rows() -> Vec<Row> {
                 t.append(::evaluator::BatchKind::PostJournal, vec![fill], proofs, time, false, vec![0]);
                 t.fix();
             },
-            who: Neither,
+            who: Verifier,
             program: None,
-            verifier: &[],
+            verifier: &[F::FillWithoutMargin],
+        },
+        Row {
+            name: "a market fill above the market's notional cap",
+            sc: sc_flat_capped,
+            tamper: |t| {
+                let i = t.samples.len() - 1;
+                let time = t.samples[i].ts_sec() + 20;
+                // 10,000 EUR is $10,000 of notional on a market that caps a position at $5,000; the margin ($200) is no problem
+                let qty = 10_000 * 1_000_000u64;
+                let intent = market_order(0, true, qty, time);
+                let line = t.trader_sign(99, &intent);
+                t.intents.push(line);
+                let j = t.sample_at(0, T_1400 + 10);
+                let fill = t.hand_fill(j, true, qty, time, 99, 0);
+                let proofs = vec![t.proof_of_sample(j)];
+                t.append(::evaluator::BatchKind::PostJournal, vec![fill], proofs, time, false, vec![0]);
+                t.fix();
+            },
+            who: Verifier,
+            program: None,
+            verifier: &[F::FillNotAllowed],
         },
     ]
 }
