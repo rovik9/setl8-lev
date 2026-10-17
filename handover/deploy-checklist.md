@@ -11,7 +11,8 @@ Values and checks that live outside the code; none is set by this repo. The per-
 - `product_program_id` = the real program id (placeholder `9NAdnJ7ySQqPYuPKu6d6wCbcaHHMnzwFT6xEcRfXX2a7` replaced, keypair generated locally, never printed or committed).
 - `reset_price_bps = [10000, 11500, 12000, 12750, 13000]`: basis points of the CURRENT tier price, indexed by the 0-based phase the trader failed in (type `Vec<u16>`, values above 10000 are intended). Never a size-based table such as `[100, 150]`.
 - `challenge_sizes` = the rule set's ten tiers (size, cost) exactly, with **unique sizes**. Two tiers of one size with different costs make the vault answer `InvalidChallengeTier` forever for that size; the sector helper refuses any duplicate size.
-- **Never reprice or remove a tier while Failed records exist.** A reset follows the tier cost registered now, not what the trader paid: repricing changes, and removing blocks, every pending reset of that size.
+- **Never reprice or remove a tier while Failed records exist.** A reset follows the tier cost registered now, not what the trader paid: repricing changes, and removing blocks, every pending reset of that size. (Restated for M8: `reset_account` reads the registry at the moment of the call. A removed tier is refused by the sector with `ResetTierInvalid` before any CPI, a duplicate size with the same error, a ladder shorter than the failed phase with `ResetPhaseOutOfRange`; a repriced tier is simply followed, the trader pays the new price. The ladder must have FIVE entries or the phases beyond it cannot be reset.)
+- `reset_account` needs about 125,000 to 157,000 compute units (the vault's `deposit_reset` is about 42,000 of it; the spread comes from the PDA bump searches of the trader's keys). It fits the default 200,000-unit limit; clients should still ask for 250,000.
 - `max_payout_count` = **4** (one payout per phase 2 to 5; the local graduation assumes it).
 - `fee_split_bps` (the harness uses 6500; the real number is Rovik's); mints = the vault's USDC and USDT.
 
@@ -23,4 +24,4 @@ Values and checks that live outside the code; none is set by this repo. The per-
 - Evaluator operations, rent and fees, open policy items: see `module-7.md`.
 
 ## Still open (not decided by this change)
-- The 0.4% fee on top of resets (A-FEE-1); the reset price after a wrongful fail (OPEN_QUESTIONS #9); what admins do after a veto (#8); hedging thresholds (#7).
+- The 0.4% fee on top of resets (A-FEE-1; `reset_account` charges it with the same `ruleset.fee_bps` as `open_account`, one constant to change if it is dropped); whether a violation-failed account may be reset once the ban is lifted (M8 allows it, see `handover/module-8.md`); the reset price after a wrongful fail (OPEN_QUESTIONS #9); what admins do after a veto (#8); hedging thresholds (#7).

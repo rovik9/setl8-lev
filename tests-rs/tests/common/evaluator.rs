@@ -200,6 +200,49 @@ impl LiteChain {
         LiteChain { account: acct.to_bytes(), j, params, lines: Vec::new(), clock: spec.opened_time, slot: 1000, shapes: BTreeMap::new(), txs: 0, opened_line, pass_events: 0 }
     }
 
+    /// M8: the trader pays the reset price and continues in a NEW account of the same phase. The failed account (`self.j.acct`)
+    /// goes through the REAL `reset_account` against the real vault at clock `t`; the chain then points at the new account
+    /// (address, challenge id, event log and `opened` line), and the new account's stored bytes are compared with the fresh
+    /// account the program must have created. Returns the new account's params (the evaluator of the second segment starts
+    /// from them) and the `AccountReset` event.
+    pub fn reset(&mut self, t: i64) -> (::evaluator::AccountParams, setl8_lev_trading::events::AccountReset) {
+        self.set_clock(t);
+        let failed = self.j.account();
+        let ra = self.j.reset_accts();
+        let clock = self.clock;
+        let m = self.j.ok(|j| j.send_reset(clock, &ra, failed.challenge_id));
+        self.txs += 1;
+        let ev = cpi_events::<setl8_lev_trading::events::AccountReset>(&m).pop().expect("AccountReset event");
+        let opened = cpi_events::<setl8_lev_trading::events::Opened>(&m).pop().expect("Opened event");
+        self.j.acct = ra.trading_account;
+        let a = self.j.account();
+        // the account the program created: the failed phase, fresh state, a new journal, the payouts the vault carried over
+        assert_eq!((a.phase, a.status, a.b, a.q_tally, a.latch, a.tight_on, a.flat, a.seq, a.lock_until), (failed.phase, 0, i64::try_from(failed.size_s).unwrap(), 0, 0, 0, 1, 0, 0));
+        assert_eq!((a.challenge_id, a.size_s, a.created_at, a.next_request_id), (failed.challenge_id + 1, failed.size_s, self.clock, failed.next_request_id));
+        assert_eq!(ev.phase, failed.phase);
+        let params = ::evaluator::AccountParams {
+            account: self.j.acct.to_bytes(),
+            trader: self.j.trader.pubkey().to_bytes(),
+            challenge_id: a.challenge_id,
+            size_micro: i64::try_from(a.size_s).unwrap(),
+            phase: failed.phase,
+            tier_index: self.params.tier_index,
+            opened_time: a.created_at,
+        };
+        // what the event log says about the new account is what the program emitted
+        let rec = shared::opened_rec(&params);
+        assert_eq!(
+            (opened.account.to_bytes(), opened.trader.to_bytes(), opened.challenge_id, opened.size_s, opened.tier_index, opened.phase, opened.ruleset_version, opened.genesis_hash, opened.time),
+            (rec.account, rec.trader, rec.challenge_id, rec.size_s, rec.tier_index, rec.phase, rec.ruleset_version, rec.genesis_hash, rec.time),
+            "the program's Opened event is the log's opened line"
+        );
+        self.account = params.account;
+        self.params = params.clone();
+        self.lines.clear();
+        self.opened_line = ::setl8_verify::log::opened_line(&rec);
+        (params, ev)
+    }
+
     fn set_clock(&mut self, t: i64) {
         if t > self.clock {
             self.clock = t;

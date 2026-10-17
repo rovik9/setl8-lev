@@ -113,6 +113,25 @@ These are the classes the chain cannot see (DESIGN 1.6 right-hand column): price
 | a trader's market order ignored (no fill, intent on file) | Neither | - | - |  |
 | a market fill the account cannot margin | Neither | - | - |  |
 
+## Reset (M8)
+
+Rows of `reset_account`, asserted in `tests-rs/tests/trust_reset.rs`. A reset has no price argument and no phase argument, so most of what a cheating trader or evaluator could try is not expressible; these are the rows that are. WHO as above, plus VAULT = the vault rejects (its own error code).
+
+| class | who | caught by | note |
+|---|---|---|---|
+| reset: a price below the registry's tier price paid to the vault (a fake reset price) | Vault | WrongAmount (6007) | Not expressible through our instruction (the amount is computed from the registry, not passed); in production only our program can sign as `sector_authority`. The harness calls `deposit_reset` directly with the PDA flagged as a signer. |
+| reset: the registry replaced by a copy with cheaper tiers at another address | Program | InvalidVaultAccount (6103) | The registry must be the vault-owned PDA `["product_registry", this program]`; address, owner and header are checked before a byte of it is used. |
+| reset: an account that has not failed (an Active account of a high phase) | Program | ResetNotAllowed (6027) | |
+| reset: a second reset of the same failed record | Program | AccountAlreadyReset (6107) | Before any CPI. |
+| reset: a second reset of the same failed record with the local mark wiped (the vault is the backstop) | Vault | ResetNotAllowed (6011) | Only reachable by editing the account, which no instruction does; shows the vault holds the line on its own. |
+| reset: by a banned wallet | Program | WalletBanned (6035) | |
+| reset: while the sector is paused | Program | Paused (6001) | |
+| reset: while the vault pauses this product | Vault | ProductNotActive | The whole transaction reverts, nothing is marked. |
+| reset into a higher phase: the new account copies the failed phase (there is no phase argument) | Program | phase = failed phase | For every phase 1 to 5 the new account's phase is the failed account's. The ladder entry the vault prices with is the failed phase minus one, so a wrong phase would also be a wrong price (WrongAmount). |
+| reset: an evaluator log that opens the new account in a higher phase than the chain's account | Verifier | StateMismatch | The `opened` line of the log says phase 4, the chain's account (the snapshot) says 3. The link between the failed account and its successor is the `AccountReset` event (previous account, phase); the verifier of one account does not follow it, an auditor compares `Opened.phase` with the last phase of the previous account's log. |
+
+Not a tamper class, but a policy point the matrix makes visible: a violation-failed account (`fail_for_violation`) can be reset once the wallet is unbanned, because nothing on the account records HOW it failed. While the ban lasts `reset_account` refuses it (`WalletBanned`). Rovik decides whether unbanning should also forbid the reset (it would need a marker on the account).
+
 ## Residual trust
 
 Every NEITHER row, with the reason it stays open. These are what a user of option C trusts the evaluator operator (or the second recorder) for.

@@ -6,9 +6,8 @@ use std::sync::Mutex;
 
 use common::runner::*;
 use common::*;
-use evaluator::testkit::{generate, generate_wild};
+use evaluator::testkit::{generate, generate_after_reset, generate_wild, reset_story, PathSpec};
 use evaluator::*;
-use journal_types::JournalEvent;
 
 #[derive(Default, Debug, Clone, Copy)]
 struct Cover {
@@ -28,6 +27,7 @@ struct Cover {
     closed_market: u64,
     verifier_invalid: u64,
     m9b: M9bCover,
+    resets: ResetCover,
 }
 
 impl Cover {
@@ -48,13 +48,13 @@ impl Cover {
         self.closed_market += o.closed_market;
         self.verifier_invalid += o.verifier_invalid;
         self.m9b.add(&o.m9b);
+        self.resets.add(&o.resets);
     }
 }
 
-fn run_seed(seed: u64) -> Result<Cover, String> {
-    let spec = if std::env::var("ENGINE_WILD").is_ok() { generate_wild(seed) } else { generate(seed) };
-    let mut chain = SimChain::default();
-    let r = run_path(&spec, world_for(&spec), &mut chain);
+/// Every check of one finished segment (a path, or the second half of a reset story): no fault, no unexpected note, the public
+/// verifier says VALID on the account's own log, the independent re-derivation agrees, and the SPLIT model is exact.
+fn check(spec: &PathSpec, r: &RunResult) -> Result<(), String> {
     let w = &r.world;
     if let Some(f) = w.ev.fault() {
         return Err(format!("evaluator fault {f:?} ({:?})", spec.scenario));
@@ -87,8 +87,13 @@ fn run_seed(seed: u64) -> Result<Cover, String> {
             return Err(format!("batch above the chain's limits ({:?})", spec.scenario));
         }
     }
+    Ok(())
+}
+
+/// What one finished segment counts.
+fn cover_of(spec: &PathSpec, r: &RunResult) -> Cover {
+    let w = &r.world;
     let st = w.ev.stats();
-    let evs = events(&r.items);
     let mut c = Cover { paths: 1, ..Default::default() };
     c.breach = u64::from(st.breaches > 0);
     c.static_fail = u64::from(st.static_fails > 0);
@@ -103,9 +108,32 @@ fn run_seed(seed: u64) -> Result<Cover, String> {
     c.pass_finalized = u64::from(r.pass.finalized > 0);
     c.pass_reject_cancel = u64::from(r.pass.rejected + r.pass.cancelled > 0);
     c.closed_market = u64::from(st.closed_market_rejects > 0 || st.closed_with_position > 0);
-    let _ = evs.iter().filter(|e| matches!(e, JournalEvent::Meta { .. })).count();
     let lines: Vec<String> = r.items.iter().filter_map(|i| if let Item::Line(l) = i { Some(l.clone()) } else { None }).collect();
-    c.m9b = m9b_cover(&spec, w, &r.items, &lines);
+    c.m9b = m9b_cover(spec, w, &r.items, &lines);
+    c
+}
+
+fn run_seed(seed: u64) -> Result<Cover, String> {
+    let spec = if std::env::var("ENGINE_WILD").is_ok() { generate_wild(seed) } else { generate(seed) };
+    let mut chain = SimChain::default();
+    let r = run_path(&spec, world_for(&spec), &mut chain);
+    check(&spec, &r)?;
+    let mut c = cover_of(&spec, &r);
+    // M8: an account that failed goes through `reset_account` (no program here: a new account of the same phase) and the
+    // story goes on in it; the second segment gets every check of a path of its own
+    if reset_story(&spec) && matches!(r.world.ev.status(), Status::Failed(_)) {
+        let failed_phase = r.world.ev.phase();
+        let reset_time = spec.end + 1_000;
+        let spec2 = generate_after_reset(&spec, reset_time);
+        let params2 = reset_params(&r.world.opened, failed_phase, reset_time);
+        let world2 = World::from_params(spec_rules(&spec2), params2);
+        let mut chain2 = SimChain::default();
+        let r2 = run_path(&spec2, world2, &mut chain2);
+        check(&spec2, &r2).map_err(|e| format!("after the reset (second segment {:?}, phase {failed_phase}): {e}", spec2.scenario))?;
+        let c2 = cover_of(&spec2, &r2);
+        c.add(&c2);
+        c.resets.add(&ResetCover::one(failed_phase, completed_a_pass(&r2, failed_phase)));
+    }
     Ok(c)
 }
 
@@ -148,6 +176,13 @@ fn engine_only_campaign() {
     println!("{c:#?}");
     // the M9b stories must be exercised (floors scale with the number of paths; 100 each at 10,000, 150 for the margin refusal)
     let short: Vec<String> = M9bCover::floors(n).into_iter().filter(|(name, floor)| c.m9b.value_of(name) < *floor).map(|(name, floor)| format!("{name} {} < {floor}", c.m9b.value_of(name))).collect();
+    let mut short = short;
+    for (name, floor) in ResetCover::floors(n) {
+        println!("coverage {name}: {} (floor {floor})", c.resets.value_of(name));
+        if c.resets.value_of(name) < floor {
+            short.push(format!("{name} {} < {floor}", c.resets.value_of(name)));
+        }
+    }
     assert!(short.is_empty() || !f.is_empty() || std::env::var("ENGINE_WILD").is_ok(), "under-exercised: {short:?}");
     if !f.is_empty() {
         let mut fs: Vec<_> = f.iter().collect();

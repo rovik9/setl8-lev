@@ -11,10 +11,12 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use common::evaluator::shared::runner::{m9b_cover, run_path, spec_rules, M9bCover};
+use common::evaluator::shared::runner::{completed_a_pass, m9b_cover, run_path, spec_rules, M9bCover, ResetCover, RunResult};
 use common::evaluator::shared::{self, World};
 use common::evaluator::*;
-use ::evaluator::testkit::generate;
+use common::launch_ruleset_args;
+use common::vault::RESET_LADDER_BPS;
+use ::evaluator::testkit::{generate, generate_after_reset, reset_story, PathSpec};
 use ::evaluator::Status;
 use solana_signer::Signer;
 
@@ -38,6 +40,7 @@ struct Cover {
     passes_vetoed: u64,
     graduated: u64,
     m9b: M9bCover,
+    resets: ResetCover,
 }
 
 impl Cover {
@@ -60,6 +63,7 @@ impl Cover {
         self.passes_vetoed += o.passes_vetoed;
         self.graduated += o.graduated;
         self.m9b.add(&o.m9b);
+        self.resets.add(&o.resets);
     }
 }
 
@@ -68,11 +72,10 @@ struct Outcome {
     shapes: BTreeMap<String, ShapeMax>,
 }
 
-fn run_seed(seed: u64) -> Result<Outcome, String> {
-    let spec = generate(seed);
-    let mut chain = LiteChain::new(&spec);
-    let world = World::from_params(spec_rules(&spec), chain.params.clone());
-    let r = run_path(&spec, world, &mut chain);
+/// The checks of one finished segment (a path, or the second half of a reset story) against the chain it was posted to: no
+/// fault, no unexpected note, the public verifier says VALID on the program's events of THIS account, the final account equals
+/// the evaluator, and a failed account is Failed at the vault.
+fn verify_segment(spec: &PathSpec, chain: &LiteChain, r: &RunResult) -> Result<(), String> {
     let w = &r.world;
     if let Some(f) = w.ev.fault() {
         return Err(format!("evaluator fault {f:?} ({:?})", spec.scenario));
@@ -80,7 +83,6 @@ fn run_seed(seed: u64) -> Result<Outcome, String> {
     if !r.notes.is_empty() {
         return Err(format!("runner notes: {:?} ({:?})", r.notes, spec.scenario));
     }
-    let st = w.ev.stats();
     // the public verifier on what the program emitted
     let events = chain.events_text();
     let rules = shared::rules_json(&w.rules, w.opened.size_micro);
@@ -96,7 +98,7 @@ fn run_seed(seed: u64) -> Result<Outcome, String> {
     })
     .map_err(|e| format!("verifier input: {e}"))?;
     if rep.verdict != setl8_verify::Verdict::Valid {
-        return Err(format!("verifier MISMATCH on the program's events ({:?}):\n{}", spec.scenario, shared::describe(&rep)));
+        return Err(format!("verifier MISMATCH on the program's events ({:?}, challenge {}):\n{}", spec.scenario, w.opened.challenge_id, shared::describe(&rep)));
     }
     // the final account equals the evaluator, also after the last non-batch transactions
     let a = chain.j.account();
@@ -105,12 +107,19 @@ fn run_seed(seed: u64) -> Result<Outcome, String> {
         return Err(format!("final account differs: chain b {} q {} seq {} vs evaluator b {} q {} seq {}", a.b, a.q_tally, a.seq, es.b, es.q_tally, w.ev.seq()));
     }
     if matches!(w.ev.status(), Status::Failed(_)) {
-        let vs = chain.j.v.vault_trader_state(&chain.j.trader.pubkey(), 0).ok_or("vault record")?;
+        let vs = chain.j.v.vault_trader_state(&chain.j.trader.pubkey(), a.challenge_id).ok_or("vault record")?;
         if a.status != 1 || vs.status != 2 {
             return Err(format!("failed account: local status {} vault status {}", a.status, vs.status));
         }
     }
-    let mut c = Cover { paths: 1, transactions: chain.txs, ..Default::default() };
+    Ok(())
+}
+
+/// What one finished segment counts (`transactions` is set by the caller: the chain counts both segments of a reset story).
+fn cover_of(spec: &PathSpec, chain: &LiteChain, r: &RunResult) -> Cover {
+    let w = &r.world;
+    let st = w.ev.stats();
+    let mut c = Cover { paths: 1, ..Default::default() };
     c.breach = u64::from(st.breaches > 0);
     c.static_fail = u64::from(st.static_fails > 0);
     c.quick_fail = u64::from(st.quick_fails > 0);
@@ -126,7 +135,46 @@ fn run_seed(seed: u64) -> Result<Outcome, String> {
     c.closed_market = u64::from(st.closed_market_rejects > 0 || st.closed_with_position > 0);
     c.passes_vetoed = u64::from(r.pass.vetoed > 0);
     c.graduated = u64::from(r.pass.graduated);
-    c.m9b = m9b_cover(&spec, w, &r.items, &chain.lines);
+    c.m9b = m9b_cover(spec, w, &r.items, &chain.lines);
+    c
+}
+
+/// ceil(tier cost x ladder[phase - 1] / 10_000), computed from the launch table independently of the program's helper.
+fn expected_reset_price(tier: usize, phase: u8) -> u64 {
+    let cost = u128::from(launch_ruleset_args().tier_cost[tier]);
+    let bps = u128::from(RESET_LADDER_BPS[usize::from(phase) - 1]);
+    u64::try_from((cost * bps).div_ceil(10_000)).unwrap()
+}
+
+fn run_seed(seed: u64) -> Result<Outcome, String> {
+    let spec = generate(seed);
+    let mut chain = LiteChain::new(&spec);
+    let world = World::from_params(spec_rules(&spec), chain.params.clone());
+    let r = run_path(&spec, world, &mut chain);
+    verify_segment(&spec, &chain, &r)?;
+    let mut c = cover_of(&spec, &chain, &r);
+    // M8: the failed account goes through the REAL `reset_account` and the story goes on in the new account; both accounts
+    // are compared byte for byte after every transaction and verified at the end of their own segment
+    if reset_story(&spec) && matches!(r.world.ev.status(), Status::Failed(_)) {
+        let failed_phase = r.world.ev.phase();
+        let tk = chain.j.trader.pubkey();
+        let tt = chain.j.v.trader_token(&tk);
+        let bal0 = chain.j.v.token_balance(&tt);
+        let (params2, ev) = chain.reset(chain.clock.max(spec.end) + 1_000);
+        let price = expected_reset_price(spec.tier, failed_phase);
+        let fee = u64::try_from((u128::from(price) * 40).div_ceil(10_000)).unwrap();
+        if (ev.price, ev.fee, ev.phase) != (price, fee, failed_phase) || bal0 - chain.j.v.token_balance(&tt) != price + fee {
+            return Err(format!("reset of tier {} phase {failed_phase}: event price {} fee {}, trader paid {}, want {price} + {fee}", spec.tier, ev.price, ev.fee, bal0 - chain.j.v.token_balance(&tt)));
+        }
+        let spec2 = generate_after_reset(&spec, params2.opened_time);
+        let world2 = World::from_params(spec_rules(&spec2), params2);
+        let r2 = run_path(&spec2, world2, &mut chain);
+        verify_segment(&spec2, &chain, &r2).map_err(|e| format!("after the reset (second segment {:?}, phase {failed_phase}): {e}", spec2.scenario))?;
+        c.add(&cover_of(&spec2, &chain, &r2));
+        c.paths = 1;
+        c.resets = ResetCover::one(failed_phase, completed_a_pass(&r2, failed_phase));
+    }
+    c.transactions = chain.txs;
     Ok(Outcome { cover: c, shapes: chain.shapes })
 }
 
@@ -250,6 +298,13 @@ fn differential_campaign() {
         }
         for (name, floor) in M9bCover::floors(n) {
             let v = c.m9b.value_of(name);
+            println!("coverage {name}: {v} (floor {floor})");
+            if v < floor {
+                short.push(format!("{name} {v} < {floor}"));
+            }
+        }
+        for (name, floor) in ResetCover::floors(n) {
+            let v = c.resets.value_of(name);
             println!("coverage {name}: {v} (floor {floor})");
             if v < floor {
                 short.push(format!("{name} {v} < {floor}"));

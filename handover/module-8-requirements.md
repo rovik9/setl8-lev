@@ -1,5 +1,7 @@
 # Module M8 (reset_account): requirements fixed by the vault change (P16, decision 51)
 
+DONE: built in P18, see `handover/module-8.md` (every test item below is in `tests-rs/tests/reset.rs`).
+
 Vault core commit 9a5c179, shared-interfaces v0.5.0. M8 is no longer blocked by the vault.
 
 ## What M8 must do

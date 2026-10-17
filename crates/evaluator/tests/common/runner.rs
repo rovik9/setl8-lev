@@ -452,3 +452,68 @@ pub fn m9b_cover(spec: &PathSpec, w: &World, items: &[Item], lines: &[String]) -
     c.finalize_both = u64::from(lines.windows(2).any(|w| w[0].contains("\"type\":\"pass_finalized\"") && w[1].contains("\"type\":\"phase_advanced\"")));
     c
 }
+
+// ---------------------------------------------------------------------------------------------- M8 coverage
+
+/// What the 10,000-path gate counts for the reset story (M8): paths whose account failed, went through `reset_account` and
+/// continued in a new account of the same phase.
+#[derive(Default, Debug, Clone, Copy)]
+pub struct ResetCover {
+    /// Resets made, in all.
+    pub resets: u64,
+    /// ... by the phase the failed account was in (index 0 = phase 1).
+    pub by_phase: [u64; 5],
+    /// ... whose new account then completed a pass (phase 1: the confirmation; phases 2 to 5: the finalization).
+    pub then_pass: u64,
+}
+
+impl ResetCover {
+    pub fn add(&mut self, o: &ResetCover) {
+        self.resets += o.resets;
+        for (a, b) in self.by_phase.iter_mut().zip(o.by_phase.iter()) {
+            *a += *b;
+        }
+        self.then_pass += o.then_pass;
+    }
+
+    /// Floors of the gate run over `n` paths: 150 resets, 20 for each of phases 2 to 5, 20 that then complete a pass
+    /// (scaled with the number of paths, never below 1).
+    pub fn floors(n: u64) -> Vec<(&'static str, u64)> {
+        let scale = |x: u64| ((x * n).div_ceil(10_000)).max(1);
+        vec![("resets", scale(150)), ("reset_phase_2", scale(20)), ("reset_phase_3", scale(20)), ("reset_phase_4", scale(20)), ("reset_phase_5", scale(20)), ("reset_then_pass", scale(20))]
+    }
+
+    pub fn value_of(&self, name: &str) -> u64 {
+        match name {
+            "resets" => self.resets,
+            "reset_phase_1" => self.by_phase[0],
+            "reset_phase_2" => self.by_phase[1],
+            "reset_phase_3" => self.by_phase[2],
+            "reset_phase_4" => self.by_phase[3],
+            "reset_phase_5" => self.by_phase[4],
+            "reset_then_pass" => self.then_pass,
+            _ => 0,
+        }
+    }
+
+    /// One reset of an account that failed in `phase`; `passed` when the new account completed a pass.
+    pub fn one(phase: u8, passed: bool) -> ResetCover {
+        let mut c = ResetCover { resets: 1, then_pass: u64::from(passed), ..Default::default() };
+        if let Some(slot) = c.by_phase.get_mut(usize::from(phase).saturating_sub(1)) {
+            *slot = 1;
+        }
+        c
+    }
+}
+
+/// The account a reset opens: another address (derived from the failed one), the next challenge id, the SAME trader, tier and
+/// size, the failed account's phase, opened at the clock of the `reset_account` transaction.
+pub fn reset_params(failed: &AccountParams, phase: u8, reset_time: i64) -> AccountParams {
+    let account = ::evaluator::sha256::sha256_parts(&[b"SL8RESET".as_slice(), failed.account.as_slice(), failed.challenge_id.to_le_bytes().as_slice()]);
+    AccountParams { account, challenge_id: failed.challenge_id + 1, phase, opened_time: reset_time, ..failed.clone() }
+}
+
+/// Whether a finished path completed a pass in its account.
+pub fn completed_a_pass(r: &RunResult, started_phase: u8) -> bool {
+    r.pass.finalized > 0 || (started_phase == 1 && r.pass.confirmed > 0)
+}

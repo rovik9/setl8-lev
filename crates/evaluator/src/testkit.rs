@@ -450,10 +450,16 @@ fn generate_inner(seed: u64, wild: bool) -> PathSpec {
         Scenario::Closed => MONDAY + 2 * DAY + 19 * 3_600 + rng.range(0, 1_500),
         _ => MONDAY + rng.range(0, 3) * DAY + 8 * 3_600 + rng.range(0, 3 * 3_600),
     };
+    let collide = rng.chance(if wild { 500_000 } else { 50_000 });
+    build_path(seed, scenario, tier, size, phase, markets, commission, opened_time, collide)
+}
+
+/// The history of one account once its parameters are fixed: `scenario` plays out on `markets` from `opened_time` on.
+#[allow(clippy::too_many_arguments)]
+fn build_path(seed: u64, scenario: Scenario, tier: usize, size: i64, phase: u8, markets: Vec<MarketSpec>, commission: [u32; 8], opened_time: i64, collide: bool) -> PathSpec {
     let t0 = opened_time + 600;
     let ctx = Ctx { size, lev0: leverage_of(markets[0].class), phase };
-    let collide = rng.chance(if wild { 500_000 } else { 50_000 });
-    let mut p = Plot::new(rng.clone(), t0, size, &markets, collide);
+    let mut p = Plot::new(Rng::new(seed), t0, size, &markets, collide);
     p.rng = Rng::new(seed ^ 0xDEAD_BEEF);
     match scenario {
         Scenario::Noise => noise(&mut p, &ctx),
@@ -473,6 +479,34 @@ fn generate_inner(seed: u64, wild: bool) -> PathSpec {
     p.steps.push(Step::Post { sec: end, heartbeat: true });
     let batch_max_events = [8usize, 8, 8, 6, 4, 3, 2][(seed % 7) as usize];
     PathSpec { seed, scenario, tier, size_micro: size, phase, opened_time, markets, commission_e6: commission, steps: p.steps, batch_max_events, end }
+}
+
+// ---------------------------------------------------------------------------------------------- M8: the reset story
+
+/// M8: whether the history of `first` goes on after its account failed. The trader pays the reset price (`reset_account`) and
+/// continues in a NEW account of the same tier and the SAME phase with fresh engine state; the campaigns run the second
+/// segment against the new account. Only the failing stories qualify; a share of them stays failed for good.
+pub fn reset_story(first: &PathSpec) -> bool {
+    matches!(first.scenario, Scenario::StaticFail | Scenario::QuickFail | Scenario::Convert) && Rng::new(first.seed ^ 0x5E5E_7000_0000_0001).chance(700_000)
+}
+
+/// M8: the history of the NEW account of a reset made at `opened_time` (the clock of the `reset_account` transaction): the tier,
+/// size, phase, markets and commissions of `first`, another story. Only stories that do not depend on the day of the week
+/// (no `Night`, no `Closed`); a pass story only for tiers from $15K up, as in `generate`.
+pub fn generate_after_reset(first: &PathSpec, opened_time: i64) -> PathSpec {
+    let mut rng = Rng::new(first.seed ^ 0xA5A5_0F0F_1234_5678);
+    let r = rng.range(0, 99);
+    let scenario = match r {
+        0..=34 if first.tier >= 3 => Scenario::Pass,
+        0..=54 => Scenario::Noise,
+        55..=64 => Scenario::StaticFail,
+        65..=74 => Scenario::QuickFail,
+        75..=84 => Scenario::Breach,
+        85..=94 => Scenario::TightClean,
+        _ => Scenario::Margin,
+    };
+    let seed = first.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(0x4D38);
+    build_path(seed, scenario, first.tier, first.size_micro, first.phase, first.markets.clone(), first.commission_e6, opened_time, false)
 }
 
 // ---------------------------------------------------------------------------------------------- scenarios
