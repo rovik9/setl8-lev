@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use anchor_lang::solana_program::{instruction::Instruction, pubkey::Pubkey};
 use anchor_lang::{AccountSerialize, InstructionData, ToAccountMetas};
 use ::evaluator::testkit::PathSpec;
-use ::evaluator::{Batch, BatchKind, ChainView, PassReject};
+use ::evaluator::{Batch, BatchKind, ChainView, PassReject, Status};
 use journal_types::JournalEvent;
 use litesvm::types::{TransactionMetadata, TransactionResult};
 use setl8_lev_trading::{
@@ -34,7 +34,7 @@ use super::*;
 #[path = "../../../crates/evaluator/tests/common/mod.rs"]
 pub mod shared;
 
-use shared::runner::{pass_confirmed_line, pass_finalized_line, pass_requested_line, phase_advanced_line, Chain};
+use shared::runner::{pass_confirmed_line, pass_finalized_line, pass_requested_line, phase_advanced_line, Chain, RunResult};
 use shared::World;
 
 /// The trader wallet of every path: the keypair whose ed25519 key is the shared harness's `trader_keypair()`.
@@ -165,6 +165,13 @@ impl LiteChain {
         for i in 0..spec.markets.len() {
             v.e.create_market_ok(&market_args(spec, i));
         }
+        LiteChain::from_vault(spec, v)
+    }
+
+    /// The same world on a vault whose rule set and markets already exist (the caller created them, for example from
+    /// `config/launch.json`): the trader, one account of the path's tier opened at `spec.opened_time`, the path's phase.
+    pub fn from_vault(spec: &PathSpec, mut v: VaultEnv) -> LiteChain {
+        v.e.set_clock(spec.opened_time);
         let trader = trader_wallet();
         v.e.svm.airdrop(&trader.pubkey(), 10_000_000_000).unwrap();
         let mint = v.usdc;
@@ -507,3 +514,47 @@ impl Chain for LiteChain {
         self.pass_lines(&meta);
     }
 }
+
+/// The checks of one finished segment (a path, or the second half of a reset story) against the chain it was posted to: no
+/// fault, no unexpected note, the public verifier says VALID on the program's events of THIS account, the final account equals
+/// the evaluator, and a failed account is Failed at the vault.
+pub fn verify_segment(spec: &PathSpec, chain: &LiteChain, r: &RunResult) -> Result<(), String> {
+    let w = &r.world;
+    if let Some(f) = w.ev.fault() {
+        return Err(format!("evaluator fault {f:?} ({:?})", spec.scenario));
+    }
+    if !r.notes.is_empty() {
+        return Err(format!("runner notes: {:?} ({:?})", r.notes, spec.scenario));
+    }
+    // the public verifier on what the program emitted
+    let events = chain.events_text();
+    let rules = shared::rules_json(&w.rules, w.opened.size_micro);
+    let snapshot = chain.account_snapshot_json(None);
+    let rep = setl8_verify::verify_account(&setl8_verify::Inputs {
+        events: events.as_bytes(),
+        rules: rules.as_bytes(),
+        archive: w.ev.archive_bytes(),
+        intents: w.ev.intents_bytes(),
+        snapshot: Some(snapshot.as_bytes()),
+        second_archive: None,
+        as_of_seq: None,
+    })
+    .map_err(|e| format!("verifier input: {e}"))?;
+    if rep.verdict != setl8_verify::Verdict::Valid {
+        return Err(format!("verifier MISMATCH on the program's events ({:?}, challenge {}):\n{}", spec.scenario, w.opened.challenge_id, shared::describe(&rep)));
+    }
+    // the final account equals the evaluator, also after the last non-batch transactions
+    let a = chain.j.account();
+    let es = w.ev.state();
+    if a.b != es.b || a.q_tally != es.q_tally || a.seq != w.ev.seq() || a.journal_hash != w.ev.head() {
+        return Err(format!("final account differs: chain b {} q {} seq {} vs evaluator b {} q {} seq {}", a.b, a.q_tally, a.seq, es.b, es.q_tally, w.ev.seq()));
+    }
+    if matches!(w.ev.status(), Status::Failed(_)) {
+        let vs = chain.j.v.vault_trader_state(&chain.j.trader.pubkey(), a.challenge_id).ok_or("vault record")?;
+        if a.status != 1 || vs.status != 2 {
+            return Err(format!("failed account: local status {} vault status {}", a.status, vs.status));
+        }
+    }
+    Ok(())
+}
+

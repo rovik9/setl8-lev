@@ -93,11 +93,14 @@ pub struct Opts {
     pub ruleset: RuleSetArgs,
     /// `config.sl8_wallet` = the vault's SL8 admin, so the fee account and the vault's SL8 account can be one account.
     pub fee_wallet_is_vault_sl8: bool,
+    /// Do not create rule set 1 in `with` (the caller creates it later, for example after the markets, the deploy order of
+    /// handover/launch-config.md). The vault is still registered with the tiers of `ruleset`.
+    pub skip_ruleset: bool,
 }
 
 impl Default for Opts {
     fn default() -> Self {
-        Opts { ruleset: launch_ruleset_args(), fee_wallet_is_vault_sl8: false }
+        Opts { ruleset: launch_ruleset_args(), fee_wallet_is_vault_sl8: false, skip_ruleset: false }
     }
 }
 
@@ -274,7 +277,9 @@ impl VaultEnv {
         v.e.svm.airdrop(&v.evaluator.pubkey(), 1_000_000_000).unwrap();
         let ix = init_ix_with(v.e.payer.pubkey(), v.e.sl8.pubkey(), v.e.rov.pubkey(), &args);
         super::assert_ok(v.e.send_as_admins(&[ix]));
-        v.e.create_ruleset_ok(&opts.ruleset);
+        if !opts.skip_ruleset {
+            v.e.create_ruleset_ok(&opts.ruleset);
+        }
         v
     }
 
@@ -319,6 +324,19 @@ impl VaultEnv {
     /// A new trader with 10 SOL and a USDC account holding `TRADER_START`.
     pub fn new_trader(&mut self) -> Keypair {
         self.new_trader_with(TRADER_START)
+    }
+
+    /// A trader whose key is `Keypair::new_from_array(seed as 4 little-endian bytes, then 0x5A)`: the program-derived addresses of its accounts (and so
+    /// the compute units spent on bump searches) are the same in every run (M11 budget measurements).
+    pub fn new_trader_seeded(&mut self, seed: u32) -> Keypair {
+        let mut bytes = [0x5Au8; 32];
+        bytes[..4].copy_from_slice(&seed.to_le_bytes());
+        let k = Keypair::new_from_array(bytes);
+        self.e.svm.airdrop(&k.pubkey(), 10_000_000_000).unwrap();
+        let mint = self.usdc;
+        let ta = self.new_token_account(&mint, &k.pubkey(), TRADER_START);
+        self.traders.insert(k.pubkey(), ta);
+        k
     }
 
     pub fn new_trader_with(&mut self, usdc: u64) -> Keypair {

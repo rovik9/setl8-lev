@@ -11,3 +11,6 @@ tools/gmx-probe/data/
 tools/gmx-probe/target/
 tools/hl-probe/data/
 tools/hl-probe/target/
+
+# launch-config build output
+tools/launch-config/target/

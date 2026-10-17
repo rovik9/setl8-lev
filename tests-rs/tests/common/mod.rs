@@ -70,6 +70,15 @@ pub struct Env {
     pub sl8: Keypair,
     pub rov: Keypair,
     pub payer: Keypair,
+    /// Shape of the last transaction `send` built (M11 budget measurements): serialized bytes, distinct accounts, signatures.
+    pub last_tx: TxShape,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TxShape {
+    pub bytes: usize,
+    pub accounts: usize,
+    pub signatures: usize,
 }
 
 impl Env {
@@ -92,7 +101,7 @@ impl Env {
         for k in [&sl8, &rov, &payer] {
             svm.airdrop(&k.pubkey(), 10_000_000_000).unwrap();
         }
-        Self { svm, sl8, rov, payer }
+        Self { svm, sl8, rov, payer, last_tx: TxShape::default() }
     }
 
     /// Environment with `init_config` already run with `default_args()` by the two test admins.
@@ -114,6 +123,7 @@ impl Env {
         let mut sigs: Vec<&Keypair> = vec![&payer];
         sigs.extend(extra.iter().copied().filter(|k| required.contains(&k.pubkey())));
         tx.partial_sign(sigs.as_slice(), bh);
+        self.last_tx = TxShape { bytes: bincode::serialize(&tx).map(|b| b.len()).unwrap_or(0), accounts: tx.message.account_keys.len(), signatures: n };
         let r = self.svm.send_transaction(tx);
         self.svm.expire_blockhash();
         r

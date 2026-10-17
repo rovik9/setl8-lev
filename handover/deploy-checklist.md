@@ -1,6 +1,6 @@
 # Deploy checklist (consolidated)
 
-Values and checks that live outside the code; none is set by this repo. The per-module lists (`module-7.md` "Deploy checklist" and the others) stay as the history of where each item came from. Last updated 2026-10-13 (decision 51).
+Values and checks that live outside the code; none is set by this repo. The per-module lists (`module-7.md` "Deploy checklist" and the others) stay as the history of where each item came from. Last updated 2026-10-17 (decisions 58 to 61).
 
 ## Vault and shared-interfaces
 - Vault: core commit **9a5c179 or later** (the reset price is a percentage of the TIER price from this commit on). Older vaults price a reset off the account size.
@@ -20,7 +20,7 @@ Values and checks that live outside the code; none is set by this repo. The per-
 - Deploy only the DEFAULT build (real admin keys); never `--features localnet`. `scripts/anchor-build-checked.sh` clean, record the sha256.
 - `constants/admin.rs` real SL8 and Rov keys (equal to the vault's); upgrade authority 2-of-2 (decision 30).
 - `init_config` (both admins): `evaluator`, `vault_program` = real vault id, `sl8_wallet` (needs a token account of each accepted mint for the 0.4% fee), `pass_delay_secs` 172,800, `window_secs` 86,400, `max_payout_per_window` = 100,000,000,000 micro-USD (decision 37).
-- Rule set 1 and markets: see `module-7.md` ("Rule set 1", "Markets"); PENDING numbers `commission_e6` and `spread_e6`.
+- Markets and rule set 1: generated and verified by `tools/launch-config` from `config/launch-markets.toml` (handover/launch-config.md): `create_market` x 21 in id order from `config/launch.json`, then `create_ruleset` v1 ONLY after the real `spread_e6` and `commission_e6` exist (29 PENDING flags today; `launch-config verify --production` is the gate). A market added after launch needs a new rule set version and stays disabled until it is current (older accounts would trade it at a zero spread, see launch-config.md). Holidays, half days and daylight-saving changes are `update_market` window changes.
 - Evaluator operations, rent and fees, open policy items: see `module-7.md`.
 
 ## Still open (not decided by this change)

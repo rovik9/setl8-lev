@@ -1,0 +1,418 @@
+{
+  "format": "setl8-launch",
+  "version": "1",
+  "markets": [
+    {
+      "market_id": "0",
+      "class": "6",
+      "params": {
+        "status": "1",
+        "feed_id": "c9970690cb8f84ccf28015018833aa73ca3566177b52a85ab6f18593e45f65c8",
+        "max_age_secs": "15",
+        "qty_step": "200",
+        "qty_min": "200",
+        "max_notional_usd": "50000000000",
+        "session_count": "1",
+        "sessions": [["0", "10080"], ["0", "0"], ["0", "0"], ["0", "0"], ["0", "0"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "BTC",
+        "source": "2"
+      }
+    },
+    {
+      "market_id": "1",
+      "class": "6",
+      "params": {
+        "status": "1",
+        "feed_id": "7525c59eea5a3be0ca004d409a000d332e9be3d22688ecae2737c677a6132855",
+        "max_age_secs": "15",
+        "qty_step": "5000",
+        "qty_min": "5000",
+        "max_notional_usd": "50000000000",
+        "session_count": "1",
+        "sessions": [["0", "10080"], ["0", "0"], ["0", "0"], ["0", "0"], ["0", "0"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "ETH",
+        "source": "2"
+      }
+    },
+    {
+      "market_id": "2",
+      "class": "6",
+      "params": {
+        "status": "1",
+        "feed_id": "475c49d13a176523c4dd9396d33dc6a2b6ccbaad09e5b16b5be661227aca2ee1",
+        "max_age_secs": "15",
+        "qty_step": "100000",
+        "qty_min": "100000",
+        "max_notional_usd": "50000000000",
+        "session_count": "1",
+        "sessions": [["0", "10080"], ["0", "0"], ["0", "0"], ["0", "0"], ["0", "0"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "SOL",
+        "source": "2"
+      }
+    },
+    {
+      "market_id": "3",
+      "class": "2",
+      "params": {
+        "status": "1",
+        "feed_id": "141585d9aa6ef64ea2aaa049dadc368eb8c21a701cc654d0780df48b62625182",
+        "max_age_secs": "35",
+        "qty_step": "5000",
+        "qty_min": "5000",
+        "max_notional_usd": "200000000000",
+        "session_count": "6",
+        "sessions": [["0", "1260"], ["1380", "2700"], ["2820", "4140"], ["4260", "5580"], ["5700", "7020"], ["10020", "10080"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "GOLD",
+        "source": "2"
+      }
+    },
+    {
+      "market_id": "4",
+      "class": "2",
+      "params": {
+        "status": "1",
+        "feed_id": "0fe0de3059a1afd4a1b1b5ea94310cb03ed8ea1681a39c0df3202585f3ca5ec7",
+        "max_age_secs": "45",
+        "qty_step": "200000",
+        "qty_min": "200000",
+        "max_notional_usd": "200000000000",
+        "session_count": "6",
+        "sessions": [["0", "1260"], ["1380", "2700"], ["2820", "4140"], ["4260", "5580"], ["5700", "7020"], ["10020", "10080"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "SILVER",
+        "source": "2"
+      }
+    },
+    {
+      "market_id": "5",
+      "class": "4",
+      "params": {
+        "status": "1",
+        "feed_id": "09219f69620290210896df4bffe632f9fe469bb27c320641a0f7fbb8687b1dcc",
+        "max_age_secs": "30",
+        "qty_step": "200000",
+        "qty_min": "200000",
+        "max_notional_usd": "100000000000",
+        "session_count": "6",
+        "sessions": [["0", "1260"], ["1380", "2700"], ["2820", "4140"], ["4260", "5580"], ["5700", "7020"], ["10020", "10080"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "WTIOIL",
+        "source": "2"
+      }
+    },
+    {
+      "market_id": "6",
+      "class": "4",
+      "params": {
+        "status": "1",
+        "feed_id": "000d10e1b0f08229e25da0b7a63a8e8c01b7ae9cef614eee56eef643b9fb3ddf",
+        "max_age_secs": "40",
+        "qty_step": "100000",
+        "qty_min": "100000",
+        "max_notional_usd": "100000000000",
+        "session_count": "5",
+        "sessions": [["60", "1320"], ["1500", "2760"], ["2940", "4200"], ["4380", "5640"], ["5820", "7080"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "BRENTOIL",
+        "source": "2"
+      }
+    },
+    {
+      "market_id": "7",
+      "class": "3",
+      "params": {
+        "status": "1",
+        "feed_id": "529503a2a0cf28b452a79fc27ffa322806bc3f34bb52b9fcbb3ebc3fcee36a15",
+        "max_age_secs": "30",
+        "qty_step": "20000",
+        "qty_min": "20000",
+        "max_notional_usd": "200000000000",
+        "session_count": "5",
+        "sessions": [["870", "1200"], ["2310", "2640"], ["3750", "4080"], ["5190", "5520"], ["6630", "6960"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "SPY",
+        "source": "2"
+      }
+    },
+    {
+      "market_id": "8",
+      "class": "3",
+      "params": {
+        "status": "1",
+        "feed_id": "b7ecc85dcd30d220abcbf8d3c271a88d9164fd0b4a41122a823b1338695c06e7",
+        "max_age_secs": "20",
+        "qty_step": "20000",
+        "qty_min": "20000",
+        "max_notional_usd": "200000000000",
+        "session_count": "5",
+        "sessions": [["870", "1200"], ["2310", "2640"], ["3750", "4080"], ["5190", "5520"], ["6630", "6960"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "QQQ",
+        "source": "2"
+      }
+    },
+    {
+      "market_id": "9",
+      "class": "3",
+      "params": {
+        "status": "1",
+        "feed_id": "3822a26acc79bc6c2085beb27ea8326ba5b8d0756b5f86d09c7a53b89eca37a2",
+        "max_age_secs": "40",
+        "qty_step": "200",
+        "qty_min": "200",
+        "max_notional_usd": "200000000000",
+        "session_count": "5",
+        "sessions": [["0", "360"], ["1440", "1800"], ["2880", "3240"], ["4320", "4680"], ["5760", "6120"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "xyz:JP225",
+        "source": "4"
+      }
+    },
+    {
+      "market_id": "10",
+      "class": "3",
+      "params": {
+        "status": "1",
+        "feed_id": "cbe76b73f8a061245e43bb49195a5af4e02b37195f977671cafd0d94902933e1",
+        "max_age_secs": "35",
+        "qty_step": "20000",
+        "qty_min": "20000",
+        "max_notional_usd": "200000000000",
+        "session_count": "5",
+        "sessions": [["0", "390"], ["1440", "1830"], ["2880", "3270"], ["4320", "4710"], ["5760", "6150"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "xyz:KR200",
+        "source": "4"
+      }
+    },
+    {
+      "market_id": "11",
+      "class": "5",
+      "params": {
+        "status": "1",
+        "feed_id": "f49d76a7a86a36888b2352386efdb8a01272e806706fd5defbfe8a95c61daa9a",
+        "max_age_secs": "20",
+        "qty_step": "50000",
+        "qty_min": "50000",
+        "max_notional_usd": "50000000000",
+        "session_count": "5",
+        "sessions": [["870", "1200"], ["2310", "2640"], ["3750", "4080"], ["5190", "5520"], ["6630", "6960"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "xyz:AAPL",
+        "source": "4"
+      }
+    },
+    {
+      "market_id": "12",
+      "class": "5",
+      "params": {
+        "status": "1",
+        "feed_id": "414386b00a5ab02de79f12c9331762c49f377ce42cd00caa8e227749d8f8f570",
+        "max_age_secs": "20",
+        "qty_step": "20000",
+        "qty_min": "20000",
+        "max_notional_usd": "50000000000",
+        "session_count": "5",
+        "sessions": [["870", "1200"], ["2310", "2640"], ["3750", "4080"], ["5190", "5520"], ["6630", "6960"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "xyz:AMD",
+        "source": "4"
+      }
+    },
+    {
+      "market_id": "13",
+      "class": "5",
+      "params": {
+        "status": "1",
+        "feed_id": "4dd400d13918a772bb4c29717f6c3690e7f558f2353cdc9808512daa863e8213",
+        "max_age_secs": "25",
+        "qty_step": "50000",
+        "qty_min": "50000",
+        "max_notional_usd": "50000000000",
+        "session_count": "5",
+        "sessions": [["870", "1200"], ["2310", "2640"], ["3750", "4080"], ["5190", "5520"], ["6630", "6960"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "xyz:AMZN",
+        "source": "4"
+      }
+    },
+    {
+      "market_id": "14",
+      "class": "5",
+      "params": {
+        "status": "1",
+        "feed_id": "02692704bfff67e3ea3ef99b14a7db02f1e77f3c842df6e01879289bba58948b",
+        "max_age_secs": "20",
+        "qty_step": "50000",
+        "qty_min": "50000",
+        "max_notional_usd": "50000000000",
+        "session_count": "5",
+        "sessions": [["870", "1200"], ["2310", "2640"], ["3750", "4080"], ["5190", "5520"], ["6630", "6960"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "xyz:GOOGL",
+        "source": "4"
+      }
+    },
+    {
+      "market_id": "15",
+      "class": "5",
+      "params": {
+        "status": "1",
+        "feed_id": "3e1674a96a6b6f5cb8833034d01ca1f63cb9665cd85470a6b99f31ddd89aeb85",
+        "max_age_secs": "20",
+        "qty_step": "20000",
+        "qty_min": "20000",
+        "max_notional_usd": "50000000000",
+        "session_count": "5",
+        "sessions": [["870", "1200"], ["2310", "2640"], ["3750", "4080"], ["5190", "5520"], ["6630", "6960"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "xyz:META",
+        "source": "4"
+      }
+    },
+    {
+      "market_id": "16",
+      "class": "5",
+      "params": {
+        "status": "1",
+        "feed_id": "3f40725d7304ee6c83d91ea5c8f0f50eac95669526564590863a1a90e5802e6e",
+        "max_age_secs": "20",
+        "qty_step": "20000",
+        "qty_min": "20000",
+        "max_notional_usd": "50000000000",
+        "session_count": "5",
+        "sessions": [["870", "1200"], ["2310", "2640"], ["3750", "4080"], ["5190", "5520"], ["6630", "6960"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "xyz:MSFT",
+        "source": "4"
+      }
+    },
+    {
+      "market_id": "17",
+      "class": "5",
+      "params": {
+        "status": "1",
+        "feed_id": "59d44982b417850bc22eada303c07f0e1bec44cdd5701de86dee00d55754073a",
+        "max_age_secs": "20",
+        "qty_step": "200000",
+        "qty_min": "200000",
+        "max_notional_usd": "50000000000",
+        "session_count": "5",
+        "sessions": [["870", "1200"], ["2310", "2640"], ["3750", "4080"], ["5190", "5520"], ["6630", "6960"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "xyz:NFLX",
+        "source": "4"
+      }
+    },
+    {
+      "market_id": "18",
+      "class": "5",
+      "params": {
+        "status": "1",
+        "feed_id": "baea0c8c47bb3371cc71c05c8e00461d1b3ceadf216933c38ee656f33cf82a47",
+        "max_age_secs": "20",
+        "qty_step": "50000",
+        "qty_min": "50000",
+        "max_notional_usd": "50000000000",
+        "session_count": "5",
+        "sessions": [["870", "1200"], ["2310", "2640"], ["3750", "4080"], ["5190", "5520"], ["6630", "6960"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "xyz:NVDA",
+        "source": "4"
+      }
+    },
+    {
+      "market_id": "19",
+      "class": "5",
+      "params": {
+        "status": "1",
+        "feed_id": "6ff0d52d6cab6ec3d16c1f1bd7fc2975326acb97b1fd0d24d19d1cc0ccac2174",
+        "max_age_secs": "20",
+        "qty_step": "100000",
+        "qty_min": "100000",
+        "max_notional_usd": "50000000000",
+        "session_count": "5",
+        "sessions": [["870", "1200"], ["2310", "2640"], ["3750", "4080"], ["5190", "5520"], ["6630", "6960"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "xyz:PLTR",
+        "source": "4"
+      }
+    },
+    {
+      "market_id": "20",
+      "class": "5",
+      "params": {
+        "status": "1",
+        "feed_id": "d214a904779716586b142a7c671c77dd0f4a154c1ed3051161d63e1ff9cecd88",
+        "max_age_secs": "20",
+        "qty_step": "50000",
+        "qty_min": "50000",
+        "max_notional_usd": "50000000000",
+        "session_count": "5",
+        "sessions": [["870", "1200"], ["2310", "2640"], ["3750", "4080"], ["5190", "5520"], ["6630", "6960"], ["0", "0"]],
+        "quote_conv_market": "65535"
+      },
+      "meta": {
+        "symbol": "xyz:TSLA",
+        "source": "4"
+      }
+    }
+  ],
+  "ruleset": {
+    "version": "1",
+    "fee_bps": "40",
+    "tier_count": "10",
+    "ladder_len": "5",
+    "leverage_x": ["50", "20", "20", "20", "10", "5", "5", "2"],
+    "holding_fee_e6": ["100", "200", "400", "200", "400", "400", "1000", "1600"],
+    "commission_e6": ["0", "0", "20", "20", "20", "100", "0", "0"],
+    "tier_size": ["2500000000", "5000000000", "10000000000", "15000000000", "20000000000", "25000000000", "50000000000", "75000000000", "100000000000", "200000000000"],
+    "tier_cost": ["30000000", "55000000", "99000000", "145000000", "189000000", "235000000", "489000000", "689000000", "859000000", "1599000000"],
+    "reset_ladder_bps": ["10000", "11500", "12000", "12750", "13000"],
+    "spread_e6": ["150", "200", "300", "100", "250", "250", "250", "100", "120", "200", "300", "300", "500", "300", "300", "300", "300", "500", "300", "500", "300", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0"]
+  }
+}

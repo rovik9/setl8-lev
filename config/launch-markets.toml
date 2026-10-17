@@ -1,0 +1,575 @@
+# config/launch-markets.toml: the human-editable input of tools/launch-config (P19 part B, decision 61).
+#
+# Edit this file, then:   cd tools/launch-config && cargo run --release -- generate     (writes config/launch.json and config/launch.md)
+#                         cd tools/launch-config && cargo run --release -- verify       (re-derives both and checks every rule)
+# Before a production deploy:                             cargo run --release -- verify --production   (fails while any PENDING flag remains)
+#
+# Every number that is a PLACEHOLDER is flagged `pending = true` (rule set v1: half-spreads and commissions, decision 14) or
+# described as PLACEHOLDER-ADMIN-TUNABLE in launch.md (quantity step and minimum, max_notional_usd: either admin can change them
+# at any time with update_market, decision 24). A rule set is immutable: the real numbers are a NEW rule set version.
+# The measured numbers (prices, freezes, oracle statistics) come from the probe CSVs of 2026-10-16/11 (git-ignored raw data on
+# the Mac); `launch-config probe` recomputes them and `launch-config verify --hl-csv ... --gmx-1min ... --gmx-samples ...` compares.
+
+[meta]
+format = "setl8-launch-markets"
+version = 1
+
+[rules]
+# decision 57: max_age_secs = longest freeze + 25 %, rounded up to 5 s, never below 15 s
+freeze_margin_pct = 25
+max_age_round_secs = 5
+max_age_floor_secs = 15
+# decision 56: go-live rule for a Hyperliquid oracle market (bp of the book mid)
+golive_median_bp = 6.0
+golive_p95_bp = 12.0
+# PLACEHOLDER-ADMIN-TUNABLE: quantity step = minimum = the smallest 1-2-5 quantity worth at least this many USD
+order_notional_usd = 10
+# PLACEHOLDER-ADMIN-TUNABLE: max_notional_usd = this account size x class leverage, rounded down to 1-2-5, within the ceilings.
+# NOTE: the instruction said "the 10K tier"; a cap from the 10K tier is far below what a 100K or 200K account may hold at its
+# class leverage (see launch.md). Raise this to 200000 to let the biggest tier use its full leverage.
+cap_basis_tier_usd = 10000
+cap_ceiling_usd = 5000000
+cap_ceiling_stock_usd = 500000
+
+[ruleset]
+version = 1
+fee_bps = 40
+tier_sizes_usd = [2500, 5000, 10000, 15000, 20000, 25000, 50000, 75000, 100000, 200000]
+tier_costs_usd = [30, 55, 99, 145, 189, 235, 489, 689, 859, 1599]
+reset_ladder_bps = [10000, 11500, 12000, 12750, 13000]
+leverage_x = [50, 20, 20, 20, 10, 5, 5, 2]
+holding_fee_e6 = [100, 200, 400, 200, 400, 400, 1000, 1600]
+
+# Commission per side in e6 of notional (charged at open and at close), by class. PENDING: placeholders (decision 14).
+[[commission]]
+class = 0
+e6 = 0
+pending = true
+
+[[commission]]
+class = 1
+e6 = 0
+pending = true
+
+[[commission]]
+class = 2
+e6 = 20
+pending = true
+
+[[commission]]
+class = 3
+e6 = 20
+pending = true
+
+[[commission]]
+class = 4
+e6 = 20
+pending = true
+
+[[commission]]
+class = 5
+e6 = 100
+pending = true
+
+[[commission]]
+class = 6
+e6 = 0
+pending = true
+
+[[commission]]
+class = 7
+e6 = 0
+pending = true
+
+[[market]]
+symbol = "BTC"
+source = 2
+class = 6
+underlying = "bitcoin"
+name = "BTC / USD"
+price_usd = 81131.526567
+price_basis = "median of the 15 one-minute GMX tickers in hl-probe/data/weekday-2026-10-16/gmx-tickers-1min.csv"
+freeze_ms = 3664
+freeze_basis = "gmx-probe/data/samples-tracked-all-polls.csv (Saturday 2026-10-11), longest gap between price changes 3,664 ms (Friday's 3,396 ms is lower)"
+half_spread_e6 = 150
+spread_pending = true
+session_variants = [["24x7"]]
+session_note = "crypto trades 24/7: the Saturday probe saw 55 to 57 price changes a minute"
+verify = []
+
+[[market]]
+symbol = "ETH"
+source = 2
+class = 6
+underlying = "ethereum"
+name = "ETH / USD"
+price_usd = 2408.314355
+price_basis = "median of the 15 one-minute GMX tickers in hl-probe/data/weekday-2026-10-16/gmx-tickers-1min.csv"
+freeze_ms = 3664
+freeze_basis = "gmx-probe/data/samples-tracked-all-polls.csv (Saturday 2026-10-11), longest gap between price changes 3,664 ms (Friday's 3,396 ms is lower)"
+half_spread_e6 = 200
+spread_pending = true
+session_variants = [["24x7"]]
+session_note = "crypto trades 24/7: the Saturday probe saw 55 to 57 price changes a minute"
+verify = []
+
+[[market]]
+symbol = "SOL"
+source = 2
+class = 6
+underlying = "solana"
+name = "SOL / USD"
+price_usd = 103.312365
+price_basis = "median of the 15 one-minute GMX tickers in hl-probe/data/weekday-2026-10-16/gmx-tickers-1min.csv"
+freeze_ms = 3664
+freeze_basis = "gmx-probe/data/samples-tracked-all-polls.csv (Saturday 2026-10-11), longest gap between price changes 3,664 ms (Friday's 3,396 ms is lower)"
+half_spread_e6 = 300
+spread_pending = true
+session_variants = [["24x7"]]
+session_note = "crypto trades 24/7: the Saturday probe saw 55 to 57 price changes a minute"
+verify = []
+
+[[market]]
+symbol = "GOLD"
+source = 2
+class = 2
+underlying = "gold"
+name = "Gold / USD"
+price_usd = 4167.465
+price_basis = "median of the 15 one-minute GMX tickers in hl-probe/data/weekday-2026-10-16/gmx-tickers-1min.csv"
+freeze_ms = 25006
+freeze_basis = "gmx-probe-weekday-report.md, cadence table (Friday 18:37 to 18:48 UTC), 'gap max ms Fri'"
+half_spread_e6 = 100
+spread_pending = true
+session_variants = [["Sun 22:00-Mon 21:00", "Mon 22:00-Tue 21:00", "Tue 22:00-Wed 21:00", "Wed 22:00-Thu 21:00", "Thu 22:00-Fri 21:00"], ["Sun 23:00-Mon 22:00", "Mon 23:00-Tue 22:00", "Tue 23:00-Wed 22:00", "Wed 23:00-Thu 22:00", "Thu 23:00-Fri 22:00"]]
+session_note = "COMEX hours, daily break 21:00-23:00 UTC left closed (narrower of the two daylight-saving states)"
+verify = ["session-boundary: CME Globex hours, the narrower of the summer (22:00) and winter (23:00) UTC open and close; the Sunday open and the Friday close are not in the probe data", "holidays: holidays and early closes are an admin window change"]
+
+[[market]]
+symbol = "SILVER"
+source = 2
+class = 2
+underlying = "silver"
+name = "Silver / USD"
+price_usd = 57.125
+price_basis = "median of the 15 one-minute GMX tickers in hl-probe/data/weekday-2026-10-16/gmx-tickers-1min.csv"
+freeze_ms = 34492
+freeze_basis = "gmx-probe-weekday-report.md, cadence table (Friday 18:37 to 18:48 UTC), 'gap max ms Fri'"
+half_spread_e6 = 250
+spread_pending = true
+session_variants = [["Sun 22:00-Mon 21:00", "Mon 22:00-Tue 21:00", "Tue 22:00-Wed 21:00", "Wed 22:00-Thu 21:00", "Thu 22:00-Fri 21:00"], ["Sun 23:00-Mon 22:00", "Mon 23:00-Tue 22:00", "Tue 23:00-Wed 22:00", "Wed 23:00-Thu 22:00", "Thu 23:00-Fri 22:00"]]
+session_note = "COMEX hours, daily break 21:00-23:00 UTC left closed (narrower of the two daylight-saving states)"
+verify = ["session-boundary: CME Globex hours, the narrower of the summer (22:00) and winter (23:00) UTC open and close; the Sunday open and the Friday close are not in the probe data", "holidays: holidays and early closes are an admin window change"]
+
+[[market]]
+symbol = "WTIOIL"
+source = 2
+class = 4
+underlying = "wti-crude"
+name = "WTI crude oil / USD"
+price_usd = 99.325
+price_basis = "median of the 15 one-minute GMX tickers in hl-probe/data/weekday-2026-10-16/gmx-tickers-1min.csv"
+freeze_ms = 20946
+freeze_basis = "gmx-probe-weekday-report.md, cadence table (Friday 18:37 to 18:48 UTC), 'gap max ms Fri'"
+half_spread_e6 = 250
+spread_pending = true
+session_variants = [["Sun 22:00-Mon 21:00", "Mon 22:00-Tue 21:00", "Tue 22:00-Wed 21:00", "Wed 22:00-Thu 21:00", "Thu 22:00-Fri 21:00"], ["Sun 23:00-Mon 22:00", "Mon 23:00-Tue 22:00", "Tue 23:00-Wed 22:00", "Wed 23:00-Thu 22:00", "Thu 23:00-Fri 22:00"]]
+session_note = "NYMEX hours, daily break 21:00-23:00 UTC left closed (narrower of the two daylight-saving states)"
+verify = ["session-boundary: CME Globex hours, the narrower of the summer (22:00) and winter (23:00) UTC open and close; the Sunday open and the Friday close are not in the probe data", "holidays: holidays and early closes are an admin window change"]
+
+[[market]]
+symbol = "BRENTOIL"
+source = 2
+class = 4
+underlying = "brent-crude"
+name = "Brent crude oil / USD"
+price_usd = 106.895
+price_basis = "median of the 15 one-minute GMX tickers in hl-probe/data/weekday-2026-10-16/gmx-tickers-1min.csv"
+freeze_ms = 31863
+freeze_basis = "gmx-probe-weekday-report.md, cadence table (Friday 18:37 to 18:48 UTC), 'gap max ms Fri'"
+half_spread_e6 = 250
+spread_pending = true
+session_variants = [["Mon-Fri 00:00-22:00"], ["Mon-Fri 01:00-23:00"]]
+session_note = "ICE hours 01:00-23:00 London time, Monday to Friday (narrower of summer and winter)"
+verify = ["session-boundary: ICE Brent hours are from memory, not from the probe data; the narrower window is used", "holidays: holidays are an admin window change"]
+
+[[market]]
+symbol = "SPY"
+source = 2
+class = 3
+underlying = "sp500"
+name = "SPY, the ETF standing in for the US500 (index class 3)"
+price_usd = 763.595
+price_basis = "median of the 15 one-minute GMX tickers in hl-probe/data/weekday-2026-10-16/gmx-tickers-1min.csv"
+freeze_ms = 23242
+freeze_basis = "gmx-probe-weekday-report.md, cadence table (Friday 18:37 to 18:48 UTC), 'gap max ms Fri'"
+half_spread_e6 = 100
+spread_pending = true
+session_variants = [["Mon-Fri 13:30-20:00"], ["Mon-Fri 14:30-21:00"]]
+session_note = "NYSE regular hours, narrower of the two daylight-saving states"
+verify = ["session-boundary: regular US hours only (narrower of summer 13:30-20:00 and winter 14:30-21:00 UTC); pre-market, after-hours and half days are not covered", "open-hour: the open hour (14:30 to 15:30 UTC) was NOT in the probe run"]
+
+[[market]]
+symbol = "QQQ"
+source = 2
+class = 3
+underlying = "nasdaq100"
+name = "QQQ, the ETF standing in for the Nasdaq-100 (index class 3)"
+price_usd = 711.525
+price_basis = "median of the 15 one-minute GMX tickers in hl-probe/data/weekday-2026-10-16/gmx-tickers-1min.csv"
+freeze_ms = 12469
+freeze_basis = "gmx-probe-weekday-report.md, cadence table (Friday 18:37 to 18:48 UTC), 'gap max ms Fri'"
+half_spread_e6 = 120
+spread_pending = true
+session_variants = [["Mon-Fri 13:30-20:00"], ["Mon-Fri 14:30-21:00"]]
+session_note = "NASDAQ regular hours, narrower of the two daylight-saving states"
+verify = ["session-boundary: regular US hours only (narrower of summer 13:30-20:00 and winter 14:30-21:00 UTC); pre-market, after-hours and half days are not covered", "open-hour: the open hour (14:30 to 15:30 UTC) was NOT in the probe run"]
+
+[[market]]
+symbol = "xyz:JP225"
+source = 4
+class = 3
+underlying = "nikkei225"
+name = "JP225 (Nikkei 225)"
+price_usd = 63898
+price_basis = "median oraclePx of the 876 WebSocket messages in hl-probe/data/weekday-2026-10-16/oracle-messages.csv"
+freeze_ms = 29936
+freeze_basis = "longest gap between oracle changes in the same file (WebSocket receive time, 900 s, Friday 18:37 to 18:52 UTC)"
+oracle_median_bp = 2.04
+oracle_p95_bp = 3.75
+half_spread_e6 = 200
+spread_pending = true
+session_variants = [["Mon-Fri 00:00-06:00"], ["Mon-Fri 00:00-06:30"]]
+session_note = "Tokyo cash hours Monday to Friday"
+verify = ["session-boundary: cash hours only (Tokyo 09:00-15:00 JST, the narrower of the old and the new 15:30 close, lunch break ignored)", "out-of-window-freeze: the oracle was moving at 18:37 UTC on a Friday, outside this window, so the freeze figure was measured out of window"]
+
+[[market]]
+symbol = "xyz:KR200"
+source = 4
+class = 3
+underlying = "kospi200"
+name = "KR200 (KOSPI 200)"
+price_usd = 856.225
+price_basis = "median oraclePx of the 876 WebSocket messages in hl-probe/data/weekday-2026-10-16/oracle-messages.csv"
+freeze_ms = 26902
+freeze_basis = "longest gap between oracle changes in the same file (WebSocket receive time, 900 s, Friday 18:37 to 18:52 UTC)"
+oracle_median_bp = 3.97
+oracle_p95_bp = 10.72
+half_spread_e6 = 300
+spread_pending = true
+session_variants = [["Mon-Fri 00:00-06:30"]]
+session_note = "Seoul cash hours Monday to Friday, 09:00-15:30 KST"
+verify = ["session-boundary: cash hours only (Seoul 09:00-15:30 KST)", "out-of-window-freeze: the oracle was moving at 18:37 UTC on a Friday, outside this window, so the freeze figure was measured out of window", "thin: 24 h notional was only about $15,000 on the Sunday probe, the thinnest market of the list"]
+
+[[market]]
+symbol = "xyz:AAPL"
+source = 4
+class = 5
+underlying = "aapl"
+name = "Apple (stock)"
+price_usd = 340.86
+price_basis = "median oraclePx of the 876 WebSocket messages in hl-probe/data/weekday-2026-10-16/oracle-messages.csv"
+freeze_ms = 15285
+freeze_basis = "longest gap between oracle changes in the same file (WebSocket receive time, 900 s, Friday 18:37 to 18:52 UTC)"
+oracle_median_bp = 1.47
+oracle_p95_bp = 3.67
+half_spread_e6 = 300
+spread_pending = true
+session_variants = [["Mon-Fri 13:30-20:00"], ["Mon-Fri 14:30-21:00"]]
+session_note = "NYSE/NASDAQ regular hours, narrower of the two daylight-saving states"
+verify = ["session-boundary: regular US hours only (narrower of summer 13:30-20:00 and winter 14:30-21:00 UTC); pre-market, after-hours and half days are not covered", "open-hour: the open hour (14:30 to 15:30 UTC) was NOT in the probe run"]
+
+[[market]]
+symbol = "xyz:AMD"
+source = 4
+class = 5
+underlying = "amd"
+name = "AMD (stock)"
+price_usd = 534.24
+price_basis = "median oraclePx of the 876 WebSocket messages in hl-probe/data/weekday-2026-10-16/oracle-messages.csv"
+freeze_ms = 15156
+freeze_basis = "longest gap between oracle changes in the same file (WebSocket receive time, 900 s, Friday 18:37 to 18:52 UTC)"
+oracle_median_bp = 4.97
+oracle_p95_bp = 8.25
+half_spread_e6 = 500
+spread_pending = true
+session_variants = [["Mon-Fri 13:30-20:00"], ["Mon-Fri 14:30-21:00"]]
+session_note = "NYSE/NASDAQ regular hours, narrower of the two daylight-saving states"
+verify = ["session-boundary: regular US hours only (narrower of summer 13:30-20:00 and winter 14:30-21:00 UTC); pre-market, after-hours and half days are not covered", "open-hour: the open hour (14:30 to 15:30 UTC) was NOT in the probe run"]
+
+[[market]]
+symbol = "xyz:AMZN"
+source = 4
+class = 5
+underlying = "amzn"
+name = "Amazon (stock)"
+price_usd = 248.875
+price_basis = "median oraclePx of the 876 WebSocket messages in hl-probe/data/weekday-2026-10-16/oracle-messages.csv"
+freeze_ms = 18470
+freeze_basis = "longest gap between oracle changes in the same file (WebSocket receive time, 900 s, Friday 18:37 to 18:52 UTC)"
+oracle_median_bp = 1.41
+oracle_p95_bp = 3.21
+half_spread_e6 = 300
+spread_pending = true
+session_variants = [["Mon-Fri 13:30-20:00"], ["Mon-Fri 14:30-21:00"]]
+session_note = "NYSE/NASDAQ regular hours, narrower of the two daylight-saving states"
+verify = ["session-boundary: regular US hours only (narrower of summer 13:30-20:00 and winter 14:30-21:00 UTC); pre-market, after-hours and half days are not covered", "open-hour: the open hour (14:30 to 15:30 UTC) was NOT in the probe run"]
+
+[[market]]
+symbol = "xyz:GOOGL"
+source = 4
+class = 5
+underlying = "googl"
+name = "Alphabet (class A) (stock)"
+price_usd = 340.08
+price_basis = "median oraclePx of the 876 WebSocket messages in hl-probe/data/weekday-2026-10-16/oracle-messages.csv"
+freeze_ms = 12335
+freeze_basis = "longest gap between oracle changes in the same file (WebSocket receive time, 900 s, Friday 18:37 to 18:52 UTC)"
+oracle_median_bp = 3.53
+oracle_p95_bp = 5.44
+half_spread_e6 = 300
+spread_pending = true
+session_variants = [["Mon-Fri 13:30-20:00"], ["Mon-Fri 14:30-21:00"]]
+session_note = "NYSE/NASDAQ regular hours, narrower of the two daylight-saving states"
+verify = ["session-boundary: regular US hours only (narrower of summer 13:30-20:00 and winter 14:30-21:00 UTC); pre-market, after-hours and half days are not covered", "open-hour: the open hour (14:30 to 15:30 UTC) was NOT in the probe run"]
+
+[[market]]
+symbol = "xyz:META"
+source = 4
+class = 5
+underlying = "meta"
+name = "Meta (stock)"
+price_usd = 706.27
+price_basis = "median oraclePx of the 876 WebSocket messages in hl-probe/data/weekday-2026-10-16/oracle-messages.csv"
+freeze_ms = 12249
+freeze_basis = "longest gap between oracle changes in the same file (WebSocket receive time, 900 s, Friday 18:37 to 18:52 UTC)"
+oracle_median_bp = 3.11
+oracle_p95_bp = 4.74
+half_spread_e6 = 300
+spread_pending = true
+session_variants = [["Mon-Fri 13:30-20:00"], ["Mon-Fri 14:30-21:00"]]
+session_note = "NYSE/NASDAQ regular hours, narrower of the two daylight-saving states"
+verify = ["session-boundary: regular US hours only (narrower of summer 13:30-20:00 and winter 14:30-21:00 UTC); pre-market, after-hours and half days are not covered", "open-hour: the open hour (14:30 to 15:30 UTC) was NOT in the probe run"]
+
+[[market]]
+symbol = "xyz:MSFT"
+source = 4
+class = 5
+underlying = "msft"
+name = "Microsoft (stock)"
+price_usd = 526.34
+price_basis = "median oraclePx of the 876 WebSocket messages in hl-probe/data/weekday-2026-10-16/oracle-messages.csv"
+freeze_ms = 12507
+freeze_basis = "longest gap between oracle changes in the same file (WebSocket receive time, 900 s, Friday 18:37 to 18:52 UTC)"
+oracle_median_bp = 3.04
+oracle_p95_bp = 5.04
+half_spread_e6 = 300
+spread_pending = true
+session_variants = [["Mon-Fri 13:30-20:00"], ["Mon-Fri 14:30-21:00"]]
+session_note = "NYSE/NASDAQ regular hours, narrower of the two daylight-saving states"
+verify = ["session-boundary: regular US hours only (narrower of summer 13:30-20:00 and winter 14:30-21:00 UTC); pre-market, after-hours and half days are not covered", "open-hour: the open hour (14:30 to 15:30 UTC) was NOT in the probe run"]
+
+[[market]]
+symbol = "xyz:NFLX"
+source = 4
+class = 5
+underlying = "nflx"
+name = "Netflix (stock)"
+price_usd = 70.356
+price_basis = "median oraclePx of the 876 WebSocket messages in hl-probe/data/weekday-2026-10-16/oracle-messages.csv"
+freeze_ms = 15284
+freeze_basis = "longest gap between oracle changes in the same file (WebSocket receive time, 900 s, Friday 18:37 to 18:52 UTC)"
+oracle_median_bp = 2.98
+oracle_p95_bp = 4.83
+half_spread_e6 = 500
+spread_pending = true
+session_variants = [["Mon-Fri 13:30-20:00"], ["Mon-Fri 14:30-21:00"]]
+session_note = "NYSE/NASDAQ regular hours, narrower of the two daylight-saving states"
+verify = ["session-boundary: regular US hours only (narrower of summer 13:30-20:00 and winter 14:30-21:00 UTC); pre-market, after-hours and half days are not covered", "open-hour: the open hour (14:30 to 15:30 UTC) was NOT in the probe run"]
+
+[[market]]
+symbol = "xyz:NVDA"
+source = 4
+class = 5
+underlying = "nvda"
+name = "Nvidia (stock)"
+price_usd = 214.685
+price_basis = "median oraclePx of the 876 WebSocket messages in hl-probe/data/weekday-2026-10-16/oracle-messages.csv"
+freeze_ms = 12617
+freeze_basis = "longest gap between oracle changes in the same file (WebSocket receive time, 900 s, Friday 18:37 to 18:52 UTC)"
+oracle_median_bp = 5.13
+oracle_p95_bp = 7.45
+half_spread_e6 = 300
+spread_pending = true
+session_variants = [["Mon-Fri 13:30-20:00"], ["Mon-Fri 14:30-21:00"]]
+session_note = "NYSE/NASDAQ regular hours, narrower of the two daylight-saving states"
+verify = ["session-boundary: regular US hours only (narrower of summer 13:30-20:00 and winter 14:30-21:00 UTC); pre-market, after-hours and half days are not covered", "open-hour: the open hour (14:30 to 15:30 UTC) was NOT in the probe run"]
+
+[[market]]
+symbol = "xyz:PLTR"
+source = 4
+class = 5
+underlying = "pltr"
+name = "Palantir (stock)"
+price_usd = 186.03
+price_basis = "median oraclePx of the 876 WebSocket messages in hl-probe/data/weekday-2026-10-16/oracle-messages.csv"
+freeze_ms = 12293
+freeze_basis = "longest gap between oracle changes in the same file (WebSocket receive time, 900 s, Friday 18:37 to 18:52 UTC)"
+oracle_median_bp = 1.88
+oracle_p95_bp = 5.92
+half_spread_e6 = 500
+spread_pending = true
+session_variants = [["Mon-Fri 13:30-20:00"], ["Mon-Fri 14:30-21:00"]]
+session_note = "NYSE/NASDAQ regular hours, narrower of the two daylight-saving states"
+verify = ["session-boundary: regular US hours only (narrower of summer 13:30-20:00 and winter 14:30-21:00 UTC); pre-market, after-hours and half days are not covered", "open-hour: the open hour (14:30 to 15:30 UTC) was NOT in the probe run"]
+
+[[market]]
+symbol = "xyz:TSLA"
+source = 4
+class = 5
+underlying = "tsla"
+name = "Tesla (stock)"
+price_usd = 350.93
+price_basis = "median oraclePx of the 876 WebSocket messages in hl-probe/data/weekday-2026-10-16/oracle-messages.csv"
+freeze_ms = 12471
+freeze_basis = "longest gap between oracle changes in the same file (WebSocket receive time, 900 s, Friday 18:37 to 18:52 UTC)"
+oracle_median_bp = 1.85
+oracle_p95_bp = 4.7
+half_spread_e6 = 300
+spread_pending = true
+session_variants = [["Mon-Fri 13:30-20:00"], ["Mon-Fri 14:30-21:00"]]
+session_note = "NYSE/NASDAQ regular hours, narrower of the two daylight-saving states"
+verify = ["session-boundary: regular US hours only (narrower of summer 13:30-20:00 and winter 14:30-21:00 UTC); pre-market, after-hours and half days are not covered", "open-hour: the open hour (14:30 to 15:30 UTC) was NOT in the probe run"]
+
+# ---- candidates that are NOT at launch, with the number that failed (decision 56)
+
+[[excluded]]
+symbol = "xyz:COIN"
+source = 4
+rule = "p95"
+reason = "fails the go-live rule: p95 above 12 bp (median 5.72 passes)"
+median_bp = 5.72
+p95_bp = 14.74
+freeze_ms = 24349
+
+[[excluded]]
+symbol = "xyz:MSTR"
+source = 4
+rule = "median"
+reason = "fails the go-live rule: median above 6 bp (p95 12.15 fails too)"
+median_bp = 6.59
+p95_bp = 12.15
+freeze_ms = 15310
+
+[[excluded]]
+symbol = "xyz:TWST"
+source = 4
+rule = "median"
+reason = "thin stock (decision 56); median above 6 bp"
+median_bp = 7.89
+p95_bp = 26.23
+freeze_ms = 51250
+
+[[excluded]]
+symbol = "xyz:UMC"
+source = 4
+rule = "median"
+reason = "thin stock (decision 56); median above 6 bp"
+median_bp = 11.05
+p95_bp = 23.88
+freeze_ms = 54081
+
+[[excluded]]
+symbol = "xyz:OURA"
+source = 4
+rule = "median"
+reason = "oracle frozen for the whole run (no change in 900 s); median above 6 bp"
+median_bp = 28.58
+p95_bp = 28.58
+freeze_ms = 898605
+
+[[excluded]]
+symbol = "xyz:CAMBRICON"
+source = 4
+rule = "median"
+reason = "oracle frozen for the whole run (no change in 900 s); median above 6 bp"
+median_bp = 296.77
+p95_bp = 390.61
+freeze_ms = 898565
+
+[[excluded]]
+symbol = "xyz:HO"
+source = 4
+rule = "median"
+reason = "heating oil sits about 63 bp from its own book mid all session (decision 56)"
+median_bp = 62.5
+p95_bp = 75.74
+freeze_ms = 21424
+
+[[excluded]]
+symbol = "xyz:GLW"
+source = 4
+rule = "liquidity"
+reason = "one of the five thinnest active xyz stocks (24 h notional about $29,559); its numbers (median 2.63, p95 6.76) pass the rule, liquidity does not"
+median_bp = 2.63
+p95_bp = 6.76
+freeze_ms = 26830
+
+[[excluded]]
+symbol = "NATGAS"
+source = 2
+rule = "decision-56"
+reason = "natural gas: GMX silent up to 75.9 s and 16 bp from the Hyperliquid oracle (decision 56)"
+freeze_ms = 75928
+
+[[excluded]]
+symbol = "xyz:EUR"
+source = 4
+rule = "decision-56"
+reason = "FX: oracle gap median 9 s, freeze up to 164 s, 2 to 3 changes a minute: a stale-price attack surface bigger than the spread (decision 56)"
+median_bp = 3.56
+p95_bp = 4.45
+freeze_ms = 164357
+
+[[excluded]]
+symbol = "xyz:GBP"
+source = 4
+rule = "decision-56"
+reason = "FX: freeze up to 141 s (decision 56)"
+median_bp = 8.25
+p95_bp = 9.0
+freeze_ms = 140731
+
+[[excluded]]
+symbol = "xyz:JPY"
+source = 4
+rule = "decision-56"
+reason = "FX: freeze up to 63 s (decision 56)"
+median_bp = 4.75
+p95_bp = 5.38
+freeze_ms = 63224
+
+[[excluded]]
+symbol = "xyz:SP500"
+source = 4
+rule = "not-at-launch"
+reason = "duplicate exposure: SPY stands in for the US500 (decision 55)"
+median_bp = 2.68
+p95_bp = 3.73
+freeze_ms = 12309
+
+[[excluded]]
+symbol = "xyz:XYZ100"
+source = 4
+rule = "not-at-launch"
+reason = "duplicate exposure: QQQ stands in for the Nasdaq-100 (decision 55)"
+median_bp = 5.91
+p95_bp = 7.7
+freeze_ms = 15923
+
+[[excluded]]
+symbol = "crypto alts"
+source = 0
+rule = "not-at-launch"
+reason = "not at launch (decision 56); class 7 stays empty"
+

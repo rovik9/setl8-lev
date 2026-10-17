@@ -1,0 +1,25 @@
+[package]
+name = "launch-config"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Reproducible, validated generator of the launch configuration (markets, sessions, max_age, rule set v1) from config/launch-markets.toml (P19 part B). No network, no keys."
+
+# Standalone workspace (own Cargo.lock and target dir), same pattern as tools/hl-probe and tools/gmx-probe.
+[workspace]
+
+[lib]
+name = "launch_config"
+
+[[bin]]
+name = "launch-config"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+sha2 = "0.10"
+
+[dev-dependencies]
+setl8-lev-journal-types = { path = "../../crates/journal-types" }

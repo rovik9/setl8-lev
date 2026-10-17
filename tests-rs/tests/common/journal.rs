@@ -208,6 +208,11 @@ impl JEnv {
     }
 
     pub fn with_tier(tier: u8) -> Self {
+        Self::with_trader(tier, None)
+    }
+
+    /// `with_tier` with a trader of a fixed key (`seed`), or a random one.
+    pub fn with_trader(tier: u8, seed: Option<u32>) -> Self {
         let mut v = VaultEnv::with(Opts { ruleset: spread_ruleset(), ..Opts::default() });
         let full_week = [(0u16, 10_080u16)];
         v.e.create_market_ok(&market_args(MARKET_EUR, 1, &full_week));
@@ -216,7 +221,10 @@ impl JEnv {
         v.e.create_market_ok(&market_args(MARKET_DISABLED, 0, &full_week));
         // a market that is open only during the first minute of the week
         v.e.create_market_ok(&market_args(MARKET_SHORT_SESSION, 1, &[(0, 1)]));
-        let trader = v.new_trader();
+        let trader = match seed {
+            Some(sd) => v.new_trader_seeded(sd),
+            None => v.new_trader(),
+        };
         assert!(v.open(&trader, tier).is_ok(), "open_account");
         let acct = acct_pda(&trader.pubkey(), 0);
         let t0 = v.account(&acct).created_at;

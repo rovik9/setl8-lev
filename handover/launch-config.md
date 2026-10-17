@@ -1,0 +1,76 @@
+# Launch configuration generator (P19 part B, decision 61)
+
+`tools/launch-config` turns ONE human-editable file, `config/launch-markets.toml`, into the exact arguments of the admin instructions: `config/launch.json` (the `CreateMarketArgs` list in id order and the `RuleSetArgs`, every integer a decimal string) and `config/launch.md` (the table for humans). It is a tool, not an on-chain action: no network, no keys, no signing. Nothing in it can move a lamport.
+
+## Files
+
+| file | what |
+|---|---|
+| `config/launch-markets.toml` | the input. Markets, sessions, measured numbers, placeholders, flags. Edit this. |
+| `config/launch.json` | generated: what `create_market` (x N, in id order) and `create_ruleset` take. Committed. |
+| `config/launch.md` | generated: market table, derivations, sessions, VERIFY items, excluded candidates, rule set, the unpriced-market guard. Committed. |
+| `tools/launch-config/` | the crate (library plus the `launch-config` binary); standalone workspace, own `Cargo.lock`. |
+| `tests-rs/tests/launch_config.rs` | loads `launch.json` through the REAL instructions and trades three markets (below). |
+
+## How to edit, regenerate, verify
+
+```
+cd tools/launch-config
+cargo run --release -- generate            # writes config/launch.json and config/launch.md (refuses an input that breaks a rule)
+cargo run --release -- verify              # re-derives both files from the toml, fails on any difference, checks every rule
+cargo run --release -- verify --production # also fails while any PENDING flag remains
+cargo run --release -- probe --hl-csv F --gmx-1min F [--gmx-samples F]   # recompute the measured numbers from the probe CSVs
+cargo run --release -- verify --hl-csv F --gmx-1min F --gmx-samples F     # compare the numbers in the toml with the raw data
+```
+
+The raw probe CSVs (`tools/hl-probe/data/weekday-2026-10-16/oracle-messages.csv`, `.../gmx-tickers-1min.csv`, `tools/gmx-probe/data/samples-tracked-all-polls.csv`) are git-ignored and live on the Mac; the numbers measured from them are committed in the toml, so `verify` works in a clean checkout. The CSV analysers use the definitions of `tools/hl-probe --oracle-analyze` and the gmx probe (checked against the committed reports in the crate's tests: JP225 median 2.04 bp, p95 3.75 bp, longest gap 29.9 s; BTC Saturday gap 3,664 ms).
+
+## What `verify` enforces
+
+1. **Markets and sources (decisions 55, 56).** Only the allow-lists in `check.rs`: GMX (source 2) BTC, ETH, SOL (class 6), GOLD, SILVER (2), WTIOIL, BRENTOIL (4), SPY, QQQ (3); Hyperliquid xyz oracle (source 4) JP225, KR200 (3) and the probe's twelve liquid stocks (5). A name on the not-at-launch list (FX, NATGAS, xyz:HO, OURA, CAMBRICON, TWST, UMC, GLW, xyz:SP500, xyz:XYZ100) is refused; no class 0, 1 or 7 market; one market per underlying; unique symbols and feed ids; an excluded candidate cannot also be a market. Every Hyperliquid market must pass the go-live rule: median |oracle - mid| <= 6 bp, p95 <= 12 bp, longest freeze <= `max_age_secs`. An exclusion that claims to fail a numeric rule must really fail it.
+2. **Feed ids.** `sha256("SL8FEED" || source || utf8 symbol)`, symbol as the proof carries it (`BTC`, `xyz:AAPL`). `tools/launch-config/tests/derive.rs` pins all 21 as hex constants computed independently (Python `hashlib`) and compares them with `setl8-lev-journal-types`.
+3. **`max_age_secs` (decision 57).** Longest freeze x 125 %, rounded up to 5 s, never below 15 s, must fit `u16`; integer arithmetic only (29,936 ms -> 37,420 ms -> 38 s -> 40 s).
+4. **Sessions.** Minutes of the UTC week, Monday 00:00 = 0, windows `[start, end)`, at most 6. A market lists session VARIANTS (for example the summer and the winter hours of an exchange) and the generator takes their INTERSECTION, so where the data does not settle a boundary the NARROWER window wins, and such a market must carry a VERIFY flag. Crypto is 24/7 and nothing else is. A segment that crosses Sunday midnight is two windows; one that ends exactly at the week end is one window ending at 10,080. Holidays, half days and daylight-saving changes are an admin window change (`update_market`), say so on the deploy day.
+5. **Quantity step, minimum, `max_notional_usd`** (PLACEHOLDER-ADMIN-TUNABLE, either admin can change them any time, decision 24). Step = minimum = the smallest 1-2-5 quantity worth at least $10 at the price used (recorded in the toml). Cap = `cap_basis_tier_usd` x class leverage, rounded down to 1-2-5, never above $5,000,000 (stocks $500,000). See DECISIONS below about the basis.
+6. **Rule set v1.** The launch values of DESIGN 5.4 (fee 40 bps, the ten tiers and prices, the ladder, leverage and holding fee per class) cannot be edited in the toml without `verify` failing. Half-spread per market id and commission per class are the PLACEHOLDERS of the prompt; each carries `pending = true`, and `verify --production` fails while any remains. Every market must have a half-spread above zero (see the next section).
+7. **The files.** `launch.json` and `launch.md` must be byte for byte what the toml generates; two runs give identical bytes.
+
+## Unpriced-market guard: what the three components do (P19 point 7)
+
+**Finding.** A market added AFTER rule set version N can be traded at a ZERO half-spread by accounts of version N, and nothing refuses it. The same holds for an enabled market whose `spread_e6[id]` is 0 in the account's rule set.
+
+* `Market` accounts are global (PDA `["market", id]`), not versioned by rule set. `post_journal` (programs/.../post_journal.rs, `half_spread`) takes the half-spread from the account's rule set: `spread_e6.get(market_id)`; it errors (`MarketUnknown`) only for an id beyond 127, and accepts 0. A `Fill` at the mid price is then the expected price (`engine::fill_price_e12(mid, 0, long)`).
+* The evaluator trades every market it is configured with (`RulesCfg.markets`), with `half_spread_e6` as configured; it accepts 0.
+* The verifier reads a missing `spread_e6` entry as 0 (`Rules::spread`), so it finds nothing wrong either.
+* Exact path, executable: `tests-rs/tests/launch_config.rs::an_old_account_trades_a_market_created_after_its_rule_set_at_zero_spread`. Rule set v1 from `launch.json`; an account is opened under v1; an admin calls `create_market` for id 21; the account buys market 21 through the real `post_journal`; the fill price equals the mid; the verifier says VALID.
+* Nothing is wrong at launch: the deploy order creates every market before rule set v1, and `verify` refuses a launch market with spread 0. The gap opens only for markets created later. **The fix is Rovik's choice.** Options, none implemented: (a) the program refuses a fill whose `spread_e6[id]` is 0 (a program change, immutable rule sets stay immutable); (b) a market carries the first rule set version that prices it and `post_journal` refuses older accounts; (c) operational only: a new market is created as `status = 0` (disabled) and enabled when the first rule set that prices it is current, and the evaluator's per-account market list excludes it for older versions. Until chosen, treat "add a market" as "new rule set version, market disabled until it is current".
+
+## Deploy order (do not reorder)
+
+1. `init_config` (both admins): evaluator key, real vault id, `sl8_wallet`, delay, window, cap (handover/deploy-checklist.md, "Program and config").
+2. `set_evaluator` if the key differs from the one in `init_config`.
+3. `create_market` x 21, in id order 0..20, with the `params` of `launch.json` (either admin can sign each). Ids must be sequential; the program refuses a gap.
+4. `create_ruleset` v1 (both admins) **only AFTER the real half-spread and commission numbers exist.** Today every one is a PLACEHOLDER (29 PENDING flags); the real numbers come from Rovik's friend (decision 14). A rule set is immutable: the real numbers are a NEW rule set version, accounts of the old version keep the old one, and a placeholder v1 on mainnet would stay in force for every account opened under it. `launch-config verify --production` is the gate.
+5. The vault registration items of handover/deploy-checklist.md ("`register_product`"): `product_program_id`, `reset_price_bps`, `challenge_sizes` = the rule set's tiers, `max_payout_count` 4, `fee_split_bps`, mints. Registration needs the real program id; it can happen before step 3.
+6. Fund the evaluator key; start the evaluator with `launch.json` (it needs symbol and source per market: the `meta` of each market entry).
+
+## DECISIONS where the prompt was silent
+
+1. **`cap_basis_tier_usd = 10,000`, literally "the 10K tier".** The prompt says the cap is the largest position the 10K tier's 1:leverage could hold. Taken literally, a $200,000 account at 1:20 in gold gets a $200,000 cap instead of $4,000,000; launch.md says so in a section of its own. The basis is one line of the toml; raise it to 200,000 to give the biggest tier its leverage (the $5,000,000 and $500,000 ceilings then bind). Either admin can change the caps any time.
+2. **Stocks: the liquid set is the twelve the probe followed** (AAPL, AMD, AMZN, COIN, GOOGL, META, MSFT, MSTR, NFLX, NVDA, PLTR, TSLA). Ten pass the rule; COIN (p95 14.74 bp) and MSTR (median 6.59 bp, p95 12.15 bp) fail. GLW is one of the five thinnest stocks (24 h notional about $29,559); its numbers pass the rule (2.63 / 6.76 bp) but it is excluded for liquidity, a rule decision 56 does not state, so it is listed as `liquidity`.
+3. **Half-spread of the stocks:** 300 e6 for AAPL, AMZN, GOOGL, META, MSFT, NVDA, TSLA ("the larger caps"), 500 e6 for AMD, NFLX, PLTR.
+4. **Longest freeze = the longest gap between two oracle (price) changes** in the probe data, as the probe reports it ("gap max"). For the six GMX markets other than the crypto majors it is the Friday 18:37 to 18:48 UTC value of `handover/gmx-probe-weekday-report.md` (the raw weekday GMX samples are binary, not CSV); for BTC, ETH and SOL it is the Saturday CSV (3,664 ms, higher than Friday's 3,396 ms). Saturday gaps of GOLD, WTIOIL and the other closed-on-Saturday markets are NOT freezes (the market is closed) and are not compared.
+5. **JP225 and KR200 freezes were measured outside the chosen window** (the oracle moved at 18:37 UTC on a Friday, when Tokyo and Seoul are closed). The narrower rule gave cash hours; both carry VERIFY `out-of-window-freeze`.
+6. **Session sources are from memory, not from the probe data** for the Sunday open and Friday close of CME, the ICE Brent hours, the US cash session and the Asian cash sessions; the data only settles that the oracle moves during US Friday afternoon and is quiet on Saturday. Every non-crypto market is therefore VERIFY. Daily breaks and the Tokyo lunch break are not modelled (the 6-window limit allows one window per day at most).
+7. **Brent** uses ICE's own hours (Mon-Fri 01:00-23:00 London, narrower of summer and winter: 01:00-22:00 UTC), not the CME break pattern.
+8. **All markets are `status = 1` (enabled)**, session windows decide open or closed. (DESIGN 3.4 said indices start disabled until a feed exists; the Hyperliquid oracle is that feed.)
+9. **Price for the quantity placeholder:** the median of the 15 one-minute GMX tickers (GMX markets) or of the 876 WebSocket `oraclePx` values (Hyperliquid markets), recorded in the toml with its basis.
+10. **Rounding of the minimum quantity is UP to 1-2-5**, so the minimum is worth $10.33 to $25 at the price used, never less than $10.
+11. **`launch.json` carries `meta.symbol` and `meta.source`** next to each market's `params` (not part of `CreateMarketArgs`; the evaluator and the LiteSVM test need them).
+12. **The stack and the program were not changed**: this part adds a tool, a test file, two small test-harness hooks (`Opts::skip_ruleset`, `LiteChain::from_vault`) and moves `verify_segment` from `differential.rs` into the shared harness.
+
+## Tests and mutation
+
+* `tools/launch-config`: **78 tests** (cli 10, derive 9, probe 13, rules 30, session 16): parse/emit round trip, determinism (two runs, identical bytes), every rule with a passing and a failing fixture, `--production`, the `max_age` arithmetic with hand numbers (and the u16 edge), the 21 feed ids pinned as hex constants computed outside the crate and compared with `setl8-lev-journal-types`, every derived number of every market against an independent computation (`max_age`, quantity, cap), the session edge cases (a session ending exactly at the week end, the narrower-window rule, six windows and a seventh, every malformed segment), the CSV analysers on hand fixtures and on the real probe data when present (JP225 2.04 / 3.75 / 5.71 bp, BTC Saturday gap 3,664 ms), the CLI as a process on a scratch copy of `config/`, and zero network access (the crate depends on `serde`, `serde_json`, `toml`, `sha2` only; no source file opens a socket or reads the environment for secrets).
+* Mutation (cargo-mutants 27.1.0, `-j 4 --timeout 120`, tests reading the committed `config/` through `LAUNCH_ROOT` because the tool runs them in a copy of the crate): first run 418 mutants, 391 caught, 16 missed, 11 unviable; every miss was a missing boundary or a missing fixture and got a test (price range, ladder of six, exactly 128 markets, minute 59 and 60, `Mon-Mon`, a missing dash, `describe(&[(0,0)])`, the per-class pending flag, an equal `updatedAt`, freeze equal to `max_age`, an exclusion exactly at the limit, a launch with no or seven windows, each probe CSV alone on the command line); second run (412 mutants, after the tests): 399 caught, 2 missed (an equal-timestamp case that cannot change the maximum, and `e > s` -> `>=` in `segment`, which was equivalent behind an earlier check and was rewritten as a `match` on `cmp`), 11 unviable; third run on `gmx_longest_gap_ms`, `segment`, `bitmap` and `windows` (56 mutants): 56 caught. No viable mutant survives. The 11 unviable are `Default`/`Ok(Default::default())` replacements that do not compile.
+* `tests-rs/tests/launch_config.rs` (5): the file's shape, the real-instruction load in deploy order with the chain equal to the file, three markets traded and VALID, the sessions through the program's own function, and the unpriced-market path above.

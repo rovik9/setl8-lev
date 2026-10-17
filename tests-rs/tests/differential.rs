@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use common::evaluator::shared::runner::{completed_a_pass, m9b_cover, m9c_cover, run_path, spec_rules, M9bCover, M9cCover, ResetCover, RunResult};
-use common::evaluator::shared::{self, World};
+use common::evaluator::shared::World;
 use common::evaluator::*;
 use common::launch_ruleset_args;
 use common::vault::RESET_LADDER_BPS;
@@ -72,49 +72,6 @@ impl Cover {
 struct Outcome {
     cover: Cover,
     shapes: BTreeMap<String, ShapeMax>,
-}
-
-/// The checks of one finished segment (a path, or the second half of a reset story) against the chain it was posted to: no
-/// fault, no unexpected note, the public verifier says VALID on the program's events of THIS account, the final account equals
-/// the evaluator, and a failed account is Failed at the vault.
-fn verify_segment(spec: &PathSpec, chain: &LiteChain, r: &RunResult) -> Result<(), String> {
-    let w = &r.world;
-    if let Some(f) = w.ev.fault() {
-        return Err(format!("evaluator fault {f:?} ({:?})", spec.scenario));
-    }
-    if !r.notes.is_empty() {
-        return Err(format!("runner notes: {:?} ({:?})", r.notes, spec.scenario));
-    }
-    // the public verifier on what the program emitted
-    let events = chain.events_text();
-    let rules = shared::rules_json(&w.rules, w.opened.size_micro);
-    let snapshot = chain.account_snapshot_json(None);
-    let rep = setl8_verify::verify_account(&setl8_verify::Inputs {
-        events: events.as_bytes(),
-        rules: rules.as_bytes(),
-        archive: w.ev.archive_bytes(),
-        intents: w.ev.intents_bytes(),
-        snapshot: Some(snapshot.as_bytes()),
-        second_archive: None,
-        as_of_seq: None,
-    })
-    .map_err(|e| format!("verifier input: {e}"))?;
-    if rep.verdict != setl8_verify::Verdict::Valid {
-        return Err(format!("verifier MISMATCH on the program's events ({:?}, challenge {}):\n{}", spec.scenario, w.opened.challenge_id, shared::describe(&rep)));
-    }
-    // the final account equals the evaluator, also after the last non-batch transactions
-    let a = chain.j.account();
-    let es = w.ev.state();
-    if a.b != es.b || a.q_tally != es.q_tally || a.seq != w.ev.seq() || a.journal_hash != w.ev.head() {
-        return Err(format!("final account differs: chain b {} q {} seq {} vs evaluator b {} q {} seq {}", a.b, a.q_tally, a.seq, es.b, es.q_tally, w.ev.seq()));
-    }
-    if matches!(w.ev.status(), Status::Failed(_)) {
-        let vs = chain.j.v.vault_trader_state(&chain.j.trader.pubkey(), a.challenge_id).ok_or("vault record")?;
-        if a.status != 1 || vs.status != 2 {
-            return Err(format!("failed account: local status {} vault status {}", a.status, vs.status));
-        }
-    }
-    Ok(())
 }
 
 /// What one finished segment counts (`transactions` is set by the caller: the chain counts both segments of a reset story).
