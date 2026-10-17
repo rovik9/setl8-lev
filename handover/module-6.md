@@ -79,7 +79,7 @@ Each phase: a Close with pnl +8,000.000000 (age > 45 s, so full credit) brings `
 | phase 5 finalize | id 4 owed 8,000 | 4 / 32,000 | 4 / 32,000 | 0 (Graduated) | Graduated, 4 |
 Then the wallet opens a new account (challenge id 1; the next id is 2).
 
-## Compute units (whole transaction, numbers only)
+## Compute units (whole transaction, numbers only; M11 measured the worst cases again, handover/module-11.md: `request_advance` 45,937, `finalize_pass` up to 84,594)
 request_advance 45,887 · confirm_pass (phases 2 to 5) 23,963 · confirm_pass (phase 1) 23,470 · reject_pass 21,683 · cancel_pass 4,697 · veto_pass 22,639 · finalize_pass 72,534. All under the 200k default. Stack: no frame over 4096 bytes (default and localnet builds).
 
 ## Hand-applied mutations: 48 of 48 killed (driver: patch, run `cargo test --lib`, rebuild the localnet `.so`, run `cargo test --test pass_flow`, restore)

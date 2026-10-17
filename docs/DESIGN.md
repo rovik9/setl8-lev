@@ -330,7 +330,7 @@ Trader sends a signed market buy of 1,000,000 EUR at 14:00:00 UTC. The evaluator
 | 14:02:00 | 1.08110 | 1.081067567 | +1,035.17 | 101,035.17 | Nothing falls: `g_peak` and `l_level` unchanged. |
 | 14:02:30 | 1.07800 | 1.07796766 | -2,064.74 | 97,935.26 | `E = 97,935.26 <= l_level 98,035.107` -> **breach**. Close at the sample bid 1.07796766: pnl = -2,064.74, slice age 150 s so a normal slice, `B = 97,935.26`. Account flat, locked until 02:02:30 next day. |
 
-**What lands on Solana (posted by the evaluator about 14:03, as three transactions because a signed proof is about 300 bytes in the journal format of 8.2 and a 1,232-byte transaction carries about two; sizes are estimates until M2):**
+**What lands on Solana (posted by the evaluator about 14:03; the table shows three transactions for readability. Measured in M11: a proof is 61 bytes, not 300, so size would allow fewer; a batch carries at most 3 proofs and the four proofs of this example need two transactions):**
 | Tx | Events (seq) | Proofs attached | What the program checks |
 |---|---|---|---|
 | A | `Fill`(1) buy 1,000,000 EUR @ 1.0800324; `TightStart`(2) `r=100,000`, `l_start=96,000`, `g_peak=1,235.161`, `l_level=96,235.161` | 2 (14:00:00, 14:01:00) | seq 1 and 2 continue the stored seq 0; I-9: `l_start = min(92,000 + 4,000, 100,000)`, `p_open 1,235.161 > 1,000`; hash chain. |
@@ -571,7 +571,7 @@ PriceProof {
   signed_update: Vec<u8> // source 3: the 32-byte sha256 of the signed Chainlink blob (the blob itself is in the archive, decision 47); EMPTY for sources 2 and 4; at most 512 bytes
 }
 ```
-Size of one proof in a transaction is about 300 bytes (UNVERIFIED, M2); a `Close` or `Fill` event is about 90 to 110 bytes. Hence about two proofs per 1,232-byte transaction; larger batches use an address lookup table or several transactions.
+Measured (M11, Borsh): a proof is 61 bytes (sources 2 and 4) or 93 bytes (source 3); `Fill` is 66 bytes, `Close` 67, `Fee` 20, `TightStart` 50, `FloorRaised` 26, `TightEnd` 9, `Breach` 26, `Fail` 19, `Meta` 76; a batch adds 48 bytes. The largest transaction (3 proofs of source 3, 8 market accounts) is 1,181 bytes of the 1,232. *Was: "about 300 bytes per proof (UNVERIFIED, M2), about two proofs per transaction".*
 `MAX_EVENTS_PER_BATCH = 8` and `MAX_PROOFS_PER_BATCH = 3` bound compute and event size.
 
 ### 8.3 Hash chain
@@ -723,21 +723,28 @@ The vault freezes inactivity clocks during a pause. The sector `set_paused` is a
 
 ## 11. Compute, transaction size and stack budget
 
-**ESTIMATES. Measured values replace them in module M11.**
-| Instruction | CU estimate | Notes |
-|---|---|---|
-| `post_journal` (8 events, 3 proofs) | 120k to 220k | per event about 12k to 25k CU: Borsh decode, i128 pnl re-check, `sol_sha256` over about 150 bytes, `emit_cpi!` self-CPI (about 5k). Requests 250k. |
-| `report_fail` | +20k over `post_journal` | `flag_trader_failed` CPI |
-| `open_account` | 90k to 130k | `deposit_fee` CPI creates `TraderState` and moves tokens; account init 207 bytes |
-| `request_advance` / `confirm_pass` / `reject_pass` / `cancel_pass` / `veto_pass` | 15k to 40k | `request_advance` includes one `record_activity` CPI |
-| `finalize_pass` | 70k to 100k | `request_payout` CPI creates `PayoutClaim` |
-Default 200k per instruction suffices except `post_journal`.
+**MEASURED (M11, P19 part C; handover/module-11.md has the full table and how it is produced; `tests-rs/tests/budget.rs` asserts a ceiling per instruction: the measured worst case + 15 %, never above 200,000 CU or 1,232 bytes).** Worst cases, compute units / signed-transaction bytes, with traders of fixed keys and the worst bump-search keys found:
+| Instruction | CU | bytes | Notes |
+|---|---|---|---|
+| `post_journal` | 125,263 | 1,181 | worst CU: 8 events, 3 proofs (2 fills, 2 closes, tight start, floor raise, fee, meta); worst bytes: 3 proofs of source 3 and 8 market accounts. One signature (evaluator = fee payer), no budget instruction. A 1-event batch is about 31,000 CU. |
+| `report_fail` | 151,304 | 1,149 | 8 events, 3 proofs; the `flag_trader_failed` call and 5 more fixed accounts on top of `post_journal`. |
+| `open_account` | 135,595 | 838 | first account of a wallet, worst key (typical 100,000 to 120,000); the vault's `deposit_fee` creates the `TraderState`. |
+| `reset_account` | 158,200 | 911 | worst key (typical 125,000 to 145,000); the vault's `deposit_reset` is about 42,000 of it. |
+| `request_advance` | 45,937 | 539 | one `record_activity` call. |
+| `confirm_pass` / `reject_pass` / `cancel_pass` / `veto_pass` | 23,971 / 21,688 / 4,699 / 22,643 | 374 / 375 / 307 / 471 | |
+| `finalize_pass` | 84,594 | 671 | `request_payout` creates the `PayoutClaim`; worst key. |
+| `hold_account` / `release_hold` / `fail_for_violation` | 24,633 / 24,600 / 44,035 | 439 / 504 / 668 | |
+| `touch_activity` / `release_account` | 52,145 / 52,151 | 539 | with the vault call, worst key (throttled: about 22,000). |
+| `close_account` | 3,337 | 307 | |
+| admin: `init_config`, `create_market`, `update_market`, `create_ruleset`, `ban_wallet`, `unban_wallet`, `set_*` | 4,285 to 31,823 | 405 to 984 | three signatures (fee payer + both admins). |
+Every instruction is below the default 200,000 units, so no compute-budget instruction is needed anywhere; `post_journal` (1,181 B) and `report_fail` (1,149 B) are the ones near the byte limit. *Was (estimates): `post_journal` 120k to 220k "requests 250k", `report_fail` +20k over it, `open_account` 90k to 130k, pass instructions 15k to 40k, `finalize_pass` 70k to 100k; "default 200k suffices except `post_journal`". The estimate for `post_journal` was too high (the real worst case fits the default) and the one for `report_fail` too low (+26k, not +20k).*
 
-**Transaction size.** 1,232 bytes. A signed proof is about 300 bytes (UNVERIFIED, M2), an event about 100: about two proofs per transaction, so a trade with entry, tight start, peak and exit is 2 to 3 transactions (section 4.9).
-This costs fees (8.4) but no safety: every transaction extends the same hash chain and a later transaction cannot be applied before an earlier one.
+**Transaction size.** 1,232 bytes. Measured wire sizes (Borsh): a proof is **61 bytes** (sources 2 and 4) or 93 (source 3, with the 32-byte digest); `Fill` 66, `Close` 67, `Fee` 20, `TightStart` 50, `FloorRaised` 26, `TightEnd` 9, `Breach` 26, `Fail` 19, `Meta` 76; a batch adds 48. A full batch (8 events, 3 proofs) is well inside one transaction; what splits batches is the proof count (3), the event count (8) and the market count (8), not the bytes. *Was: "a signed proof is about 300 bytes (UNVERIFIED, M2), an event about 100: about two proofs per transaction".* This costs fees (8.4) but no safety: every transaction extends the same hash chain and a later transaction cannot be applied before an earlier one.
 
-**Stack (4,096 bytes per frame).** Accounts are small Borsh structs; instruction account structs with more than a few accounts (`open_account`, `finalize_pass`, `report_fail`) wrap their big members in `Box<>`; `RuleSet` is read with `AccountLoader` (zero-copy, 552 bytes).
-**Build check:** `scripts/anchor-build-checked.sh` (same approach as the vault's script of that name) runs `anchor build`/`cargo build-sbf`, fails on any "Stack offset of ... exceeded max offset of 4096" message, and runs `const_assert!`s on every account size in section 5.
+**Stack (4,096 bytes per frame).** Accounts are small Borsh structs; instruction account structs with more than a few accounts (`open_account`, `finalize_pass`, `report_fail`) wrap their big members in `Box<>`; `RuleSet` is read with `AccountLoader` (zero-copy, 552 bytes). Measured (`scripts/stack-frames.py`, compiler-reported frames of the localnet build): the largest is `handle_reset_account` at **2,944 bytes**, then the `ResetAccount` and `OpenAccount` account structs at 2,752 and 2,560, `handle_finalize_pass` 1,984; none is over 4,096.
+**Build check:** `scripts/build-test-so.sh` (and `scripts/anchor-build-checked.sh`, same approach as the vault's script of that name) runs `cargo build-sbf`, fails on any "Stack offset of ... exceeded max offset of 4096" message, and the program has `const_assert!`s on every account size in section 5.
+
+**Rent** (rent-exempt minimum, (128 + length) x 6,960 lamports): `TradingAccount` 207 B 2,331,600; `WalletProfile` 56 B 1,280,640; `Market` 128 B 1,781,760; `RuleSet` 552 B 4,732,800; `SectorConfig` 270 B 2,770,080; `PayoutTally` 25 B 1,064,880; vault `TraderState` 115 B 1,691,280. Opening the first account of a wallet costs 5,303,520 lamports of rent + 5,000 fee and 862.436 USDC at the $100K tier (module-11.md).
 
 ---
 

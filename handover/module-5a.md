@@ -48,6 +48,7 @@ Args: `amount = tier_cost` (never anything else), `product_program_id = this pro
 - Mutation spot-check of `open_account` (16 hand mutants: cap removed / off by one, ban, pause, payer and rule-set checks removed, tier bound, vault amount != cost, no fee, fee to the wrong account, id and count not incremented, `b`, genesis hash, `flat`, `next_request_id`): all killed.
 
 ## Compute units and stack
+(M11 measured every instruction again with fixed keys and the worst bump-search keys: `open_account` up to 135,595 CU, see handover/module-11.md; the numbers below are the M5a measurements.)
 `open_account` consumed 101,341 to 109,994 CU over six runs (the range comes from the PDA bump search for random keys; about 44.9k are inside the vault's `deposit_fee`, 6.1k per token transfer, 6.5k for the event CPI). The first open of a wallet (profile created) and later opens differ by about 0 to 1.5k. Default request is 200k, so it fits; M11 sets budgets.
 `scripts/build-test-so.sh` and `scripts/anchor-build-checked.sh` (default and localnet): no stack-frame overflow. Large accounts are `Box`ed.
 

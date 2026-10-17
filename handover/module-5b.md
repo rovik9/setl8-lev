@@ -79,7 +79,7 @@ By invariant: 4.9 (`design_4_9_worked_example_in_three_transactions`, `the_execu
 | C (close + breach) | 97,935.26 | 0 | 0 | 0 | 0 | 0 | t+12 h | 1 | 8 | 1 |
 Close pnl -2,064.74 (age 150 s, not quick). The head after each transaction equals the independent `journal_types` computation; after C it equals `verify_chain` over the 8 EventLogs read from the inner instructions.
 
-## Compute units (whole transaction incl. the 150 CU compute-budget instruction; numbers only, M11 sets budgets)
+## Compute units (whole transaction incl. the 150 CU compute-budget instruction; numbers only; M11 set the budgets: `post_journal` worst case 125,263 CU and 1,181 bytes, handover/module-11.md)
 1 event ([Meta]): 30,760 · 4 events ([Fee x3, Meta]): 65,056 · 8 events ([Fee x7, Meta]): 107,685 · 8 events with 3 proofs (2 Fill, 2 Close, TightStart, FloorRaised, Fee, Meta): 124,445. Stack: `scripts/build-test-so.sh` and `scripts/anchor-build-checked.sh` report no frame over 4096 bytes (default and localnet builds).
 
 ## Mutation testing

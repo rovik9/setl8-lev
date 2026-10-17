@@ -47,7 +47,7 @@ The 0.4% is charged on top of the reset price with the same `ruleset.fee_bps` fi
 | phase 4 | 1,095.225000 | 4.380900 | 38.250000 | 0.153000 |
 | phase 5 | 1,116.700000 | 4.466800 | 39.000000 | 0.156000 |
 
-## Compute units (whole transaction; `compute_units_per_phase_and_tier`: eight fresh traders per cell, min / median / max)
+## Compute units (M11 supersedes the worst case: 158,200 CU with the worst key, handover/module-11.md; whole transaction; `compute_units_per_phase_and_tier`: eight fresh traders per cell, min / median / max)
 The spread comes from the PDA bump searches of the trader's random keys, not from the phase. About 42,000 are inside the vault's `deposit_reset`, three token transfers cost 6,100 each, the two event CPIs 6,500 each.
 | tier | phase 1 | phase 2 | phase 3 | phase 4 | phase 5 |
 |---|---|---|---|---|---|

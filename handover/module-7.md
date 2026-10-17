@@ -53,7 +53,7 @@ Vault CPIs are signed by `sector_authority` (`invoke_signed`): `flag_trader_fail
 - attacks (4): attack_the_evaluator_cannot_release_a_hold_or_fail_for_violation, attack_one_admin_alone_cannot_use_any_both_admin_instruction, attack_a_trader_cannot_report_fail_or_hold, attack_fake_wallet_and_vault_accounts_in_report_fail_and_fail_for_violation (17 account swaps, all refused and unchanged)
 - compute units (1): compute_units_per_instruction
 
-## Compute units (whole transaction, numbers only)
+## Compute units (whole transaction, numbers only; M11 measured the worst cases again, handover/module-11.md: `report_fail` 151,304 CU and 1,149 bytes, `fail_for_violation` 44,035, `touch_activity` up to 52,145)
 report_fail with 2 events 76,086 · report_fail with 8 events and 3 proofs 158,394 · hold_account 24,632 · release_hold 24,602 · fail_for_violation 44,032 · touch_activity skipped 21,995 · touch_activity with the vault call 37,147 · release_account with the vault call 37,147 · close_account 3,339. All fit the 200k default (the 8-event report_fail needs no budget instruction). Stack: no frame over 4096 bytes (default and localnet builds).
 
 ## Hand-applied mutations: 55 applied, 54 killed, 1 equivalent survivor (driver: patch, `cargo test --lib`, rebuild the localnet `.so`, run lifecycle, pass_flow, post_journal, wallet, open_account)
