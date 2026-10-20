@@ -48,7 +48,12 @@ pub fn rov_test_admin() -> Keypair {
 }
 
 pub fn so_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/test-deploy/setl8_lev_trading.so")
+    // `SETL8_TEST_SO` points the whole suite at another build of the program (the mutation driver of the M12 audit builds each
+    // mutant in a scratch copy and runs the prebuilt test binaries against it)
+    match std::env::var("SETL8_TEST_SO") {
+        Ok(p) if !p.is_empty() => PathBuf::from(p),
+        _ => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/test-deploy/setl8_lev_trading.so"),
+    }
 }
 
 pub fn config_pda() -> Pubkey {
