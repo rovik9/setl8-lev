@@ -1930,42 +1930,67 @@ fn rows() -> Vec<Row> {
     ]
 }
 
+/// Runs ONE row through the machinery: honest history, tamper, program verdict, verifier verdict. Returns the markdown line of the
+/// table and the problems found (empty = the row's classification holds).
+fn check_row(row: &Row) -> (String, Vec<String>) {
+    if std::env::var("TRUST_MATRIX_TRACE").is_ok() {
+        eprintln!("row: {}", row.name);
+    }
+    let (mut t, mut chain) = honest(&(row.sc)());
+    (row.tamper)(&mut t);
+    let o = run_case(&t, &mut chain);
+    let got = who(&o);
+    let prog = o.rejected.map(|(_, c)| c);
+    let want_code = row.program.map(u32::from);
+    let classes: Vec<String> = o.classes.iter().map(|c| format!("{c:?}")).collect();
+    let line = format!("| {} | {:?} | {} | {} |", row.name, got, row.program.map(|e| format!("{e:?} ({})", u32::from(e))).unwrap_or_else(|| "-".into()), if row.verifier.is_empty() { "-".to_string() } else { format!("{:?}", row.verifier) });
+    let mut problems = Vec::new();
+    if got != row.who {
+        problems.push(format!("who: expected {:?}, got {:?}", row.who, got));
+    }
+    if row.program.is_some() && prog != Some(want_code) {
+        problems.push(format!("program: expected {:?}, got {:?}", want_code, prog));
+    }
+    for c in row.verifier {
+        if !o.classes.contains(c) {
+            problems.push(format!("verifier: expected {c:?} among {classes:?}"));
+        }
+    }
+    let report = if problems.is_empty() { Vec::new() } else { vec![format!("{}: {}\n   verifier says:\n{}", row.name, problems.join("; "), o.text)] };
+    (line, report)
+}
+
+/// The aggregate test: every row, one report.
 #[test]
 fn trust_matrix() {
     let mut table = Vec::new();
     let mut bad = Vec::new();
     for row in rows() {
-        if std::env::var("TRUST_MATRIX_TRACE").is_ok() {
-            eprintln!("row: {}", row.name);
-        }
-        let (mut t, mut chain) = honest(&(row.sc)());
-        (row.tamper)(&mut t);
-        let o = run_case(&t, &mut chain);
-        let got = who(&o);
-        let prog = o.rejected.map(|(_, c)| c);
-        let want_code = row.program.map(u32::from);
-        let classes: Vec<String> = o.classes.iter().map(|c| format!("{c:?}")).collect();
-        table.push(format!("| {} | {:?} | {} | {} |", row.name, got, row.program.map(|e| format!("{e:?} ({})", u32::from(e))).unwrap_or_else(|| "-".into()), if row.verifier.is_empty() { "-".to_string() } else { format!("{:?}", row.verifier) }));
-        let mut problems = Vec::new();
-        if got != row.who {
-            problems.push(format!("who: expected {:?}, got {:?}", row.who, got));
-        }
-        if row.program.is_some() && prog != Some(want_code) {
-            problems.push(format!("program: expected {:?}, got {:?}", want_code, prog));
-        }
-        for c in row.verifier {
-            if !o.classes.contains(c) {
-                problems.push(format!("verifier: expected {c:?} among {classes:?}"));
-            }
-        }
-        if !problems.is_empty() {
-            bad.push(format!("{}: {}\n   verifier says:\n{}", row.name, problems.join("; "), o.text));
-        }
+        let (line, problems) = check_row(&row);
+        table.push(line);
+        bad.extend(problems);
     }
     if std::env::var("TRUST_MATRIX_PRINT").is_ok() {
         println!("{}", table.join("\n"));
     }
     assert!(bad.is_empty(), "\n{}", bad.join("\n\n"));
+}
+
+/// One row by its exact name (exactly one row carries it), checked alone.
+fn run_named_row(name: &str) {
+    let all = rows();
+    let hits: Vec<&Row> = all.iter().filter(|r| r.name == name).collect();
+    assert_eq!(hits.len(), 1, "row name must exist exactly once in rows(): {name}");
+    let (_, bad) = check_row(hits[0]);
+    assert!(bad.is_empty(), "\n{}", bad.join("\n\n"));
+}
+
+/// One chain row by its exact name.
+fn run_named_chain_row(name: &str) {
+    let all = chain_rows();
+    let hits: Vec<&ChainRow> = all.iter().filter(|r| r.name == name).collect();
+    assert_eq!(hits.len(), 1, "chain row name must exist exactly once in chain_rows(): {name}");
+    check_chain_row(hits[0]);
 }
 
 // ------------------------------------------------------------------------------------------------- chain-level rows (the pass flow)
@@ -2050,13 +2075,123 @@ fn chain_rows() -> Vec<ChainRow> {
     ]
 }
 
+fn check_chain_row(row: &ChainRow) {
+    let (mut t, mut chain) = honest(&(row.sc)());
+    let got = (row.run)(&mut t, &mut chain);
+    assert_eq!(got, Some(u32::from(row.program)), "{}", row.name);
+}
+
 #[test]
 fn trust_matrix_chain_rows() {
     for row in chain_rows() {
-        let (mut t, mut chain) = honest(&(row.sc)());
-        let got = (row.run)(&mut t, &mut chain);
-        assert_eq!(got, Some(u32::from(row.program)), "{}", row.name);
+        check_chain_row(&row);
     }
+}
+
+// ------------------------------------------------------------------------------------------------- one named test per row (M12, item 8)
+//
+// Every row of `handover/trust-matrix.md` has EXACTLY ONE test of its own, named after the row (`row_NNN_<slug>`, numbered in the order
+// of `rows()`; `chain_row_NN_<slug>` for the chain rows). The macro writes the test function and the entry of the listing below from the
+// same line, so a test cannot exist without a listing entry or the reverse. A test finds its row by the exact NAME (not by position), so
+// reordering `rows()` cannot make a test check another row; a renamed or deleted row fails its test. `every_row_has_exactly_one_named_test`
+// compares the listing with `rows()` and `chain_rows()` and with the table in the document.
+
+macro_rules! row_tests {
+    ($($f:ident => $name:expr),* $(,)?) => {
+        $( #[test] fn $f() { run_named_row($name); } )*
+        /// (test function name, row name), in the order of `rows()`.
+        const ROW_TESTS: &[(&str, &str)] = &[ $( (stringify!($f), $name) ),* ];
+    };
+}
+
+macro_rules! chain_row_tests {
+    ($($f:ident => $name:expr),* $(,)?) => {
+        $( #[test] fn $f() { run_named_chain_row($name); } )*
+        /// (test function name, chain row name), in the order of `chain_rows()`.
+        const CHAIN_ROW_TESTS: &[(&str, &str)] = &[ $( (stringify!($f), $name) ),* ];
+    };
+}
+
+row_tests! {
+    row_001_fill_price_altered_by_one_unit => "fill price altered by one unit",
+    row_002_close_exit_price_altered_pnl_recomputed => "close exit price altered (pnl recomputed)",
+    row_003_close_pnl_wrong_by_one_micro_usd => "close pnl wrong by one micro-USD",
+    row_004_quick_flag_flipped_on_a_quick_slice => "quick flag flipped on a quick slice",
+    row_005_quick_profit_credited_in_full => "quick profit credited in full",
+    row_006_fee_amount_beyond_i64 => "fee amount beyond i64",
+    row_007_tight_start_l_level_one_micro_off => "tight start: l_level one micro off",
+    row_008_floor_raise_l_level_one_micro_off => "floor raise: l_level one micro off",
+    row_009_floor_raise_dropped_the_breach_then_names_a_stale_level => "floor raise dropped (the breach then names a stale level)",
+    row_010_tight_start_and_floor_raise_swapped => "tight start and floor raise swapped",
+    row_011_meta_engine_version_wrong => "meta: engine version wrong",
+    row_012_batch_replayed => "batch replayed",
+    row_013_wrong_prev_hash => "wrong prev_hash",
+    row_014_posted_by_a_key_that_is_not_the_evaluator => "posted by a key that is not the evaluator",
+    row_015_event_time_goes_backwards => "event time goes backwards",
+    row_016_event_dated_30_s_after_the_block_time => "event dated 30 s after the block time",
+    row_017_proof_carries_another_market_s_feed => "proof carries another market's feed",
+    row_018_proof_older_than_the_market_s_max_age => "proof older than the market's max_age",
+    row_019_batch_of_nine_events => "batch of nine events",
+    row_020_fill_in_a_closed_session => "fill in a closed session",
+    row_021_fill_quantity_not_a_multiple_of_the_step => "fill quantity not a multiple of the step",
+    row_022_commission_fee_missing_after_a_close => "commission fee missing after a close",
+    row_023_commission_fee_one_micro_usd_too_high => "commission fee one micro-USD too high",
+    row_024_commission_fee_placed_before_its_fill => "commission fee placed before its fill",
+    row_025_holding_fee_omitted_at_the_rollover => "holding fee omitted at the rollover",
+    row_026_holding_fee_one_micro_usd_too_low => "holding fee one micro-USD too low",
+    row_027_meta_samples_hash_is_not_a_prefix_of_the_archive => "Meta.samples_hash is not a prefix of the archive",
+    row_028_meta_intents_hash_is_not_a_prefix_of_the_intents_file => "Meta.intents_hash is not a prefix of the intents file",
+    row_029_meta_flat_says_flat_while_a_position_is_open => "Meta.flat says flat while a position is open",
+    row_030_breach_posted_late_with_the_old_sample_replayed_price => "breach posted late with the old sample (replayed price)",
+    row_031_breach_built_from_the_worst_sample_of_each_market_never => "breach built from the worst sample of each market (never simultaneous)",
+    row_032_breach_omitted_the_trader_keeps_the_position => "breach omitted (the trader keeps the position)",
+    row_033_fail_omitted_at_the_static_floor => "fail omitted at the static floor",
+    row_034_static_floor_fail_on_an_account_above_the_floor => "static-floor fail on an account above the floor",
+    row_035_quick_limit_fail_on_an_account_below_the_limit => "quick-limit fail on an account below the limit",
+    row_036_pass_requested_and_confirmed_on_an_account_that_is_not => "pass requested and confirmed on an account that is not flat",
+    row_037_slow_profitable_slice_booked_as_quick_half_credited => "slow profitable slice booked as quick (half credited)",
+    row_038_close_names_another_entry_price_pnl_consistent_with_it => "close names another entry price (pnl consistent with it)",
+    row_039_fill_reports_a_wrong_average_entry => "fill reports a wrong average entry",
+    row_040_fill_reports_a_wrong_margin => "fill reports a wrong margin",
+    row_041_trade_with_no_signed_intent_forged_trade => "trade with no signed intent (forged trade)",
+    row_042_intent_signed_by_a_key_that_is_not_the_trader_s => "intent signed by a key that is not the trader's",
+    row_043_archive_the_price_of_the_proof_s_sample_altered => "archive: the price of the proof's sample altered",
+    row_044_archive_the_sample_behind_a_fill_dropped => "archive: the sample behind a fill dropped",
+    row_045_stop_loss_triggered_but_not_executed => "stop-loss triggered but not executed",
+    row_046_limit_order_triggered_but_never_filled => "limit order triggered but never filled",
+    row_047_stop_loss_close_with_no_trigger => "stop-loss close with no trigger",
+    row_048_fill_on_a_held_account => "fill on a held account",
+    row_049_fill_during_the_12_h_lock_after_a_breach => "fill during the 12 h lock after a breach",
+    row_050_fill_on_an_account_that_already_failed => "fill on an account that already failed",
+    row_051_a_sample_that_caused_a_breach_dropped_from_the_archive => "a sample that caused a breach dropped from the archive, breach omitted (no second recorder)",
+    row_052_the_same_with_an_independent_second_recorder => "the same, with an independent second recorder",
+    row_053_market_order_executed_at_an_older_sample_inside_max_age => "market order executed at an older sample inside max_age (worse price)",
+    row_054_a_trader_s_market_order_ignored_no_fill_intent_on_file => "a trader's market order ignored (no fill, intent on file)",
+    row_055_pending_order_that_only_reduces_the_close_that_executes => "pending order that only reduces: the Close that executes it is missing",
+    row_056_pending_order_that_only_reduces_its_close_at_a_price => "pending order that only reduces: its Close at a price altered by one unit",
+    row_057_close_under_the_nonce_of_a_pending_order_that_no_sample => "Close under the nonce of a pending order that no sample triggers",
+    row_058_close_under_the_nonce_of_a_set_sl_tp => "Close under the nonce of a set_sl_tp",
+    row_059_commission_fee_posted_after_the_slice_that_overshoots => "commission fee posted after the slice that overshoots the quick limit",
+    row_060_flip_that_drops_its_opening_remainder_although_its => "flip that drops its opening remainder although its closing slice did not overshoot",
+    row_061_pending_order_the_account_could_not_margin_is_filled => "pending order the account could not margin is filled anyway",
+    row_062_breach_posted_where_its_closes_end_at_or_below_the => "breach posted where its closes end at or below the static floor",
+    row_063_fail_omitted_a_tightend_instead_where_a_breach_s_closes => "Fail omitted (a TightEnd instead) where a breach's closes end at or below the static floor",
+    row_064_breach_posted_where_its_closes_overshoot_the_quick_limit => "breach posted where its closes overshoot the quick limit",
+    row_065_phase_advanced_to_another_phase_after_pass_finalized => "phase_advanced to another phase after pass_finalized",
+    row_066_phase_advanced_repeated_after_pass_finalized => "phase_advanced repeated after pass_finalized",
+    row_067_phase_advanced_with_no_pass_line_before_it => "phase_advanced with no pass line before it",
+    row_068_a_market_fill_the_account_cannot_margin => "a market fill the account cannot margin",
+    row_069_a_market_fill_above_the_market_s_notional_cap => "a market fill above the market's notional cap",
+    row_070_a_market_fill_in_a_market_the_account_s_rule_set_does => "a market fill in a market the account's rule set does not price",
+    row_071_the_fill_of_a_triggered_pending_order_in_a_market_the => "the fill of a triggered pending order in a market the rule set does not price",
+    row_072_a_triggered_pending_order_in_an_unpriced_market_that => "a triggered pending order in an unpriced market that the evaluator does not fill (the rule itself)",
+}
+
+chain_row_tests! {
+    chain_row_01_confirm_pass_with_no_pass_requested => "confirm_pass with no pass requested",
+    chain_row_02_post_journal_while_a_pass_is_confirmed_the_journal_is => "post_journal while a pass is confirmed (the journal is frozen)",
+    chain_row_03_request_advance_below_the_target_b_1_08_s => "request_advance below the target (b < 1.08 S)",
+    chain_row_04_finalize_pass_before_the_delay_has_elapsed => "finalize_pass before the delay has elapsed",
 }
 
 /// The table is documented: every NEITHER row appears under "Residual trust" in handover/trust-matrix.md, and the matrix
@@ -2196,4 +2331,114 @@ fn verify_events(t: &T, events: &str) -> Vec<F> {
     setl8_verify::verify_account(&setl8_verify::Inputs { events: events.as_bytes(), rules: rules.as_bytes(), archive: &archive, intents: intents.as_bytes(), snapshot: None, second_archive: None, as_of_seq: None })
         .expect("inputs")
         .classes()
+}
+
+// ------------------------------------------------------------------------------------------------- reconciliation with handover/trust-matrix.md
+
+/// The 11 Reset (M8) rows of the document. They are asserted in `tests/trust_reset.rs`, which is NOT part of this file: there they run in
+/// ONE table-driven test (`reset_trust_rows`), so none of them has a test of its own. `reset_rows_listing_matches_document_and_source`
+/// pins the listing against the document and against that file; the audit fragment 08a reports them as "rows without an individually named test".
+const RESET_ROWS: &[&str] = &[
+    "reset: a price below the registry's tier price paid to the vault (a fake reset price)",
+    "reset: the registry replaced by a copy with cheaper tiers at another address",
+    "reset: an account that has not failed (an Active account of a high phase)",
+    "reset: a second reset of the same failed record",
+    "reset: a second reset of the same failed record with the local mark wiped (the vault is the backstop)",
+    "reset: by a banned wallet",
+    "reset: a violation-failed account after the wallet was unbanned (DESIGN 2.9: no reset)",
+    "reset: while the sector is paused",
+    "reset: while the vault pauses this product",
+    "reset into a higher phase: the new account copies the failed phase (there is no phase argument)",
+    "reset: an evaluator log that opens the new account in a higher phase than the chain's account",
+];
+
+/// The cells of every markdown table row (`| a | b |`) of `text`, without the header and the separator lines.
+fn table_rows(text: &str) -> Vec<Vec<String>> {
+    text.lines()
+        .filter(|l| l.starts_with("| "))
+        .map(|l| l.trim().trim_matches('|').split('|').map(|c| c.trim().to_string()).collect::<Vec<_>>())
+        .filter(|cells| cells[0] != "class" && !cells[0].starts_with("---"))
+        .collect()
+}
+
+fn trust_doc() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../handover/trust-matrix.md");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("handover/trust-matrix.md must be readable: {e}"))
+}
+
+#[test]
+fn every_row_has_exactly_one_named_test() {
+    let all = rows();
+    let chain = chain_rows();
+    // the numbers the document states
+    assert_eq!(all.len(), 72, "72 batch/log rows");
+    assert_eq!(chain.len(), 4, "4 chain rows");
+    assert_eq!(ROW_TESTS.len(), all.len(), "the number of per-row tests differs from rows().len()");
+    assert_eq!(CHAIN_ROW_TESTS.len(), chain.len(), "the number of per-chain-row tests differs from chain_rows().len()");
+    // row names are unique, every row has exactly one test entry, in the order of the table
+    for (i, r) in all.iter().enumerate() {
+        assert_eq!(all.iter().filter(|x| x.name == r.name).count(), 1, "duplicate row name: {}", r.name);
+        assert_eq!(ROW_TESTS.iter().filter(|(_, n)| *n == r.name).count(), 1, "row without exactly one test: {}", r.name);
+        assert_eq!(ROW_TESTS[i].1, r.name, "listing out of order at {i}");
+    }
+    for (i, r) in chain.iter().enumerate() {
+        assert_eq!(chain.iter().filter(|x| x.name == r.name).count(), 1, "duplicate chain row name: {}", r.name);
+        assert_eq!(CHAIN_ROW_TESTS.iter().filter(|(_, n)| *n == r.name).count(), 1, "chain row without exactly one test: {}", r.name);
+        assert_eq!(CHAIN_ROW_TESTS[i].1, r.name, "chain listing out of order at {i}");
+    }
+    // two rows never share a test function, and a per-row test is not one of the aggregates
+    let mut fns: Vec<&str> = ROW_TESTS.iter().chain(CHAIN_ROW_TESTS.iter()).map(|(f, _)| *f).collect();
+    let n = fns.len();
+    fns.sort_unstable();
+    fns.dedup();
+    assert_eq!(fns.len(), n, "two rows share a test function name");
+    assert!(fns.iter().all(|f| f.starts_with("row_") || f.starts_with("chain_row_")));
+}
+
+/// The document and the table in this file say the same thing: same names, same WHO, same program error (name and code), same verifier
+/// finding classes, for the 72 batch/log rows and the 4 chain rows; and the 11 Reset rows are the ones listed in `RESET_ROWS`.
+#[test]
+fn trust_matrix_document_matches_rows() {
+    let doc = trust_doc();
+    let (main, _) = doc.split_once("## Reset (M8)").expect("a Reset (M8) section");
+    let (_, tables) = main.split_once("## Caught by the program, and also by the verifier (BOTH)").expect("the BOTH section");
+    let (batch_part, chain_and_neither) = tables.split_once("## Chain-level rows").expect("the chain-level section");
+    let (chain_part, neither_part) = chain_and_neither.split_once("## NEITHER").expect("the NEITHER section");
+    let mut doc_rows = table_rows(batch_part);
+    doc_rows.extend(table_rows(neither_part));
+    let all = rows();
+    assert_eq!(doc_rows.len(), all.len(), "the document lists {} batch/log rows, the test table has {}", doc_rows.len(), all.len());
+    for r in &all {
+        let cells = doc_rows.iter().find(|c| c[0] == r.name).unwrap_or_else(|| panic!("row missing from the document: {}", r.name));
+        assert_eq!(cells[1], format!("{:?}", r.who), "WHO of '{}' in the document", r.name);
+        let prog = r.program.map(|e| format!("{e:?} ({})", u32::from(e))).unwrap_or_else(|| "-".into());
+        assert_eq!(cells[2], prog, "program column of '{}' in the document", r.name);
+        let ver = if r.verifier.is_empty() { "-".to_string() } else { format!("{:?}", r.verifier) };
+        assert_eq!(cells[3], ver, "verifier column of '{}' in the document", r.name);
+    }
+    let doc_chain = table_rows(chain_part);
+    let chain = chain_rows();
+    assert_eq!(doc_chain.len(), chain.len(), "chain rows in the document");
+    for r in &chain {
+        let cells = doc_chain.iter().find(|c| c[0] == r.name).unwrap_or_else(|| panic!("chain row missing from the document: {}", r.name));
+        assert_eq!(cells[1], "Program");
+        assert_eq!(cells[2], format!("{:?} ({})", r.program, u32::from(r.program)), "program column of chain row '{}'", r.name);
+    }
+}
+
+#[test]
+fn reset_rows_listing_matches_document_and_source() {
+    let doc = trust_doc();
+    let reset = doc.split_once("## Reset (M8)").expect("a Reset (M8) section").1.split_once("## Residual trust").expect("Residual trust").0;
+    let doc_rows = table_rows(reset);
+    assert_eq!(RESET_ROWS.len(), 11, "11 Reset rows");
+    assert_eq!(doc_rows.len(), RESET_ROWS.len(), "Reset rows in the document");
+    let src = include_str!("trust_reset.rs");
+    for n in RESET_ROWS {
+        assert_eq!(doc_rows.iter().filter(|c| c[0] == *n).count(), 1, "Reset row missing from the document: {n}");
+        // asserted in trust_reset.rs: its row table carries exactly this name, once
+        assert_eq!(src.matches(&format!("name: \"{n}\"")).count(), 1, "Reset row missing from tests/trust_reset.rs: {n}");
+    }
+    // and trust_reset.rs has no row the document does not list
+    assert_eq!(src.matches("            name: \"").count(), RESET_ROWS.len(), "tests/trust_reset.rs has a row this listing does not");
 }
