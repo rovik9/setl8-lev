@@ -14,7 +14,8 @@ cd "$(dirname "$0")/.."
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 
-anchor build "$@" 2>&1 | tee "$log"
+# --locked: the build must use Cargo.lock exactly (audit F-39). Extra cargo arguments of the caller come after the one `--`.
+anchor build "$@" -- --locked 2>&1 | tee "$log"
 status="${PIPESTATUS[0]}"
 if [ "$status" -ne 0 ]; then
   echo "anchor build failed (exit $status)" >&2

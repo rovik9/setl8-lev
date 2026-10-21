@@ -4,6 +4,6 @@
 # The evaluator's engine-only campaign runs 2,000 paths here (`ENGINE_PATHS=100000` is the gate).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-cargo test --offline
-cargo test --offline -p setl8-lev-verifier
-cargo test --offline -p setl8-lev-evaluator
+cargo test --offline --locked
+cargo test --offline --locked -p setl8-lev-verifier
+cargo test --offline --locked -p setl8-lev-evaluator

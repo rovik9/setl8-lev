@@ -1,0 +1,6 @@
+# Pins the host toolchain (audit finding F-39, decision 67). The build was audited with rustc 1.94.0 (4a4ef493e 2026-03-02). The SBF program
+# itself is compiled by `cargo build-sbf` with the platform-tools rustc (1.89.0, platform-tools v1.53), which is NOT governed by this file.
+# Offline, without 1.94.0 installed under that name (`stable` is the same compiler), run commands with RUSTUP_TOOLCHAIN=stable.
+[toolchain]
+channel = "1.94.0"
+components = ["clippy", "rustfmt"]
