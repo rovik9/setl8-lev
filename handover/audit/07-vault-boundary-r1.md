@@ -98,3 +98,7 @@ Related, already known (R-3): an evaluator outage of more than 5 days between `r
 - Real token movement at the heartbeat (`settle_claims`), pool balance as a bound on payouts, `reconcile_product`: not in this item.
 - A mainnet vault build: the fixture is the localnet build of vault commit 9a5c179.
 - The pass-flow with a REAL evaluator process (the engine-driven honest path) is item 8; here the dishonest evaluator is the journal builder of the test harness.
+
+### After the audit (P25a, decision 67)
+VLT-1 is fixed in the program: `pass_delay_secs` is limited to 1 to 6 days (`init_config` and `set_limits`, `InvalidLimits`), so a confirmed pass cannot be lost to the vault's 7-day idle limit through the delay alone; the evaluator must still refresh the activity during the delay (deploy checklist). The R-3 outage case (more than 5 days between `request_advance` and `confirm_pass`) is unchanged. The tests `h_a_confirmed_pass_is_paid_after_any_allowed_delay_*` are un-ignored and pass.
+

@@ -86,6 +86,9 @@ def main():
         import re
         rx = re.compile(os.environ['MUT_ONLY'])
         ms = [m for m in ms if rx.search(m['name'])]
+    if os.environ.get('MUT_EXTRA'):
+        # P25a: hand-made mutants (json list of {name, file, span, replacement, genre}) on top of, or instead of (MUT_ONLY=^$), the listing
+        ms = ms + json.load(open(os.environ['MUT_EXTRA']))
     done = set()
     if os.path.exists(RES):
         done = {json.loads(l)['name'] for l in open(RES)}

@@ -155,9 +155,8 @@ fn auth12_pin_finalize_reverts_on_a_vault_abandoned_record_and_release_resolves_
 
 // ------------------------------------------------------------------------------------------------ AUTH-13
 
-// FINDING AUTH-13
+// FINDING AUTH-13 (fixed by F-27, decision 67: every event is emit_cpi!)
 #[test]
-#[ignore = "FINDING AUTH-13: cancel_pass emits PassCancelled with plain emit! (a log), not emit_cpi! as DESIGN 8.1 says for every lifecycle event"]
 fn auth13_cancel_pass_emits_its_event_as_a_cpi_event() {
     let (mut w, t) = base();
     w.ready(2);
