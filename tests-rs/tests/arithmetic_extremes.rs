@@ -1800,7 +1800,6 @@ fn bad_size_args(size: u64, tier: usize) -> RuleSetArgs {
 // publish a wrong rule set; launch values are fine; the deploy checklist reads the rule set back), but the loss is the trader's purchase price. A fix is a
 // plain implementation addition in `validate_ruleset` (size % 1_000_000 == 0 and 1.04 S <= i64::MAX), no DESIGN change.
 #[test]
-#[ignore = "FINDING ARI-4: create_ruleset accepts tier sizes the engine cannot use (not whole dollars, 1.04 S beyond i64, above i64::MAX)"]
 fn finding_ari_4_create_ruleset_must_refuse_tier_sizes_the_engine_cannot_use() {
     for (size, tier, why) in BAD_TIER_SIZES {
         let mut e = Env::initialised();
@@ -1812,32 +1811,8 @@ fn finding_ari_4_create_ruleset_must_refuse_tier_sizes_the_engine_cannot_use() {
     }
 }
 
-/// LIMITED, the trace behind ARI-4 pinned exactly: with a tier of 1_000_001 micro-USD the rule set is accepted, the account is sold (the trader pays and the
-/// vault records S = 1_000_001), a batch that does not touch a threshold is accepted, and every operation that needs a threshold is `MathOverflow`: a fee,
-/// a flat Meta, `report_fail` (so the account can never be failed), and the pass request (so it can never pass). A later fix of ARI-4 changes the FIRST step
-/// (the rule set is refused) and this test with it.
-#[test]
-fn rule_set_with_an_unusable_tier_size_sells_an_account_that_can_do_nothing() {
-    let mut w = reset_world(bad_size_args(1_000_001, 0), 0);
-    assert_eq!(w.account().size_s, 1_000_001, "the account was sold with the unusable size");
-    let t = w.t0 + 1_000;
-    // the harness world has no spread rule set edit; EUR half-spread is 0 in the launch rule set, so only non-fill events are used
-    accept(&mut w, t, vec![meta(t, false)], vec![]);
-    refuse(&mut w, t + 1, vec![fee_ev(FeeKind::Commission, 1, t + 1), meta(t + 1, false)], vec![], E::MathOverflow);
-    refuse(&mut w, t + 1, vec![meta(t + 1, true)], vec![], E::MathOverflow);
-    // report_fail: the floor cannot be computed
-    let b = w.account().b;
-    let batch = w.fail_batch(t + 2, vec![], journal_types::FailReason::StaticFloor, b, true);
-    let before = w.pass_digest();
-    assert_err_at(&w.report_fail(t + 3, &batch, 0, &[MARKET_EUR]), 0, E::MathOverflow);
-    assert_eq!(w.pass_digest(), before);
-    // the pass cannot be requested either (the target 1.08 S is inexact, the failed-state check needs the floor)
-    w.edit_account(|a| a.flat = 1);
-    let before = w.pass_digest();
-    let r = w.request(t + 4);
-    assert_err_at(&r, 0, E::MathOverflow);
-    assert_eq!(w.pass_digest(), before);
-}
+// (the ARI-4 trace test `rule_set_with_an_unusable_tier_size_sells_an_account_that_can_do_nothing` pinned the bug; since the fix the rule set
+// is refused, so no such account can be sold; the finding test above is the regression test)
 
 /// STORED FIELDS AT THE LIMITS THAT THE PROGRAM ITSELF NEVER WRITES (BLOCKED, account edited by the test): `trades_closed = u32::MAX` makes the next `Close` a
 /// `MathOverflow` (checked add; one below the maximum is accepted and lands on it); a tight-mode account whose `g_peak` or `l_level` would overflow the

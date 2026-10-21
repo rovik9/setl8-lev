@@ -86,6 +86,9 @@ fn validate_ruleset(a: &RuleSetArgs) -> Result<()> {
     let (size, size_unused) = a.tier_size.split_at(tiers);
     let (cost, cost_unused) = a.tier_cost.split_at(tiers);
     require!(size.iter().all(|&x| x > 0) && size.is_sorted_by(|a, b| a < b), Setl8Error::InvalidTier);
+    // sizes the engine can use: whole dollars (S x bps / 10_000 must be exact) and 1.04 S inside i64 (M12 ARI-4)
+    let max_size = u128::from(i64::MAX.unsigned_abs());
+    require!(size.iter().all(|&x| x % 1_000_000 == 0 && u128::from(x) * 104 <= max_size * 100), Setl8Error::InvalidTier);
     require!(cost.iter().all(|&x| x > 0) && cost.is_sorted_by(|a, b| a < b), Setl8Error::InvalidTier);
     require!(size_unused.iter().all(|&x| x == 0) && cost_unused.iter().all(|&x| x == 0), Setl8Error::InvalidTier);
 
