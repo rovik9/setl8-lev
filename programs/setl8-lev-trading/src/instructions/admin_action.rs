@@ -7,6 +7,7 @@ use crate::state::SectorConfig;
 /// Accounts of every instruction authorised by the stored admin pair.
 /// The admin accounts are NOT typed `Signer` because `set_paused` accepts a single signer;
 /// each handler calls `both_admins` or `either_admin`.
+#[event_cpi]
 #[derive(Accounts)]
 pub struct AdminAction<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]

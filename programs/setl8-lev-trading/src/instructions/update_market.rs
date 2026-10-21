@@ -13,6 +13,7 @@ pub struct UpdateMarketArgs {
     pub params: MarketParams,
 }
 
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(args: UpdateMarketArgs)]
 pub struct UpdateMarket<'info> {
@@ -29,21 +30,17 @@ pub struct UpdateMarket<'info> {
 /// Either admin. DECISION 24 EXCEPTION (Rovik): an admin may change a market's feed, status and limits at any
 /// time, with no delay and no lock. The only guard is the `MarketFeedChanged` event on every feed change.
 pub fn handle_update_market(ctx: Context<UpdateMarket>, args: UpdateMarketArgs) -> Result<()> {
-    let accounts = ctx.accounts;
+    let accounts = &mut *ctx.accounts;
     require_either_admin(&accounts.config, &accounts.admin_a, &accounts.admin_b)?;
     args.params.validate(args.market_id)?;
 
     let market = &mut accounts.market;
     let old_feed = market.feed_id;
     args.params.apply(market);
-    if old_feed != market.feed_id {
-        emit!(MarketFeedChanged {
-            market_id: args.market_id,
-            old_feed,
-            new_feed: market.feed_id,
-            slot: Clock::get()?.slot,
-        });
+    let new_feed = market.feed_id;
+    if old_feed != new_feed {
+        emit_cpi!(MarketFeedChanged { market_id: args.market_id, old_feed, new_feed, slot: Clock::get()?.slot });
     }
-    emit!(MarketUpdated { market_id: args.market_id });
+    emit_cpi!(MarketUpdated { market_id: args.market_id });
     Ok(())
 }

@@ -128,7 +128,7 @@ impl JEnv {
     pub fn cancel_ix(&self) -> Instruction {
         Instruction {
             program_id: PROGRAM_ID,
-            accounts: accounts::CancelPass { trader: self.trader.pubkey(), trading_account: self.acct }.to_account_metas(None),
+            accounts: accounts::CancelPass { trader: self.trader.pubkey(), trading_account: self.acct, event_authority: event_authority(), program: PROGRAM_ID }.to_account_metas(None),
             data: instruction::CancelPass {}.data(),
         }
     }

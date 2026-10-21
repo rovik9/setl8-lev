@@ -20,7 +20,7 @@ Toolchain as in module-0.md (rustc 1.94.0, anchor-cli 0.32.1, solana-cli 4.0.2, 
 1. PLACEHOLDER PROGRAM ID CHANGED. M0 used the System Program id; LiteSVM then replaces the system program with our `.so` and every account-creating CPI fails. New placeholder = base58 of sha256("setl8-lev-trading/placeholder-program-id/v1") (`9NAdnJ7ySQqPYuPKu6d6wCbcaHHMnzwFT6xEcRfXX2a7`), no keypair exists for it. Changed in `declare_id!` and `Anchor.toml`. Still must be replaced by the real id before deploy.
 2. Error for "evaluator is the default pubkey" (`init_config`, `set_evaluator`): `Unauthorized` (no better code exists; codes are fixed by DESIGN 12).
 3. `init_config` has a separate `payer` signer (DESIGN 6.1 lists "payer"); the two admin accounts must be exactly `SL8_ADMIN` / `ROV_ADMIN` (`Unauthorized` otherwise, `AccountNotSigner` 3010 if not signed).
-4. Admin events use `emit!`, not `emit_cpi!` (no event-authority accounts needed for config instructions).
+4. Admin events used `emit!` until decision 67 (audit F-27); now every event is `emit_cpi!` and the nine admin/cancel instructions end their account list with `event_authority`, `program`.
 5. `LimitsChanged` carries old and new values; `PausedChanged` the new flag; `set_paused` is idempotent.
 6. "Both admins" is positional: `admin_a` must be `config.admin_a`, `admin_b` must be `config.admin_b`.
 7. NOT validated in `init_config` (not listed in scope): `vault_program` and `sl8_wallet` may be any key including default. No setter exists in M1a, so a wrong value there can only be fixed by a program upgrade. Worth adding a check or a both-admin setter in M1b if Rovik wants one.

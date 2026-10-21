@@ -6,6 +6,7 @@ use crate::events::PassCancelled;
 use crate::state::TradingAccount;
 
 /// DESIGN 6.2 `cancel_pass`: the trader withdraws a request the evaluator never answered.
+#[event_cpi]
 #[derive(Accounts)]
 pub struct CancelPass<'info> {
     pub trader: Signer<'info>,
@@ -27,6 +28,6 @@ pub fn handle_cancel_pass(ctx: Context<CancelPass>) -> Result<()> {
     let waited = now.checked_sub(acct.pass_requested_at).ok_or(Setl8Error::MathOverflow)?;
     require!(waited >= CANCEL_PASS_AFTER_SECS, Setl8Error::CancelTooEarly);
     acct.pass_pending = PASS_NONE;
-    emit!(PassCancelled { account: acct.key(), phase: acct.phase, time: now });
+    emit_cpi!(PassCancelled { account: acct.key(), phase: acct.phase, time: now });
     Ok(())
 }

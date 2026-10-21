@@ -42,12 +42,11 @@ fn has_cpi_event(meta: &litesvm::types::TransactionMetadata) -> bool {
     meta.inner_instructions.iter().flatten().any(|i| i.instruction.data.len() > 8 && i.instruction.data[..8] == *anchor_lang::event::EVENT_IX_TAG_LE)
 }
 
-// FINDING V20
+// FINDING V20 / F-27 (FIXED, decision 67: the admin events are emit_cpi! events)
 /// DESIGN 8.1: every lifecycle event is emitted "with `emit_cpi!`" because program logs truncate at 10 KB per transaction. The
 /// admin-signed `MarketFeedChanged` (the only guard on the single-admin feed remap, R-5) is a plain `emit!` log line: a rogue admin
 /// can put a log-heavy instruction before it in the same transaction and a log-based indexer never sees the remap.
 #[test]
-#[ignore = "FINDING V20: MarketFeedChanged (and PassCancelled, WalletBanned, ...) use emit! (truncatable program log), not emit_cpi!"]
 fn market_feed_changed_is_emitted_as_a_cpi_event_not_only_as_a_log_line() {
     let mut e = Env::initialised();
     e.create_market_ok(&create_market_args(0, 0, 0xA0));
@@ -58,9 +57,8 @@ fn market_feed_changed_is_emitted_as_a_cpi_event_not_only_as_a_log_line() {
     assert!(has_cpi_event(&meta), "MarketFeedChanged is only a 'Program data:' log line");
 }
 
-// FINDING V20
+// FINDING V20 / F-27 (FIXED, decision 67: the admin events are emit_cpi! events)
 #[test]
-#[ignore = "FINDING V20: WalletBanned uses emit! (truncatable program log), not emit_cpi!"]
 fn wallet_banned_is_emitted_as_a_cpi_event_not_only_as_a_log_line() {
     let mut e = Env::initialised();
     let admins = Admins::both(&e);

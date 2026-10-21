@@ -430,6 +430,8 @@ Launch values (decisions 13, 15, 17, 26): `leverage_x` = 50, 20, 20, 20, 10, 5, 
 
 Notation: `[S]` signer, `[W]` writable, `[R]` read-only. Compute figures are **estimates** to be measured in the test workspace (module M11); see section 11.
 
+**Event delivery (decision 67, audit F-27).** Every program event is an `emit_cpi!` self-CPI instruction, including the admin ones (`LimitsChanged`, `EvaluatorChanged`, `PausedChanged`, `RuleSetCreated`, `MarketCreated`, `MarketFeedChanged`, `MarketUpdated`, `WalletBanned`, `WalletUnbanned`, `PassCancelled`): names and fields are unchanged, only the delivery moved from a truncatable program log to an inner instruction. Nine instructions therefore end their account list with `event_authority` (PDA `["__event_authority"]`, read-only) and `program` (this program, read-only): `set_evaluator`, `set_limits`, `set_paused` (the shared `AdminAction` struct), `create_ruleset`, `create_market`, `update_market`, `ban_wallet`, `unban_wallet`, `cancel_pass`. A client built from the old IDL must append the two accounts. Cost: about +14,600 compute units and +32 to 64 bytes per call of these nine instructions (handover/module-11.md).
+
 ### 6.1 Admin
 | Instruction | Signers | Effect |
 |---|---|---|

@@ -26,8 +26,8 @@ fn ban_wallet_creates_a_56_byte_profile_with_the_exact_layout() {
     let mut e = Env::initialised();
     let trader = Pubkey::new_unique();
     let a = Admins::both(&e);
-    let logs = ban(&mut e, a, trader, EVIDENCE).expect("ban succeeds").logs;
-    let ev = events_of::<WalletBanned>(&logs);
+    let meta = ban(&mut e, a, trader, EVIDENCE).expect("ban succeeds");
+    let ev = common::pass::cpi_events::<WalletBanned>(&meta);
     assert_eq!(ev.len(), 1);
     assert_eq!((ev[0].trader, ev[0].evidence_hash), (trader, EVIDENCE));
 
@@ -74,10 +74,10 @@ fn ban_wallet_is_idempotent() {
     let a = Admins::both(&e);
     assert_ok(ban(&mut e, a, trader, EVIDENCE));
     let first = e.svm.get_account(&wallet_pda(&trader)).unwrap();
-    let logs = ban(&mut e, a, trader, [0x77; 32]).expect("second ban succeeds").logs;
+    let meta = ban(&mut e, a, trader, [0x77; 32]).expect("second ban succeeds");
     assert_eq!(e.svm.get_account(&wallet_pda(&trader)).unwrap().data, first.data);
     assert_eq!(e.wallet(&trader).banned, 1);
-    assert_eq!(events_of::<WalletBanned>(&logs)[0].evidence_hash, [0x77; 32]);
+    assert_eq!(common::pass::cpi_events::<WalletBanned>(&meta)[0].evidence_hash, [0x77; 32]);
 }
 
 #[test]
@@ -103,8 +103,8 @@ fn unban_wallet_clears_banned_and_emits_the_event() {
     let trader = Pubkey::new_unique();
     let a = Admins::both(&e);
     assert_ok(ban(&mut e, a, trader, EVIDENCE));
-    let logs = unban(&mut e, a, trader).expect("unban succeeds").logs;
-    assert_eq!(events_of::<WalletUnbanned>(&logs)[0].trader, trader);
+    let meta = unban(&mut e, a, trader).expect("unban succeeds");
+    assert_eq!(common::pass::cpi_events::<WalletUnbanned>(&meta)[0].trader, trader);
     assert_eq!(e.wallet(&trader).banned, 0);
     // the profile stays; it can be banned again
     assert_ok(ban(&mut e, a, trader, EVIDENCE));

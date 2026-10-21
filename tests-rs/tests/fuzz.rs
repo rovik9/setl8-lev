@@ -1375,7 +1375,7 @@ impl World {
         )
     }
     fn ix_cancel(&self, t: &Tgt) -> Instruction {
-        meta_ix(accounts::CancelPass { trader: t.trader, trading_account: t.acct }.to_account_metas(None), instruction::CancelPass {}.data())
+        meta_ix(accounts::CancelPass { trader: t.trader, trading_account: t.acct, event_authority: event_authority_pda(), program: PROGRAM_ID }.to_account_metas(None), instruction::CancelPass {}.data())
     }
     fn ix_confirm(&self, t: &Tgt) -> Instruction {
         meta_ix(

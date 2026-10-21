@@ -38,9 +38,9 @@ fn create_ruleset_succeeds_with_launch_values() {
     let mut e = Env::initialised();
     let args = launch_ruleset_args();
     let r = send_create(&mut e, &args);
-    let logs = r.as_ref().expect("create_ruleset succeeds").logs.clone();
-    assert_eq!(events_of::<RuleSetCreated>(&logs).len(), 1);
-    assert_eq!(events_of::<RuleSetCreated>(&logs)[0].version, 1);
+    let meta = r.as_ref().expect("create_ruleset succeeds").clone();
+    assert_eq!(common::pass::cpi_events::<RuleSetCreated>(&meta).len(), 1);
+    assert_eq!(common::pass::cpi_events::<RuleSetCreated>(&meta)[0].version, 1);
 
     let acc = e.svm.get_account(&ruleset_pda(1)).unwrap();
     assert_eq!(acc.data.len(), 552);

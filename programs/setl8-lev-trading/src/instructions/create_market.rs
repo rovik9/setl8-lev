@@ -16,6 +16,7 @@ pub struct CreateMarketArgs {
     pub params: MarketParams,
 }
 
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(args: CreateMarketArgs)]
 pub struct CreateMarket<'info> {
@@ -40,7 +41,7 @@ pub struct CreateMarket<'info> {
 
 /// Either admin (DESIGN 6.1).
 pub fn handle_create_market(ctx: Context<CreateMarket>, args: CreateMarketArgs) -> Result<()> {
-    let accounts = ctx.accounts;
+    let accounts = &mut *ctx.accounts;
     require_either_admin(&accounts.config, &accounts.admin_a, &accounts.admin_b)?;
 
     require!(args.market_id < MAX_MARKETS, Setl8Error::MarketUnknown);
@@ -56,6 +57,6 @@ pub fn handle_create_market(ctx: Context<CreateMarket>, args: CreateMarketArgs) 
     args.params.apply(market);
     market.bump = ctx.bumps.market;
     market.reserved = [0; 30];
-    emit!(MarketCreated { market_id: args.market_id, class: args.class, feed_id: args.params.feed_id });
+    emit_cpi!(MarketCreated { market_id: args.market_id, class: args.class, feed_id: args.params.feed_id });
     Ok(())
 }

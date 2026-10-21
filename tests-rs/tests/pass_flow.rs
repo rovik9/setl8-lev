@@ -396,7 +396,7 @@ fn cancel_boundary_is_3600_seconds() {
     w.fails(E::CancelTooEarly, |w| w.cancel(t + 3_599));
     let ms = w.ok(|w| w.cancel(t + 3_600));
     assert_eq!(w.account().pass_pending, 0);
-    let ev = events_of::<PassCancelled>(&ms.logs);
+    let ev = cpi_events::<PassCancelled>(&ms);
     assert_eq!((ev.len(), ev[0].phase, ev[0].time), (1, 2, t + 3_600));
 }
 

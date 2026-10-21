@@ -11,6 +11,6 @@ pub fn handle_set_evaluator(ctx: Context<AdminAction>, new_key: Pubkey) -> Resul
     let config = &mut ctx.accounts.config;
     let old = config.evaluator;
     config.evaluator = new_key;
-    emit!(EvaluatorChanged { old, new: new_key });
+    emit_cpi!(EvaluatorChanged { old, new: new_key });
     Ok(())
 }

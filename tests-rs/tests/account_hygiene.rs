@@ -254,7 +254,7 @@ fn scenarios_for(only: &str) -> Vec<Scn> {
     let sel = |n: &str| only.is_empty() || only == n;
     use Ty::*;
     let ta_w = |tc: Option<u8>| Ta { w: true, tc };
-    let admin3 = vec![Cfg(true), Adm, Adm];
+    let admin3 = vec![Cfg(true), Adm, Adm, EvAuth, SelfProg];
     let mut out: Vec<Scn> = Vec::new();
 
     // ---- init_config: a world without a config
@@ -311,20 +311,20 @@ fn scenarios_for(only: &str) -> Vec<Scn> {
         args.version = 2;
         let ix = create_ruleset_ix(w.v.e.payer.pubkey(), Admins::both(&w.v.e), &args);
         let t = w.t0 + 1_000;
-        out.push(mk("create_ruleset", w, t, vec![], ix, vec![SigW, Cfg(true), Adm, Adm, InitRs, Sys], Rc::new(|w| w.envr().config().current_ruleset == 2)));
+        out.push(mk("create_ruleset", w, t, vec![], ix, vec![SigW, Cfg(true), Adm, Adm, InitRs, Sys, EvAuth, SelfProg], Rc::new(|w| w.envr().config().current_ruleset == 2)));
         }
         if sel("create_market") {
         let w = JEnv::new();
         let id = w.v.e.config().market_count;
         let ix = create_market_ix(w.v.e.payer.pubkey(), Admins::both(&w.v.e), &create_market_args(id, 0, 55));
         let t = w.t0 + 1_000;
-        out.push(mk("create_market", w, t, vec![], ix, vec![SigW, Cfg(true), Adm, Adm, InitMkt, Sys], Rc::new(move |w| w.envr().config().market_count == id + 1)));
+        out.push(mk("create_market", w, t, vec![], ix, vec![SigW, Cfg(true), Adm, Adm, InitMkt, Sys, EvAuth, SelfProg], Rc::new(move |w| w.envr().config().market_count == id + 1)));
         }
         if sel("update_market") {
         let w = JEnv::new();
         let ix = update_market_ix(Admins::both(&w.v.e), &UpdateMarketArgs { market_id: 0, params: market_params(77) });
         let t = w.t0 + 1_000;
-        out.push(mk("update_market", w, t, vec![], ix, vec![Cfg(false), Adm, Adm, Mkt], Rc::new(|w| w.envr().market(0).feed_id == [77; 32])));
+        out.push(mk("update_market", w, t, vec![], ix, vec![Cfg(false), Adm, Adm, Mkt, EvAuth, SelfProg], Rc::new(|w| w.envr().market(0).feed_id == [77; 32])));
         }
     }
     // ---- wallet bans
@@ -334,7 +334,7 @@ fn scenarios_for(only: &str) -> Vec<Scn> {
         let victim = Keypair::new().pubkey();
         let ix = common::ban_wallet_ix(w.v.e.payer.pubkey(), Admins::both(&w.v.e), victim, hash(5));
         let t = w.t0 + 1_000;
-        out.push(mk("ban_wallet", w, t, vec![], ix, vec![SigW, Cfg(false), Adm, Adm, InitWal, Sys], Rc::new(move |w| w.envr().wallet(&victim).banned == 1)));
+        out.push(mk("ban_wallet", w, t, vec![], ix, vec![SigW, Cfg(false), Adm, Adm, InitWal, Sys, EvAuth, SelfProg], Rc::new(move |w| w.envr().wallet(&victim).banned == 1)));
         }
         if sel("unban_wallet") {
         let mut w = JEnv::new();
@@ -344,7 +344,7 @@ fn scenarios_for(only: &str) -> Vec<Scn> {
         common::assert_ok(w.v.e.send_admins(ban, a));
         let ix = unban_wallet_ix(Admins::both(&w.v.e), victim);
         let t = w.t0 + 1_000;
-        out.push(mk("unban_wallet", w, t, vec![], ix, vec![Cfg(false), Adm, Adm, Wal], Rc::new(move |w| w.envr().wallet(&victim).banned == 0)));
+        out.push(mk("unban_wallet", w, t, vec![], ix, vec![Cfg(false), Adm, Adm, Wal, EvAuth, SelfProg], Rc::new(move |w| w.envr().wallet(&victim).banned == 0)));
         }
     }
     // ---- open_account (the trader opens his SECOND account) and reset_account
@@ -427,7 +427,7 @@ fn scenarios_for(only: &str) -> Vec<Scn> {
         w.ready(2);
         w.set_pending(c::PASS_REQUESTED, t - 4_000, 0);
         let ix = w.cancel_ix();
-        out.push(mk("cancel_pass", w, t, vec![], ix, vec![Sig, ta_w(Some(0))], Rc::new(|w| w.j().account().pass_pending == c::PASS_NONE)));
+        out.push(mk("cancel_pass", w, t, vec![], ix, vec![Sig, ta_w(Some(0)), EvAuth, SelfProg], Rc::new(|w| w.j().account().pass_pending == c::PASS_NONE)));
         }
         if sel("confirm_pass") {
         let mut w = JEnv::new();
@@ -2412,8 +2412,8 @@ fn row_counts_are_pinned() {
     assert_eq!((rows_default, rows_full), (ROWS_DEFAULT, ROWS_FULL));
 }
 
-const ROWS_DEFAULT: usize = 2411;
-const ROWS_FULL: usize = 3644;
+const ROWS_DEFAULT: usize = 2553; // was 2411 before nine instructions took the two event_cpi accounts (F-27)
+const ROWS_FULL: usize = 3891; // was 3644
 
 
 /// `HYG_REPORT=1 cargo test --offline --test account_hygiene -- --nocapture report_summary` prints the numbers quoted in

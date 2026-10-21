@@ -29,8 +29,8 @@ fn create_market_ids_are_sequential_and_state_matches() {
     let mut e = Env::initialised();
     let a0 = create_market_args(0, 3, 0xA0);
     let r = create(&mut e, &a0);
-    let logs = r.as_ref().expect("market 0 created").logs.clone();
-    let created = events_of::<MarketCreated>(&logs);
+    let meta = r.as_ref().expect("market 0 created").clone();
+    let created = common::pass::cpi_events::<MarketCreated>(&meta);
     assert_eq!(created.len(), 1);
     assert_eq!((created[0].market_id, created[0].class, created[0].feed_id), (0, 3, [0xA0; 32]));
     assert_eq!(e.config().market_count, 1);
@@ -251,14 +251,14 @@ fn a_feed_change_emits_market_feed_changed_with_old_and_new_feed() {
     e.svm.warp_to_slot(777);
     let admins = Admins::both(&e);
     let r = update(&mut e, admins, &UpdateMarketArgs { market_id: 0, params: market_params(0xC7) });
-    let logs = r.expect("update succeeds").logs;
-    let ev = events_of::<MarketFeedChanged>(&logs);
+    let meta = r.expect("update succeeds");
+    let ev = common::pass::cpi_events::<MarketFeedChanged>(&meta);
     assert_eq!(ev.len(), 1);
     assert_eq!(ev[0].market_id, 0);
     assert_eq!(ev[0].old_feed, [0xA0; 32]);
     assert_eq!(ev[0].new_feed, [0xC7; 32]);
     assert_eq!(ev[0].slot, 777);
-    assert_eq!(events_of::<MarketUpdated>(&logs).len(), 1);
+    assert_eq!(common::pass::cpi_events::<MarketUpdated>(&meta).len(), 1);
     assert_eq!(e.market(0).feed_id, [0xC7; 32]);
 }
 
@@ -268,10 +268,10 @@ fn a_non_feed_change_emits_market_updated_but_not_feed_changed() {
     let mut p = market_params(0xA0); // same feed as created
     p.max_age_secs = 90;
     let admins = Admins::both(&e);
-    let logs = update(&mut e, admins, &UpdateMarketArgs { market_id: 0, params: p }).expect("update succeeds").logs;
-    assert!(events_of::<MarketFeedChanged>(&logs).is_empty());
-    assert_eq!(events_of::<MarketUpdated>(&logs).len(), 1);
-    assert_eq!(events_of::<MarketUpdated>(&logs)[0].market_id, 0);
+    let meta = update(&mut e, admins, &UpdateMarketArgs { market_id: 0, params: p }).expect("update succeeds");
+    assert!(common::pass::cpi_events::<MarketFeedChanged>(&meta).is_empty());
+    assert_eq!(common::pass::cpi_events::<MarketUpdated>(&meta).len(), 1);
+    assert_eq!(common::pass::cpi_events::<MarketUpdated>(&meta)[0].market_id, 0);
     assert_eq!(e.market(0).max_age_secs, 90);
 }
 

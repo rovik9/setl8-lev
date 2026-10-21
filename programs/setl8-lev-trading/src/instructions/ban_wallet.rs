@@ -6,6 +6,7 @@ use crate::errors::Setl8Error;
 use crate::events::WalletBanned;
 use crate::state::{SectorConfig, WalletProfile};
 
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(trader: Pubkey, evidence_hash: [u8; 32])]
 pub struct BanWallet<'info> {
@@ -31,7 +32,7 @@ pub struct BanWallet<'info> {
 /// Both admins. Creates the profile if missing (`payer` pays); idempotent if already banned.
 /// Refused while the profile's `held_count` is above 0 (M7, DESIGN 6.1 "no held account").
 pub fn handle_ban_wallet(ctx: Context<BanWallet>, trader: Pubkey, evidence_hash: [u8; 32]) -> Result<()> {
-    let accounts = ctx.accounts;
+    let accounts = &mut *ctx.accounts;
     require_both_admins(&accounts.config, &accounts.admin_a, &accounts.admin_b)?;
     require!(evidence_hash != [0u8; 32], Setl8Error::EvidenceMissing);
 
@@ -47,6 +48,6 @@ pub fn handle_ban_wallet(ctx: Context<BanWallet>, trader: Pubkey, evidence_hash:
     // DESIGN 6.1: only a linked wallet with no held account (the hold must be released or failed first)
     require!(wallet.held_count == 0, Setl8Error::WalletHasHeldAccount);
     wallet.banned = 1;
-    emit!(WalletBanned { trader, evidence_hash });
+    emit_cpi!(WalletBanned { trader, evidence_hash });
     Ok(())
 }

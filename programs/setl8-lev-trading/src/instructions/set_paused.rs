@@ -11,6 +11,6 @@ pub fn handle_set_paused(ctx: Context<AdminAction>, paused: bool) -> Result<()> 
         ctx.accounts.both_admins()?;
     }
     ctx.accounts.config.paused = u8::from(paused);
-    emit!(PausedChanged { paused });
+    emit_cpi!(PausedChanged { paused });
     Ok(())
 }

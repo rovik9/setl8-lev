@@ -5,6 +5,7 @@ use crate::constants::*;
 use crate::events::WalletUnbanned;
 use crate::state::{SectorConfig, WalletProfile};
 
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(trader: Pubkey)]
 pub struct UnbanWallet<'info> {
@@ -21,9 +22,9 @@ pub struct UnbanWallet<'info> {
 
 /// Both admins. Clears `banned`; does not revive failed accounts.
 pub fn handle_unban_wallet(ctx: Context<UnbanWallet>, trader: Pubkey) -> Result<()> {
-    let accounts = ctx.accounts;
+    let accounts = &mut *ctx.accounts;
     require_both_admins(&accounts.config, &accounts.admin_a, &accounts.admin_b)?;
     accounts.wallet.banned = 0;
-    emit!(WalletUnbanned { trader });
+    emit_cpi!(WalletUnbanned { trader });
     Ok(())
 }

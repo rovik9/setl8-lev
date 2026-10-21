@@ -190,7 +190,15 @@ pub fn admin_metas(admin_a: (Pubkey, bool), admin_b: (Pubkey, bool)) -> Vec<Acco
         AccountMeta::new(config_pda(), false),
         AccountMeta { pubkey: admin_a.0, is_signer: admin_a.1, is_writable: false },
         AccountMeta { pubkey: admin_b.0, is_signer: admin_b.1, is_writable: false },
+        // `#[event_cpi]` (audit F-27): the event authority and the program, appended last
+        AccountMeta::new_readonly(event_authority_pda(), false),
+        AccountMeta::new_readonly(PROGRAM_ID, false),
     ]
+}
+
+/// The `#[event_cpi]` event authority PDA of this program.
+pub fn event_authority_pda() -> Pubkey {
+    Pubkey::find_program_address(&[b"__event_authority"], &PROGRAM_ID).0
 }
 
 pub fn set_evaluator_ix(metas: Vec<AccountMeta>, new_key: Pubkey) -> Instruction {
@@ -315,6 +323,8 @@ pub fn create_ruleset_ix(payer: Pubkey, admins: Admins, args: &RuleSetArgs) -> I
             admin_b: admins.b,
             ruleset: ruleset_pda(args.version),
             system_program: system_program::ID,
+            event_authority: event_authority_pda(),
+            program: PROGRAM_ID,
         }
         .to_account_metas(None),
         data: instruction::CreateRuleset { args: args.clone() }.data(),
@@ -331,6 +341,8 @@ pub fn create_market_ix(payer: Pubkey, admins: Admins, args: &CreateMarketArgs) 
             admin_b: admins.b,
             market: market_pda(args.market_id),
             system_program: system_program::ID,
+            event_authority: event_authority_pda(),
+            program: PROGRAM_ID,
         }
         .to_account_metas(None),
         data: instruction::CreateMarket { args: args.clone() }.data(),
@@ -345,6 +357,8 @@ pub fn update_market_ix(admins: Admins, args: &UpdateMarketArgs) -> Instruction 
             admin_a: admins.a,
             admin_b: admins.b,
             market: market_pda(args.market_id),
+            event_authority: event_authority_pda(),
+            program: PROGRAM_ID,
         }
         .to_account_metas(None),
         data: instruction::UpdateMarket { args: args.clone() }.data(),
@@ -361,6 +375,8 @@ pub fn ban_wallet_ix(payer: Pubkey, admins: Admins, trader: Pubkey, evidence_has
             admin_b: admins.b,
             wallet: wallet_pda(&trader),
             system_program: system_program::ID,
+            event_authority: event_authority_pda(),
+            program: PROGRAM_ID,
         }
         .to_account_metas(None),
         data: instruction::BanWallet { trader, evidence_hash }.data(),
@@ -375,6 +391,8 @@ pub fn unban_wallet_ix(admins: Admins, trader: Pubkey) -> Instruction {
             admin_a: admins.a,
             admin_b: admins.b,
             wallet: wallet_pda(&trader),
+            event_authority: event_authority_pda(),
+            program: PROGRAM_ID,
         }
         .to_account_metas(None),
         data: instruction::UnbanWallet { trader }.data(),

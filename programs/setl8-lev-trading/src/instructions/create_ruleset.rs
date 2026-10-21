@@ -22,6 +22,7 @@ pub struct RuleSetArgs {
     pub spread_e6: [u16; 128],
 }
 
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(args: RuleSetArgs)]
 pub struct CreateRuleset<'info> {
@@ -46,7 +47,7 @@ pub struct CreateRuleset<'info> {
 
 /// Both admins. Rule sets are immutable: this is the only instruction that writes one, and it only creates.
 pub fn handle_create_ruleset(ctx: Context<CreateRuleset>, args: RuleSetArgs) -> Result<()> {
-    let accounts = ctx.accounts;
+    let accounts = &mut *ctx.accounts;
     require_both_admins(&accounts.config, &accounts.admin_a, &accounts.admin_b)?;
 
     let next = accounts.config.current_ruleset.checked_add(1).ok_or(Setl8Error::MathOverflow)?;
@@ -69,7 +70,7 @@ pub fn handle_create_ruleset(ctx: Context<CreateRuleset>, args: RuleSetArgs) -> 
         bump: ctx.bumps.ruleset,
         reserved: [0; 31],
     });
-    emit!(RuleSetCreated { version: args.version });
+    emit_cpi!(RuleSetCreated { version: args.version });
     Ok(())
 }
 

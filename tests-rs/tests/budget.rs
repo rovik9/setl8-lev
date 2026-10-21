@@ -39,12 +39,12 @@ const WINDOW: u32 = 86_400;
 /// Ceilings asserted per instruction: (name, compute units, transaction bytes). Measured worst case + 15 %, rounded up to 100
 /// units / 10 bytes, never above the limits. Empty until calibrated.
 const CEILINGS: &[(&str, u64, usize)] = &[
-    ("ban_wallet", 13_900, 620),
-    ("cancel_pass", 5_500, 360),
+    ("ban_wallet", 31_100, 660),
+    ("cancel_pass", 22_100, 400),
     ("close_account", 3_900, 360),
     ("confirm_pass", 27_600, 440),
-    ("create_market", 19_400, 650),
-    ("create_ruleset", 36_600, 1_140),
+    ("create_market", 36_500, 690),
+    ("create_ruleset", 53_400, 1_180),
     ("fail_for_violation", 50_700, 770),
     ("finalize_pass", 97_300, 780),
     ("hold_account", 28_400, 510),
@@ -57,12 +57,12 @@ const CEILINGS: &[(&str, u64, usize)] = &[
     ("report_fail", 174_000, 1_232),
     ("request_advance", 52_900, 620),
     ("reset_account", 182_000, 1_050),
-    ("set_evaluator", 5_100, 510),
-    ("set_limits", 5_100, 490),
-    ("set_paused", 5_000, 470),
+    ("set_evaluator", 22_300, 550),
+    ("set_limits", 21_700, 530),
+    ("set_paused", 21_600, 510),
     ("touch_activity", 60_000, 620),
-    ("unban_wallet", 7_000, 540),
-    ("update_market", 9_300, 610),
+    ("unban_wallet", 23_700, 580),
+    ("update_market", 35_400, 650),
     ("veto_pass", 26_100, 550),
 ];
 

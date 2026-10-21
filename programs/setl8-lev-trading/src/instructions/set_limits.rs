@@ -13,7 +13,7 @@ pub fn handle_set_limits(
     ctx.accounts.both_admins()?;
     check_limits(pass_delay_secs, max_payout_per_window, window_secs)?;
     let config = &mut ctx.accounts.config;
-    emit!(LimitsChanged {
+    emit_cpi!(LimitsChanged {
         old_pass_delay_secs: config.pass_delay_secs,
         old_max_payout_per_window: config.max_payout_per_window,
         old_window_secs: config.window_secs,
