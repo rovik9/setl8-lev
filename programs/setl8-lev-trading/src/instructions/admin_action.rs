@@ -50,7 +50,7 @@ pub fn require_either_admin(config: &SectorConfig, admin_a: &AccountInfo, admin_
     Ok(())
 }
 
-/// Shared by `init_config` and `set_limits`: delay in 1 to 14 days, cap > 0, window > 0.
+/// Shared by `init_config` and `set_limits`: delay in 1 to 6 days (below the vault's 7-day idle limit, decision 67), cap > 0, window > 0.
 pub fn check_limits(pass_delay_secs: u32, max_payout_per_window: u64, window_secs: u32) -> Result<()> {
     require!(
         (MIN_PASS_DELAY_SECS..=MAX_PASS_DELAY_SECS).contains(&pass_delay_secs)

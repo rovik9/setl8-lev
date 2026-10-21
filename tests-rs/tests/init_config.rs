@@ -187,7 +187,7 @@ fn init_config_rejects_delay_one_second_above_the_maximum() {
 
 #[test]
 fn init_config_accepts_the_delay_bounds() {
-    for d in [86_400u32, 1_209_600] {
+    for d in [86_400u32, 518_400] {
         let (e, r) = init_with(|a| a.pass_delay_secs = d);
         assert_ok(r);
         assert_eq!(e.config().pass_delay_secs, d);
@@ -225,4 +225,19 @@ fn init_config_rejects_default_sl8_wallet() {
     let (e, r) = init_with(|a| a.sl8_wallet = Pubkey::default());
     assert_err(&r, Setl8Error::Unauthorized);
     assert!(e.svm.get_account(&config_pda()).is_none());
+}
+
+/// Decision 67 (F-30): `init_config` takes the same 1 to 6 day range as `set_limits`.
+#[test]
+fn init_config_delay_boundaries_are_one_day_to_six_days() {
+    for (delay, ok) in [(0u32, false), (86_399, false), (86_400, true), (518_400, true), (518_401, false), (1_209_600, false), (u32::MAX, false)] {
+        let (e, r) = init_with(|a| a.pass_delay_secs = delay);
+        if ok {
+            assert_ok(r);
+            assert_eq!(e.config().pass_delay_secs, delay);
+        } else {
+            assert_err(&r, Setl8Error::InvalidLimits);
+            assert!(e.svm.get_account(&config_pda()).is_none(), "a refused init_config created the config (delay {delay})");
+        }
+    }
 }

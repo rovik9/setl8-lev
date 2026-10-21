@@ -73,7 +73,7 @@ pub enum Setl8Error {
     BatchTooLarge,
     #[msg("cancel_pass before 1 hour")]
     CancelTooEarly,
-    #[msg("pass delay outside 1 to 14 days, or zero cap or zero window")]
+    #[msg("pass delay outside 1 to 6 days, or zero cap or zero window")]
     InvalidLimits,
     #[msg("wallet is banned")]
     WalletBanned,

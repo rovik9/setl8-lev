@@ -57,9 +57,10 @@ pub const REJECT_OTHER: u8 = 3;
 /// Maximum number of markets (DESIGN 6.1, `create_market`).
 pub const MAX_MARKETS: u16 = 128;
 
-/// Pass delay bounds in seconds: 1 day to 14 days (DESIGN 6.1 `set_limits`).
+/// Pass delay bounds in seconds: 1 day to 6 days (DESIGN 6.1 `set_limits`).
 pub const MIN_PASS_DELAY_SECS: u32 = 86_400;
-pub const MAX_PASS_DELAY_SECS: u32 = 1_209_600;
+/// 6 days (was 14): the vault abandons a record idle for 7 days, so a longer delay could lose a confirmed pass (audit finding F-30, decision 67).
+pub const MAX_PASS_DELAY_SECS: u32 = 6 * 24 * 3600;
 /// Defaults: 2 days, and a 24 h payout window (DESIGN 5.3).
 pub const DEFAULT_PASS_DELAY_SECS: u32 = 172_800;
 pub const DEFAULT_WINDOW_SECS: u32 = 86_400;
@@ -84,7 +85,7 @@ mod tests {
     fn constants_match_design() {
         assert_eq!(PAYOUT_TALLY_SEED, setl8_shared_interfaces::payout_tally::PAYOUT_TALLY_SEED);
         assert_eq!(MIN_PASS_DELAY_SECS, 24 * 3600);
-        assert_eq!(MAX_PASS_DELAY_SECS, 14 * 24 * 3600);
+        assert_eq!(MAX_PASS_DELAY_SECS, 6 * 24 * 3600);
         assert!((MIN_PASS_DELAY_SECS..=MAX_PASS_DELAY_SECS).contains(&DEFAULT_PASS_DELAY_SECS));
         assert_eq!(DEFAULT_PASS_DELAY_SECS, 172_800);
         assert_eq!(DEFAULT_WINDOW_SECS, 86_400);

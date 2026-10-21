@@ -32,7 +32,8 @@ Values and checks that live outside the code; none is set by this repo. The per-
 - **Watchdog**: run `setl8-verify watch` on every `PassRequested`/`PassConfirmed` and alert both admins inside the first hour; both admins must be able to sign a veto inside two days, weekends included. Check that `watch` exits 2 (not 0) on an unreadable feed (fixed in M12; alert on exit code != 0).
 - **Second, independent price recorder** (DESIGN 4.5): without it R-2 is open and the NEITHER rows stay NEITHER.
 - **Upgrade key (A-11)**: authority is the 2-of-2 multisig, deploy keypair destroyed, alerts on any Upgrade/SetAuthority, burn decision dated after the independent audit. **Wallet cap evasion (A-13)** is an off-chain policy item (KYC, funding-source review).
-- **Rule sets**: read back every rule set before `create_ruleset` (tier sizes must be whole dollars; the program now refuses others); keep `pass_delay_secs` at most 6 days while the vault abandons idle records after 7 days (finding F-30), or run `touch_activity` during every pending pass.
+- **Rule sets**: read back every rule set before `create_ruleset` (tier sizes must be whole dollars; the program now refuses others).
+- **Pass delay (F-30, decision 67)**: `pass_delay_secs` is limited to 1 to 6 days by the program (`init_config` and `set_limits`, `InvalidLimits` otherwise) because the vault abandons a record idle for 7 days. Duty: the evaluator calls `touch_activity` at least once during every pending (confirmed) pass, so idle time before the confirmation plus the delay cannot reach 7 days.
 - Open verifier gaps (F-08 to F-14 of the report) mean the verifier's VALID is weaker than DESIGN 4.6 implies: until they are fixed, treat VALID as "no problem found by this tool", not as proof.
 
 ## Still open (not decided by this change)

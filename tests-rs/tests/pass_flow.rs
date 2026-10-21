@@ -988,16 +988,18 @@ fn tally_wrong_owner_or_address_is_refused() {
 #[test]
 fn finalize_abandoned_by_the_vault_changes_neither_tally_nor_window() {
     let (mut w, t) = base();
-    // a delay longer than the vault's 7 days idle limit: the vault flips the challenge on the payout request
-    w.set_limits(691_200, CAP, WINDOW);
+    // the longest allowed delay (6 days, decision 67) confirmed 2 days after the last activity: the record is idle for more than the vault's 7 days
+    // when the payout is requested, so the vault flips the challenge on the payout request
+    w.set_limits(518_400, CAP, WINDOW);
+    let t = t + 2 * 86_400;
     let payer = confirmed(&mut w, 2, t);
     let tally0 = w.tally_bytes();
     let cfg0 = w.v.e.config();
     let regs0 = w.registry_totals();
-    let m = w.ok(|w| w.finalize(t + 691_200, &payer));
+    let m = w.ok(|w| w.finalize(t + 518_400, &payer));
     let a = w.account();
     assert_eq!((a.status, a.pass_pending, a.phase, a.next_request_id), (c::STATUS_ABANDONED, 0, 2, 1));
-    assert_eq!(a.terminal_at(), t + 691_200);
+    assert_eq!(a.terminal_at(), t + 518_400);
     assert_eq!(w.wallet_profile().active_count, 0);
     assert_eq!(w.vault_status().status, 3);
     assert_eq!(w.tally_bytes(), tally0);

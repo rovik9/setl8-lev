@@ -1693,13 +1693,19 @@ fn long_delay_world(delay: i64) -> (JEnv, Keypair, i64) {
 /// Needs a DESIGN change (clamp the maximum delay below the vault's idle limit, or make `confirm_pass` refresh the activity
 /// clock = new vault CPI accounts in `confirm_pass`).
 #[test]
-#[ignore = "FINDING VLT-1: pass_delay_secs may be 8 days but the vault abandons a record idle for 7 days, so an honest confirmed pass is lost at finalize"]
 fn h_a_confirmed_pass_is_paid_after_any_allowed_delay_even_longer_than_the_vault_idle_limit() {
-    let (mut w, payer, fin) = long_delay_world(8 * 86_400);
-    let r = w.finalize(fin, &payer);
-    assert!(r.is_ok(), "{:?}", r.err().map(|f| f.err));
-    assert_eq!(w.account().status, c::STATUS_ACTIVE, "the honest account must not be Abandoned by a valid pass");
-    assert_eq!(w.claim(1).map(|c| c.owed), Some(PAYOUT_100K), "the honest 0.08 S must be queued");
+    // FIXED (decision 67, F-30): the allowed range is 1 to 6 days; every allowed delay is paid with no refresh, and 6 days + 1 s is not allowed
+    for delay in [86_400, 3 * 86_400, 6 * 86_400] {
+        let (mut w, payer, fin) = long_delay_world(delay);
+        let r = w.finalize(fin, &payer);
+        assert!(r.is_ok(), "delay {delay}: {:?}", r.err().map(|f| f.err));
+        assert_eq!(w.account().status, c::STATUS_ACTIVE, "the honest account must not be Abandoned by a valid pass");
+        assert_eq!(w.claim(1).map(|c| c.owed), Some(PAYOUT_100K), "the honest 0.08 S must be queued");
+    }
+    let w = JEnv::new();
+    let mut w = w;
+    let ix = set_limits_ix(both(&w.v.e), 6 * 86_400 + 1, CAP, WINDOW);
+    assert_err(&w.v.e.send_as_admins(&[ix]), E::InvalidLimits);
 }
 
 /// The mitigation that exists today and the control: with the default 2-day delay the same flow pays; with an 8-day delay the
@@ -1711,14 +1717,14 @@ fn h_long_delay_is_survivable_only_if_the_activity_clock_is_refreshed_inside_the
     let (mut w, payer, fin) = long_delay_world(DELAY);
     w.ok(|w| w.finalize(fin, &payer));
     assert_eq!(w.claim(1).unwrap().owed, PAYOUT_100K);
-    // 8 days, trader refreshes on day 4
-    let (mut w, payer, fin) = long_delay_world(8 * 86_400);
+    // 6 days (the maximum), trader refreshes on day 4
+    let (mut w, payer, fin) = long_delay_world(6 * 86_400);
     let day4 = w.t0 + 4 * 86_400;
     w.ok(|w| w.release_acct(day4));
     w.ok(|w| w.finalize(fin, &payer));
     assert_eq!(w.claim(1).unwrap().owed, PAYOUT_100K);
-    // 8 days, the evaluator refreshes on day 5
-    let (mut w, payer, fin) = long_delay_world(8 * 86_400);
+    // 6 days, the evaluator refreshes on day 5
+    let (mut w, payer, fin) = long_delay_world(6 * 86_400);
     let day5 = w.t0 + 5 * 86_400;
     w.ok(|w| w.touch(day5));
     w.ok(|w| w.finalize(fin, &payer));

@@ -73,7 +73,7 @@ fn set_limits_fails_with_one_admin_signer() {
 
 #[test]
 fn set_limits_boundary_values_succeed() {
-    for delay in [86_400u32, 1_209_600] {
+    for delay in [86_400u32, 518_400] {
         let mut e = Env::initialised();
         let ix = set_limits_ix(both(&e), delay, 1, 1);
         assert_ok(e.send_as_admins(&[ix]));
@@ -174,4 +174,23 @@ fn admin_instructions_fail_before_init() {
     let ix = set_paused_ix(both(&e), true);
     let r = e.send_as_admins(&[ix]);
     assert!(r.is_err());
+}
+
+/// Decision 67 (F-30): the delay range is 1 to 6 days. Hand-written boundaries: 6 days accepted, 6 days + 1 s refused (and 14 days, the old
+/// maximum, and u32::MAX), 1 day accepted, 1 day - 1 s and 0 refused; a refusal changes nothing and is `InvalidLimits`.
+#[test]
+fn set_limits_delay_boundaries_are_one_day_to_six_days() {
+    for (delay, ok) in [(0u32, false), (1, false), (86_399, false), (86_400, true), (86_401, true), (518_399, true), (518_400, true), (518_401, false), (604_800, false), (1_209_600, false), (u32::MAX, false)] {
+        let mut e = Env::initialised();
+        let before = e.config();
+        let ix = set_limits_ix(both(&e), delay, 1, 1);
+        let r = e.send_as_admins(&[ix]);
+        if ok {
+            assert_ok(r);
+            assert_eq!(e.config().pass_delay_secs, delay);
+        } else {
+            assert_err(&r, Setl8Error::InvalidLimits);
+            assert_eq!(e.config().pass_delay_secs, before.pass_delay_secs, "a refused delay {delay} changed the config");
+        }
+    }
 }

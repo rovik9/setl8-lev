@@ -1952,7 +1952,7 @@ impl World {
             SetLimits => {
                 let ad = self.admins();
                 let (mut d, mut cap, mut win) = (
-                    *rng.pick(&[c::MIN_PASS_DELAY_SECS, c::MAX_PASS_DELAY_SECS, c::DEFAULT_PASS_DELAY_SECS, 300_000, 1_000_000]),
+                    *rng.pick(&[c::MIN_PASS_DELAY_SECS, c::MAX_PASS_DELAY_SECS, c::DEFAULT_PASS_DELAY_SECS, 300_000, 500_000]),
                     *rng.pick(&[20_000_000_000u64, 100_000_000_000, 100_000_000_000, 5_000_000_000, 1, u64::MAX]),
                     *rng.pick(&[86_400u32, 86_400, 3_600, 604_800, 1, u32::MAX]),
                 );

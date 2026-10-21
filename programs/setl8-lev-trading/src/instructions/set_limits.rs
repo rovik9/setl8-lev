@@ -3,7 +3,7 @@ use anchor_lang::prelude::*;
 use super::admin_action::{check_limits, AdminAction};
 use crate::events::LimitsChanged;
 
-/// Both admins. Delay clamped to 1 to 14 days; cap and window must be non-zero.
+/// Both admins. Delay clamped to 1 to 6 days; cap and window must be non-zero.
 pub fn handle_set_limits(
     ctx: Context<AdminAction>,
     pass_delay_secs: u32,

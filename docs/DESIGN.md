@@ -300,6 +300,7 @@ the admins keep). A verifier can recompute the path: given the account's fills (
 
 ### 4.6 Public verifier and watchdog
 - `setl8-verify` (a CLI, module M9): reads the program's event log (via any RPC/archive/indexer), the sample archive and the intents file; replays with the `engine` crate; prints a verdict per account, per phase, and per pending pass. Open source so traders can check their own accounts. **M9 as built:** `setl8-verify account|watch --events --rules --archive --intents [--snapshot] [--second-archive] [--json] [--as-of-seq N]`, exit codes 0 valid, 1 mismatch, 2 input error.
+- **Duty during a pending pass (decision 67):** the vault abandons a record idle for 7 days and the longest allowed pass delay is 6 days; the evaluator should still call `touch_activity` (the trader `release_account`) at least once during the delay so that a delay set at the maximum plus the idle time before the confirmation cannot reach 7 days.
 - Setl8 runs it as a **watchdog**: on every `PassRequested` event it replays that account and alerts both admins with `VALID` or `MISMATCH` inside the first hour, so the 2-day veto window has operational meaning (13.3, OPEN_QUESTIONS).
 
 ### 4.7 What happens if the evaluator is offline, wrong, or hacked
@@ -436,7 +437,7 @@ Notation: `[S]` signer, `[W]` writable, `[R]` read-only. Compute figures are **e
 | `create_ruleset` | both admins | Creates `RuleSet` version N+1 (immutable) and sets `current_ruleset`. Applies only to NEW accounts. |
 | `create_market` / `update_market` | either admin | Create or change a market: status, feed id, sessions, caps. **Free feed remap per decision 24.** Emits `MarketFeedChanged`. |
 | `set_evaluator(new_key)` | both admins | Rotates the evaluator key. Effective immediately. |
-| `set_limits(pass_delay_secs, max_payout_per_window, window_secs)` | both admins | Delay is clamped to `[1 day, 14 days]` so no admin pair can set a zero delay by accident; cap > 0. |
+| `set_limits(pass_delay_secs, max_payout_per_window, window_secs)` | both admins | Delay is clamped to `[1 day, 6 days]` (decision 67: the vault abandons a record that is idle for 7 days, so a longer delay could lose a confirmed pass; a 6-day delay leaves a day of margin) so no admin pair can set a zero delay by accident; cap > 0. |
 | `set_paused(bool)` | pause: either admin; unpause: both | Blocks `open_account`, `reset_account`, `request_advance`, `finalize_pass`. `post_journal`, `report_fail`, `confirm_pass`, `reject_pass` keep working. |
 | `release_hold` | both admins | Clears `held` after review (3b in 2.9). |
 | `fail_for_violation(evidence_hash)` | both admins | Requires `held == 1`. Sets status Failed, CPI `flag_trader_failed`, `active_count - 1`, sets the wallet's `banned = 1`, clears any pending pass, emits `ViolationFail{evidence_hash}`. Needs the same accounts as `report_fail`. |
@@ -696,7 +697,7 @@ After every `record_activity` and `request_payout` CPI the program reads `get_re
 
 ### 10.4 Payout flow against the queued-claim vault
 1. `request_advance` (trader), then `confirm_pass` (evaluator) as in 10.3.
-2. After `pass_delay_secs` (default 2 days, clamped to 1 to 14 days) anyone calls `finalize_pass`; the caller pays the `PayoutClaim` rent as `payer`.
+2. After `pass_delay_secs` (default 2 days, clamped to 1 to 6 days, decision 67) anyone calls `finalize_pass`; the caller pays the `PayoutClaim` rent as `payer`.
 3. The program checks: pending is 2, delay elapsed, not paused, daily cap (10.6).
 4. CPI `request_payout(trader_wallet, amount = 0.08 S, product_program_id, challenge_id, proposed_request_id = next_request_id)`; the return data must be `Paid`.
 5. On `Paid`: tally checked-add (`requested_count + 1`, `requested_total + amount`), `next_request_id += 1`, window counter add, then the next phase starts fresh (or the account is Graduated after phase 5). On any error the whole transaction reverts, including the tally.
@@ -786,7 +787,7 @@ Every instruction is below the default 200,000 units, so no compute-budget instr
 | 6031 | `RuleSetMissing` | version not found |
 | 6032 | `BatchTooLarge` | more than 8 events or 3 proofs |
 | 6033 | `CancelTooEarly` | `cancel_pass` before 1 hour |
-| 6034 | `InvalidLimits` | delay outside 1 to 14 days, zero cap or zero window |
+| 6034 | `InvalidLimits` | delay outside 1 to 6 days, zero cap or zero window |
 | 6035 | `WalletBanned` | `open_account` or `reset_account` by a banned wallet |
 | 6036 | `EvidenceMissing` | hold, violation fail or ban without a non-zero `evidence_hash` |
 | 6037 | `AccountHeld` | exposure-increasing `Fill`, `request_advance`, `confirm_pass` or `finalize_pass` on a held account |
@@ -852,7 +853,7 @@ Every instruction is below the default 200,000 units, so no compute-budget instr
 | Publish a new rule set | both admins | Only new accounts; existing accounts keep their snapshot |
 | Release a hold, fail an account for violation, ban or unban a wallet | both admins | Can fail an account (no refund) but cannot approve or move a payout |
 | Rotate the evaluator key | both admins | None directly; a new key can post journals |
-| Set pass delay (1 to 14 days), daily payout cap and window | both admins | Can slow or throttle payouts; cannot create one |
+| Set pass delay (1 to 6 days), daily payout cap and window | both admins | Can slow or throttle payouts; cannot create one |
 | Veto a pending pass | both admins together | Can cancel a payout request; cannot approve, create or move anything |
 | Pause sector | either (unpause: both) | Stops new purchases and finalization; never moves money |
 | Upgrade program | 2-of-2 multisig (SL8 admin + Rov admin) | Code could request payouts up to the vault cap; this is the biggest lever; burn decision pending |

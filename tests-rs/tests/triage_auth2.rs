@@ -15,7 +15,7 @@ const DELAY: i64 = 172_800;
 const CAP: u64 = 100_000_000_000;
 const WINDOW: u32 = 86_400;
 const WEEK: i64 = 604_800;
-const MAX_DELAY: u32 = 1_209_600;
+const MAX_DELAY: u32 = 518_400; // 6 days since decision 67
 
 fn base() -> (JEnv, i64) {
     let mut w = JEnv::new();
@@ -31,31 +31,28 @@ fn pend2(w: &mut JEnv, at: i64) {
 
 // ------------------------------------------------------------------------------------------------ AUTH-09
 
-// FINDING AUTH-09
+// FINDING AUTH-09 / F-30 (FIXED, decision 67: the delay range is 1 to 6 days)
 #[test]
-#[ignore = "FINDING AUTH-09: set_limits accepts a pass delay longer than the vault's 7-day inactivity window, so a confirmed pass can be abandoned in the vault before it is finalizable"]
 fn auth09_set_limits_must_refuse_a_delay_beyond_the_vault_inactivity_window() {
     let mut w = JEnv::new();
-    for delay in [WEEK as u32 + 1, MAX_DELAY] {
+    for delay in [MAX_DELAY + 1, WEEK as u32 - 1, WEEK as u32, WEEK as u32 + 1, 1_209_600] {
         let ix = set_limits_ix(both(&w.v.e), delay, CAP, WINDOW);
         let r = w.v.e.send_as_admins(&[ix]);
         assert_err(&r, E::InvalidLimits);
     }
 }
 
-/// Pins the mechanism: with the maximum delay and an idle trader the confirmed pass is lost to the vault's abandonment.
+/// Since decision 67 the maximum delay (6 days) is paid with NO refresh of the vault activity clock: the record is idle for at most
+/// 6 days + the time between the last activity and the confirmation, under the vault's 7 days.
 #[test]
-fn auth09_pin_a_14_day_delay_loses_a_confirmed_pass_if_nobody_refreshes_activity() {
+fn auth09_the_maximum_delay_is_paid_without_any_refresh() {
     let (mut w, t) = base();
     w.set_limits(MAX_DELAY, CAP, WINDOW);
     pend2(&mut w, t);
     let payer = w.new_payer();
-    let m = w.finalize(t + i64::from(MAX_DELAY), &payer);
-    // whatever the transaction result, no payout claim exists and the account is not Active in phase 3
-    let a = w.account();
-    assert!(w.claim(1).is_none(), "no claim: {m:?}");
-    assert!(a.status == c::STATUS_ABANDONED || a.phase == 2, "status {} phase {}", a.status, a.phase);
-    assert_eq!(a.status, c::STATUS_ABANDONED, "the pass is lost: {m:?}");
+    w.ok(|w| w.finalize(t + i64::from(MAX_DELAY), &payer));
+    assert!(w.claim(1).is_some(), "the 0.08 S claim is queued");
+    assert_eq!(w.account().status, c::STATUS_ACTIVE);
 }
 
 /// The mitigation the claim names: the trader's own `release_account` while the pass is pending keeps the vault clock alive.

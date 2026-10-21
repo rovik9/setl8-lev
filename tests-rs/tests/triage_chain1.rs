@@ -40,12 +40,12 @@ fn v6a_pin_a_tiny_cap_blocks_finalize_and_the_admins_undo_it_with_set_limits() {
 }
 
 /// V10: `finalize_pass` uses the CURRENT `pass_delay_secs` (DESIGN 6.4: `now >= pass_proposed_at + pass_delay_secs`; the doc
-/// comment of `handle_finalize_pass` says so). A pass confirmed under a 14-day delay is finalizable after 1 day once both admins
+/// comment of `handle_finalize_pass` says so). A pass confirmed under a 6-day delay is finalizable after 1 day once both admins
 /// lower the delay; `PassConfirmed.eligible_at` is then not what the program enforces.
 #[test]
 fn v10_pin_finalize_uses_the_delay_in_force_now_not_the_one_at_confirmation() {
     let (mut w, t) = base();
-    w.set_limits(1_209_600, CAP, WINDOW);
+    w.set_limits(518_400, CAP, WINDOW);
     pend2(&mut w, t);
     let payer = w.new_payer();
     assert_err(&w.finalize(t + 86_400, &payer), E::PassDelayNotElapsed);
