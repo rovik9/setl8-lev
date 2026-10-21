@@ -278,3 +278,43 @@ fn reset_trust_rows_are_documented() {
     assert_eq!(c::STATUS_FAILED, 1);
     let _ = E::AccountAlreadyReset;
 }
+
+// ---- M12 item 8: one named test per row (the aggregate test above stays)
+
+fn run_row(index: usize, expect_name_part: &str) {
+    let all = rows();
+    let row = &all[index];
+    assert!(row.name.contains(expect_name_part), "row {index} is {:?}, not {expect_name_part:?}", row.name);
+    assert_eq!((row.run)(), row.caught_by, "{} ({:?})", row.name, row.who);
+}
+
+macro_rules! reset_row_tests {
+    ($($test:ident => ($index:expr, $part:expr)),* $(,)?) => {
+        $(#[test] fn $test() { run_row($index, $part); })*
+        /// The names of the generated tests, in row order.
+        const ROW_TESTS: &[&str] = &[$(stringify!($test)),*];
+    };
+}
+
+reset_row_tests! {
+    reset_row_01_a_price_below_the_registrys_tier_price => (0, "a price below the registry's tier price"),
+    reset_row_02_the_registry_replaced_by_a_cheaper_copy => (1, "the registry replaced by a copy with cheaper tiers"),
+    reset_row_03_an_account_that_has_not_failed => (2, "an account that has not failed"),
+    reset_row_04_a_second_reset_of_the_same_failed_record => (3, "a second reset of the same failed record"),
+    reset_row_05_a_second_reset_with_the_local_mark_wiped => (4, "with the local mark wiped"),
+    reset_row_06_by_a_banned_wallet => (5, "by a banned wallet"),
+    reset_row_07_a_violation_failed_account_after_the_unban => (6, "a violation-failed account after the wallet was unbanned"),
+    reset_row_08_while_the_sector_is_paused => (7, "while the sector is paused"),
+    reset_row_09_while_the_vault_pauses_this_product => (8, "while the vault pauses this product"),
+    reset_row_10_a_higher_phase_is_not_expressible => (9, "the new account copies the failed phase"),
+    reset_row_11_an_evaluator_log_that_opens_in_a_higher_phase => (10, "an evaluator log that opens the new account in a higher phase"),
+}
+
+#[test]
+fn every_reset_row_has_exactly_one_named_test() {
+    assert_eq!(ROW_TESTS.len(), rows().len(), "a row without a named test (or a test without a row)");
+    let mut sorted = ROW_TESTS.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), ROW_TESTS.len(), "two tests share a name");
+}
