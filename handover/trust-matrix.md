@@ -1,6 +1,6 @@
 # Trust matrix (M10)
 
-Input of the M12 audit report. Generated from `tests-rs/tests/trust_matrix.rs` (the test asserts every row: who catches it, the program's error code, the verifier's finding class; `TRUST_MATRIX_PRINT=1 cargo test --release --test trust_matrix -- --nocapture` prints the table). **72 batch/log tamper classes + 4 chain-level classes = 76 classes.**
+Input of the M12 audit report. Generated from `tests-rs/tests/trust_matrix.rs` (the test asserts every row: who catches it, the program's error code, the verifier's finding class; `TRUST_MATRIX_PRINT=1 cargo test --release --test trust_matrix -- --nocapture` prints the table). **72 batch/log tamper classes + 4 chain-level classes = 76 classes (+ 11 Reset rows). Since M12 every row has exactly ONE named test** (`tests-rs/tests/trust_matrix.rs`: `row_NNN_<slug>` and `chain_row_NN_<slug>`; `tests-rs/tests/trust_reset.rs`: `reset_row_NN_<slug>`; `every_row_has_exactly_one_named_test` and `trust_matrix_document_matches_rows` keep the document and the tests in step). Rows without a test: 0.
 
 ## Method
 
@@ -149,3 +149,8 @@ Every NEITHER row, with the reason it stays open. These are what a user of optio
 * **a triggered pending order in an unpriced market that the evaluator does not fill (the rule itself)**: Listed so that the table is complete, not because trust is needed: decision 64 makes the non-fill REQUIRED, and the verifier agrees with it (the account's rule set has no half-spread for the market, so no exposure can be opened there). What an operator could do instead, fill it, is the BOTH row above. An honest evaluator refuses such an order at placement and never writes it to the intents file; the row exists for the order a dishonest evaluator publishes in the file.
 
 Two more limits follow from the table without being separate rows: a verifier that is not run catches nothing (the watchdog is an operational duty, DESIGN 13.3), and the unsigned price sources (decision 46: GMX tickers, Hyperliquid) prove only what the evaluator saw, not what was true.
+
+## M12 additions (self-audit, handover/AUDIT_REPORT.md)
+* No row moved class. The dishonest-evaluator table (`tests-rs/tests/adversarial_evaluator.rs`) re-asserts 17 rows from the evaluator's side and found ONE case that belongs in no row: a `report_fail(StaticFloor)` built from the real lows of two markets that never coexisted is accepted by the program and VALID for the verifier (finding F-09 / TMX-1, a GAP, not a NEITHER row: DESIGN A-18 says a mass fail is "visible", and for this shape it is not). It is an open finding with a failing ignored test, not an accepted limit.
+* The NEITHER row "market order executed at an older sample inside max_age (worse price)" has an unreported favourable twin (F-08 / ATK-1): the same slack lets the evaluator pick a better price for the trader; the verifier does not flag it either.
+* The verifier now refuses (input error) a rules file whose version differs from the account's (F-04) and verifies intent signatures with `verify_strict` (F-03); neither changes a row.
