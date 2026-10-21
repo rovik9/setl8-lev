@@ -1,4 +1,6 @@
 //! Triage tests for the M12 audit claims arith-09 .. arith-16 that turned out to be defects.
+// F-34: these tests call the deprecated engine::consts::frac / static_floor on purpose (they pin the dead code).
+#![allow(deprecated)]
 use std::panic::catch_unwind;
 
 // FINDING arith-16: `engine::consts::frac` and `static_floor` multiply in plain i64 (consts.rs:34-36,

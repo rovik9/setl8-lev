@@ -30,17 +30,28 @@ pub const LOCK_SECS: i64 = 12 * 60 * 60;
 
 /// `size * bps / 10_000`, exact for sizes that are whole dollars.
 /// (Plain arithmetic: sizes are at most $200,000 in micro-USD; M4 revisits these helpers.)
+///
+/// DEAD CODE (audit F-34, decision 67): no production code calls this (checked: no caller outside this file, and the
+/// engine itself uses the checked `account::frac_exact`). It multiplies in plain i64 and PANICS (overflow-checks) for a size
+/// above about 8.5e14 micro-USD. It is kept only because tests pin its small-size results; new code must use
+/// `account::frac_exact`, which returns an error instead of panicking.
+#[deprecated(note = "unchecked i64 multiply, panics above ~8.5e14 micro-USD; use account::frac_exact (audit F-34)")]
 #[allow(clippy::arithmetic_side_effects)]
 pub const fn frac(size_micro: i64, bps: i64) -> i64 {
     size_micro * bps / BPS
 }
 
 /// Current static floor level for an account (DESIGN 2.2).
+///
+/// DEAD CODE (audit F-34): see `frac`; use `account::static_floor_micro`, which is checked.
+#[deprecated(note = "built on the unchecked `frac`; use account::static_floor_micro (audit F-34)")]
+#[allow(deprecated)]
 pub const fn static_floor(size_micro: i64, latched: bool) -> i64 {
     frac(size_micro, if latched { LATCHED_FLOOR_BPS } else { STATIC_FLOOR_BPS })
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

@@ -33,6 +33,8 @@
 //!
 //! Run: `cargo test --offline -p setl8-lev-evaluator --test rounding_properties -- --nocapture`
 //!      `cargo test --offline -p setl8-lev-evaluator --test rounding_properties -- --ignored` (fails ONLY on the findings)
+// F-34: these tests call the deprecated engine::consts::frac / static_floor on purpose (they pin the dead code).
+#![allow(deprecated)]
 mod common;
 
 use std::cmp::Ordering;
