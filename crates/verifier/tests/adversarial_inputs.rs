@@ -1210,7 +1210,6 @@ fn pin_the_verifier_refuses_a_non_canonical_s_because_dalek_1_0_1_checks_it_in_p
 
 // FINDING VRF-2
 #[test]
-#[ignore = "FINDING VRF-2: setl8-verify (intents.rs:118, plain ed25519-dalek 1.0.1 verify) accepts a forged signature when the trader key has small order"]
 fn finding_vrf_2_verify_signature_accepts_any_message_for_a_small_order_trader_key() {
     let acct = account_key();
     let order = [0u8; 48];
@@ -1224,7 +1223,6 @@ fn finding_vrf_2_verify_signature_accepts_any_message_for_a_small_order_trader_k
 
 // FINDING VRF-2
 #[test]
-#[ignore = "FINDING VRF-2: setl8-verify says VALID for every intent of an account whose trader key is the identity point, with no signature at all"]
 fn finding_vrf_2_the_whole_verifier_says_valid_for_unsigned_intents_of_a_small_order_trader() {
     let b = close_case(600);
     let mut forged = b.clone();
@@ -1243,25 +1241,19 @@ fn finding_vrf_2_the_whole_verifier_says_valid_for_unsigned_intents_of_a_small_o
 }
 
 #[test]
-fn pin_vrf_2_what_the_verifier_does_today_with_the_identity_trader() {
-    // LIMITED pin of the CURRENT behaviour (delete together with the #[ignore] of the finding once intents.rs uses verify_strict):
-    // for the identity key the zero-S "signature" verifies for EVERY nonce, and verify_strict refuses all of them.
+fn vrf_2_fixed_the_verifier_refuses_every_small_order_trader_key() {
+    // after the fix (verify_strict in intents.rs) the zero-S "signature" is refused for every nonce and every small-order key
     let acct = account_key();
     let order = [0u8; 48];
     let mut sig = [0u8; 64];
     sig[..32].copy_from_slice(&IDENTITY);
     for n in 1u32..=50 {
-        assert!(setl8_verify::intents::verify_signature(&IDENTITY, &acct, n, &order, &sig), "nonce {n}");
+        assert!(!setl8_verify::intents::verify_signature(&IDENTITY, &acct, n, &order, &sig), "nonce {n}");
     }
-    let pk = ed25519_dalek::PublicKey::from_bytes(&IDENTITY).unwrap();
-    let parsed = ed25519_dalek::Signature::from_bytes(&sig).unwrap();
-    for n in 1u32..=50 {
-        assert!(pk.verify_strict(&setl8_verify::intents::signing_message(&acct, n, &order), &parsed).is_err());
-    }
-    // and for the other small-order points a message exists (the hash must vanish modulo the point's order)
     for key in small_order_keys() {
-        let any = (1u32..2000).any(|n| setl8_verify::intents::verify_signature(&key, &acct, n, &order, &sig));
-        assert!(any, "no nonce found for {key:02x?}");
+        let mut sig = [0u8; 64];
+        sig[..32].copy_from_slice(&key);
+        assert!(!(1u32..2000).any(|n| setl8_verify::intents::verify_signature(&key, &acct, n, &order, &sig)), "{key:02x?} verified");
     }
 }
 

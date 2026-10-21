@@ -228,7 +228,6 @@ fn v_14_an_account_abandoned_line_is_understood() {
 
 // FINDING V-15
 #[test]
-#[ignore = "FINDING V-15: intents.rs verify_signature uses ed25519-dalek 1.0.1 verify (not verify_strict): the identity key 'signs' every message with R = identity, S = 0"]
 fn v_15_a_small_order_trader_key_cannot_sign() {
     let acct = account_key();
     let order = market_order(0, true, 1_000, T_1400).to_bytes();

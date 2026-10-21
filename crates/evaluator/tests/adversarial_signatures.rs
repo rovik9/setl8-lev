@@ -341,7 +341,6 @@ fn pin_dalek_1_0_1_rejects_a_non_canonical_s_in_plain_verify() {
 
 // FINDING VRF-1
 #[test]
-#[ignore = "FINDING VRF-1: Ed25519Check (plain verify, ed25519-dalek 1.0.1) accepts a forged order when the trader key is a small-order point"]
 fn finding_vrf_1_plain_verify_accepts_an_unsigned_order_for_a_small_order_trader_key() {
     for enc in small_order_encodings().into_iter().filter(|e| PublicKey::from_bytes(e).is_ok()) {
         let mut w = world_with(Box::new(Ed25519Check), enc);
@@ -375,15 +374,14 @@ fn pin_vrf_1_the_strict_implementation_refuses_the_same_forgeries() {
 }
 
 #[test]
-fn pin_vrf_1_what_plain_verify_still_does_with_the_identity_key_today() {
-    // LIMITED pin of the current (wrong) behaviour, so the day Ed25519Check is fixed this test is deleted together with the
-    // `#[ignore]` on the finding: with the identity as trader the zero-S forgery passes for EVERY nonce (k * identity = identity).
+fn vrf_1_fixed_the_harness_verifier_refuses_the_zero_s_forgery_of_the_identity_key() {
+    // after the fix (verify_strict in Ed25519Check) the identity-key forgery is refused for every nonce
     let mut w = world_with(Box::new(Ed25519Check), IDENTITY);
     for nonce in 1u32..=5 {
         let mut sig = [0u8; 64];
         sig[..32].copy_from_slice(&IDENTITY);
         let s = SignedIntent { nonce, order: market_order(0, true, MEUR, T_1400).to_bytes(), sig };
-        assert_eq!(w.ev.on_order(&s), Ok(()), "nonce {nonce}");
+        assert_eq!(w.ev.on_order(&s), Err(R::BadSignature), "nonce {nonce}");
     }
 }
 
@@ -411,7 +409,6 @@ fn off_chain_an_evaluator_that_skips_the_signature_check_is_flagged_by_the_verif
 
 // FINDING VRF-2
 #[test]
-#[ignore = "FINDING VRF-2: setl8-verify (intents.rs plain verify) calls an unsigned trade VALID when the trader key is a small-order point"]
 fn finding_vrf_2_verifier_calls_an_unsigned_trade_valid_for_a_small_order_trader_key() {
     let mut w = world_with(Box::new(AcceptAll), IDENTITY);
     let mut sig = [0u8; 64];

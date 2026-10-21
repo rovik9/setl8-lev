@@ -31,7 +31,7 @@ impl IntentVerifier for Ed25519Check {
     fn verify(&self, trader: &[u8; 32], message: &[u8], sig: &[u8; 64]) -> bool {
         let Ok(pk) = PublicKey::from_bytes(trader) else { return false };
         let Ok(sig) = ed25519_dalek::Signature::from_bytes(sig) else { return false };
-        ed25519_dalek::Verifier::verify(&pk, message, &sig).is_ok()
+        pk.verify_strict(message, &sig).is_ok()
     }
 }
 

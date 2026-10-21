@@ -11,7 +11,7 @@
 //!
 //! The signed message is `b"SL8LEV|" ++ account (32) ++ b"|" ++ nonce u32 LE ++ b"|" ++ order bytes`; the signature is
 //! ed25519 by the TRADER's key. Nonce 0 is reserved ("no intent" in the journal).
-use ed25519_dalek::{PublicKey, Signature, Verifier};
+use ed25519_dalek::{PublicKey, Signature};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -115,7 +115,8 @@ pub fn signing_message(account: &[u8; 32], nonce: u32, order: &[u8]) -> Vec<u8> 
 pub fn verify_signature(trader: &[u8; 32], account: &[u8; 32], nonce: u32, order: &[u8], sig: &[u8]) -> bool {
     let Ok(pk) = PublicKey::from_bytes(trader) else { return false };
     let Ok(sig) = Signature::from_bytes(sig) else { return false };
-    pk.verify(&signing_message(account, nonce, order), &sig).is_ok()
+    // verify_strict: rejects a small-order key and a non-canonical signature (M12 findings VRF-2, V-15)
+    pk.verify_strict(&signing_message(account, nonce, order), &sig).is_ok()
 }
 
 /// One data line of the intents file.
