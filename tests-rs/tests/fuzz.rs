@@ -640,7 +640,7 @@ fn check_transition_ops(p: &Snap, n: &Snap, ops: &[Op], tainted: &BTreeSet<Pubke
         chk!("X-A18", want == *k && bump == a.bump, "new account {k} is not the canonical PDA of ({}, {})", a.trader, a.challenge_id);
     }
     // ---- who changed the seq: only post_journal / report_fail, exactly one account, by the number of emitted events
-    let seq_moved: Vec<(&Pubkey, u64)> = n.accts.iter().filter_map(|(k, na)| p.accts.get(k).filter(|pa| pa.seq != na.seq).map(|pa| (k, na.seq - pa.seq))).collect();
+    let seq_moved: Vec<(&Pubkey, u64)> = n.accts.iter().filter_map(|(k, na)| p.accts.get(k).filter(|pa| pa.seq != na.seq).map(|pa| (k, na.seq.wrapping_sub(pa.seq)))).collect();
     if let Some(events) = new_batch_events {
         chk!("X-J1", seq_moved.len() == 1, "{opname} succeeded but {} accounts changed seq", seq_moved.len());
         if let Some((_, d)) = seq_moved.first() {
@@ -1566,11 +1566,11 @@ impl Sim {
     fn apply(&mut self, ev: &JournalEvent) {
         match ev {
             JournalEvent::Close { credited, quick, pnl, .. } => {
-                self.b += credited;
+                self.b = self.b.saturating_add(*credited);
                 if *quick && *pnl > 0 {
-                    self.q += credited;
+                    self.q = self.q.saturating_add(*credited);
                 }
-                if self.b * 100 >= self.s * 104 {
+                if i128::from(self.b) * 100 >= i128::from(self.s) * 104 {
                     self.latch = true;
                 }
             }
@@ -1746,7 +1746,7 @@ impl World {
             }
         }
         events.push(meta(tm, flat));
-        let (first_seq, prev) = a.as_ref().map_or((1, [0u8; 32]), |a| (a.seq + 1, a.journal_hash));
+        let (first_seq, prev) = a.as_ref().map_or((1, [0u8; 32]), |a| (a.seq.saturating_add(1), a.journal_hash));
         let mut proofs = vec![proof(MARKET_EUR, tm, MID)];
         let mut markets = vec![MARKET_EUR];
         for m in &extra_markets {
@@ -1798,7 +1798,7 @@ impl World {
             0u8
         };
         events.push(meta(tm, true));
-        let (first_seq, prev) = a.as_ref().map_or((1, [0u8; 32]), |a| (a.seq + 1, a.journal_hash));
+        let (first_seq, prev) = a.as_ref().map_or((1, [0u8; 32]), |a| (a.seq.saturating_add(1), a.journal_hash));
         let batch = JournalBatch { first_seq, prev_hash: prev, events, proofs: vec![proof(MARKET_EUR, tm, MID)] };
         let reason = if noisy && rng.chance(25) { reason ^ 1 } else { reason };
         (batch, vec![MARKET_EUR], reason)

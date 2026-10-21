@@ -1608,12 +1608,15 @@ mod a10_overflow_and_rounding_drift {
             let f = fill(MARKET_EUR, LONG, q, eur_ask(), t, 0);
             assert_eq!(extreme(vec![f, meta(t, false)], proof(MARKET_EUR, t, MID), t, &mut w), code(E::QuantityInvalid), "fill qty {q}");
         }
-        // LIMITED: the notional cap (`max_notional_usd`) is not an on-chain rule (DESIGN 3.2: the chain uses a market only for its
-        // existence and feed). A step multiple of 1.8e19 units (about $18 trillion at 1.0) is accepted by the program; the
-        // evaluator refuses such an order and the verifier flags it. Pinned so that a later on-chain check shows up here.
+        // A step multiple ABOVE i64::MAX (1.8e19 units) is refused since the M12 fix ARI-3 (the engine cannot hold it, so nobody could
+        // replay it); the largest step multiple that fits i64 is still accepted by the program although its notional (about $9.2
+        // trillion at 1.0) is far above any market cap. LIMITED: `max_notional_usd` is not an on-chain rule (DESIGN 3.2: the chain uses
+        // a market only for its existence and feed); the evaluator refuses such an order and the verifier flags it.
         let (mut w, t) = base();
-        let big = 18_446_744_073_709_000_000u64;
-        assert_eq!(big % 1_000, 0);
+        let too_big = 18_446_744_073_709_000_000u64;
+        assert_eq!(too_big % 1_000, 0);
+        assert_eq!(extreme(vec![fill(MARKET_EUR, LONG, too_big, eur_ask(), t, 0), meta(t, false)], proof(MARKET_EUR, t, MID), t, &mut w), code(E::QuantityInvalid));
+        let big = u64::try_from(i64::MAX).unwrap() / 1_000 * 1_000;
         assert_eq!(extreme(vec![fill(MARKET_EUR, LONG, big, eur_ask(), t, 0), meta(t, false)], proof(MARKET_EUR, t, MID), t, &mut w), None);
         assert_eq!(w.account().seq, 2);
         // Fill: price zero -> PriceInvalid; any price that is not the derived one (1, u64::MAX) -> EventPriceMismatch

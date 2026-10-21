@@ -269,6 +269,8 @@ fn apply_event(env: &Env, run: &mut Run, acct: &TradingAccount, ev: &JournalEven
             require!(half_spread != 0, Setl8Error::MarketUnpriced);
             let proof = env.required_proof(ev)?;
             engine::validate_quantity(*qty, m.qty_step, m.qty_min).map_err(|_| error!(Setl8Error::QuantityInvalid))?;
+            // the engine's positions are i64 (apply_fill refuses a larger quantity): the chain must not accept what nobody can replay (M12 ARI-3)
+            require!(i64::try_from(*qty).is_ok(), Setl8Error::QuantityInvalid);
             let mid = env.check_market_proof(proof, m, *time)?;
             let expected = engine::fill_price_e12(mid, half_spread, *side == Side::Long).map_err(|_| error!(Setl8Error::MathOverflow))?;
             require!(*price_e12 != 0, Setl8Error::PriceInvalid);

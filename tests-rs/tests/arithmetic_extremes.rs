@@ -390,21 +390,21 @@ fn fill_quantity_extremes() {
     let snapshot = save(&w);
     let price = ref_ask(MID, H_EUR).unwrap();
     let ev = |qty: u64| vec![fill(MARKET_EUR, true, qty, price, t, 0), meta(t, false)];
-    for qty in [0u64, 1, 2, 999, STEP, QTY_MIN - STEP, QTY_MIN - 1, QTY_MIN + 1, QTY_MIN + STEP - 1, (1 << 63) - 1, 1 << 63, u64::MAX - 1, u64::MAX] {
+    for qty in [0u64, 1, 2, 999, STEP, QTY_MIN - STEP, QTY_MIN - 1, QTY_MIN + 1, QTY_MIN + STEP - 1, (1 << 63) - 1, 1 << 63, u64::MAX - 1, u64::MAX, u64::MAX - u64::MAX % STEP] {
         refuse(&mut w, t, ev(qty), vec![p_eur(t)], E::QuantityInvalid);
     }
-    for qty in [QTY_MIN, QTY_MIN + STEP, 1_000_000_000_000, (1 << 62) / STEP * STEP, u64::MAX - u64::MAX % STEP] {
+    for qty in [QTY_MIN, QTY_MIN + STEP, 1_000_000_000_000, (1 << 62) / STEP * STEP, u64::try_from(i64::MAX).unwrap() / STEP * STEP] {
         let before = w.account();
         let (_, head) = accept(&mut w, t, ev(qty), vec![p_eur(t)]);
         assert_account_is(&w, &before, head, t, |_| {});
         restore(&mut w, &snapshot);
     }
-    // largest multiple of the step at the largest price: the engine's notional is an i128 overflow, the program does not compute it
+    // largest accepted quantity at the largest price (before the ARI-3 fix a larger quantity was accepted and the engine's notional overflowed i128)
     set_spread(&mut w, 1);
     let snapshot2 = save(&w);
     let top = ref_bid(u64::MAX, 1);
-    let qty = u64::MAX - u64::MAX % STEP;
-    assert_eq!(engine::units::notional_micro(qty, top), Err(engine::EngineError::Overflow), "the engine refuses this notional");
+    let qty = u64::try_from(i64::MAX).unwrap() / STEP * STEP;
+    assert!(engine::units::notional_micro(qty, top).is_ok(), "since ARI-3 the largest accepted quantity has a notional the engine can compute");
     let before = w.account();
     let (_, head) = accept(&mut w, t, vec![fill(MARKET_EUR, false, qty, top, t, 0), meta(t, false)], vec![mid_proof(t, u64::MAX)]);
     assert_account_is(&w, &before, head, t, |_| {});
@@ -418,7 +418,6 @@ fn fill_quantity_extremes() {
 // effect is a verifier alarm, no money moves on-chain from a fill). A fix is a plain implementation change (reject `qty > i64::MAX`
 // with `QuantityInvalid` in the `Fill` arm); whether to add the check is a DESIGN decision only in the sense that I-4/I-1 never listed it.
 #[test]
-#[ignore = "FINDING ARI-3: post_journal accepts a Fill with qty > i64::MAX that engine::apply_fill refuses (InvalidQuantity)"]
 fn finding_ari_3_fill_quantity_above_i64_max_must_be_refused() {
     let (mut w, t) = world();
     let price = ref_ask(MID, H_EUR).unwrap();
@@ -428,14 +427,15 @@ fn finding_ari_3_fill_quantity_above_i64_max_must_be_refused() {
     refuse(&mut w, t, vec![fill(MARKET_EUR, true, qty, price, t, 0), meta(t, false)], vec![p_eur(t)], E::QuantityInvalid);
 }
 
-/// LIMITED, the other half of ARI-3: today's behaviour pinned exactly, so the fix has to change this test.
+/// FIXED (ARI-3): the largest quantity on the step that fits i64 is still accepted; the next step is refused (see the finding test above).
 #[test]
-fn fill_quantity_above_i64_max_is_accepted_today() {
+fn fill_quantity_at_the_i64_limit_is_accepted_and_one_step_more_is_refused() {
     let (mut w, t) = world();
     let price = ref_ask(MID, H_EUR).unwrap();
-    let qty = (u64::try_from(i64::MAX).unwrap() / STEP + 1) * STEP;
+    let top = u64::try_from(i64::MAX).unwrap() / STEP * STEP;
+    refuse(&mut w, t, vec![fill(MARKET_EUR, true, top + STEP, price, t, 0), meta(t, false)], vec![p_eur(t)], E::QuantityInvalid);
     let before = w.account();
-    let (_, head) = accept(&mut w, t, vec![fill(MARKET_EUR, true, qty, price, t, 0), meta(t, false)], vec![p_eur(t)]);
+    let (_, head) = accept(&mut w, t, vec![fill(MARKET_EUR, true, top, price, t, 0), meta(t, false)], vec![p_eur(t)]);
     assert_account_is(&w, &before, head, t, |_| {});
 }
 
