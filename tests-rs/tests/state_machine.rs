@@ -13,9 +13,9 @@
 //!   H0 H1 H2   Active, HELD,      pass_pending 0 / 1 / 2
 //!   F          Failed (report_fail), resettable            FX  Failed, already reset (`reset_at` != 0)
 //!   FV         Failed by fail_for_violation (marker 3), wallet banned
-//!   FVU        like FV, wallet unbanned afterwards (the marker, not the ban, refuses a reset)
+//!   Fvu        like FV, wallet unbanned afterwards (the marker, not the ban, refuses a reset)
 //!   AB         Abandoned (the vault's 7-day idle rule)     GR  Graduated (phase 5 finalized)
-//! F, FV, FVU, FX, AB, GR, A*, H* are all built with REAL instructions (report_fail, hold + fail_for_violation, release
+//! F, FV, Fvu, FX, AB, GR, A*, H* are all built with REAL instructions (report_fail, hold + fail_for_violation, release
 //! after 7 idle days, four finalizes, ...); only the b/flat/pending fields that an honest journal would have needed
 //! minutes to produce are written with `edit_account`, and the cells say so. In the terminal worlds `b` is edited to 1.08 S
 //! so that the pass condition would hold: the status check is then the ONLY violated precondition of a pass instruction.
@@ -31,8 +31,7 @@ use anchor_lang::solana_program::instruction::error::InstructionError;
 use anchor_lang::{AccountDeserialize, AccountSerialize};
 use common::journal::*;
 use common::lifecycle::*;
-use common::pass::*;
-use common::vault::{acct_pda, vault_trader_state_pda};
+use common::vault::acct_pda;
 use common::*;
 use journal_types::FailReason;
 use litesvm::types::TransactionResult;
@@ -60,6 +59,7 @@ fn clone_acct(a: &TradingAccount) -> TradingAccount {
 }
 
 /// `after` must equal `before` with `f` applied, byte for byte.
+#[allow(dead_code)]
 fn assert_only(ctx: &str, before: &TradingAccount, after: &TradingAccount, f: impl FnOnce(&mut TradingAccount)) {
     let mut exp = clone_acct(before);
     f(&mut exp);
@@ -177,12 +177,12 @@ enum St {
     H2,
     F,
     FV,
-    FVU,
+    Fvu,
     FX,
     AB,
     GR,
 }
-const STATES: [St; 12] = [St::A0, St::A1, St::A2, St::H0, St::H1, St::H2, St::F, St::FV, St::FVU, St::FX, St::AB, St::GR];
+const STATES: [St; 12] = [St::A0, St::A1, St::A2, St::H0, St::H1, St::H2, St::F, St::FV, St::Fvu, St::FX, St::AB, St::GR];
 
 struct Row {
     ins: Ins,
@@ -198,7 +198,7 @@ const fn same(ins: Ins, program_ix: &'static str, signer: &'static str, a: [W; 1
     Row { ins, program_ix, signer, open: a, paused: a }
 }
 
-// column order:  A0  A1  A2  H0  H1  H2  F  FV  FVU  FX  AB  GR
+// column order:  A0  A1  A2  H0  H1  H2  F  FV  Fvu  FX  AB  GR
 const TABLE: [Row; 16] = [
     // post_journal with a Meta-only batch (DESIGN I-1: Active, pass_pending != 2; a held account may post anything that is not an
     // exposure-increasing Fill; 6.1 set_paused: post_journal keeps working while paused)
@@ -460,11 +460,11 @@ fn world(st: St, paused: bool) -> World {
             pass_ready_bytes(&mut w);
             now = terminal_now(&w);
         }
-        St::FV | St::FVU => {
+        St::FV | St::Fvu => {
             let t = t0 + 1_000;
             w.ok(|w| w.hold(t, hash(1)));
             w.ok(|w| w.violation(t + 1, hash(2)));
-            if st == St::FVU {
+            if st == St::Fvu {
                 let admins = Admins::both(&w.v.e);
                 let ix = unban_wallet_ix(admins, w.trader.pubkey());
                 assert_ok(w.v.e.send_admins(ix, admins));
@@ -496,7 +496,7 @@ fn world(st: St, paused: bool) -> World {
         St::H1 => (0, 1, 1),
         St::H2 => (0, 1, 2),
         St::F | St::FX => (1, 0, 0),
-        St::FV | St::FVU => (1, 0, 3),
+        St::FV | St::Fvu => (1, 0, 3),
         St::AB => (2, 0, 0),
         St::GR => (3, 0, 0),
     };
@@ -782,7 +782,7 @@ grid! {
     grid_h2_open: St::H2, false;
     grid_failed_open: St::F, false;
     grid_failed_violation_banned_open: St::FV, false;
-    grid_failed_violation_unbanned_open: St::FVU, false;
+    grid_failed_violation_unbanned_open: St::Fvu, false;
     grid_failed_already_reset_open: St::FX, false;
     grid_abandoned_open: St::AB, false;
     grid_graduated_open: St::GR, false;
@@ -794,7 +794,7 @@ grid! {
     grid_h2_paused: St::H2, true;
     grid_failed_paused: St::F, true;
     grid_failed_violation_banned_paused: St::FV, true;
-    grid_failed_violation_unbanned_paused: St::FVU, true;
+    grid_failed_violation_unbanned_paused: St::Fvu, true;
     grid_failed_already_reset_paused: St::FX, true;
     grid_abandoned_paused: St::AB, true;
     grid_graduated_paused: St::GR, true;
@@ -852,7 +852,7 @@ fn table_cell_counts() {
     println!("table cells {cells}: allowed {allowed}, refused with one named error {exact}, refused with a DESIGN-allowed set {anyof}");
     assert_eq!(cells, 16 * 12 * 2);
     assert_eq!(cells, allowed + exact + anyof);
-    // 32 grid coordinates x 2 (paused) x 16 rows = 1,024 grid cells; 10 coordinates exist => 320 grid cells; FVU and FX are the
+    // 32 grid coordinates x 2 (paused) x 16 rows = 1,024 grid cells; 10 coordinates exist => 320 grid cells; Fvu and FX are the
     // two extra sub-states of the Failed coordinates (wallet ban, reset_at) => 64 more table cells
     let coords = (0..4u8).flat_map(|s| (0..2u8).flat_map(move |h| (0..4u8).map(move |p| (s, h, p)))).count();
     let existing = (0..4u8).flat_map(|s| (0..2u8).flat_map(move |h| (0..4u8).map(move |p| (s, h, p)))).filter(|(s, h, p)| reachable(*s, *h, *p)).count();

@@ -12,7 +12,7 @@
 mod common;
 
 use anchor_lang::solana_program::{
-    instruction::{error::InstructionError, AccountMeta, Instruction},
+    instruction::{error::InstructionError, Instruction},
     pubkey::Pubkey,
 };
 use anchor_lang::{InstructionData, ToAccountMetas};
@@ -34,6 +34,7 @@ const SRC3: u16 = 5;
 /// Anchor `InstructionDidNotDeserialize`.
 const ANCHOR_IX_DID_NOT_DESERIALIZE: u32 = 102;
 /// Largest quantity that is a multiple of the test markets' step (1,000).
+#[allow(dead_code)]
 const QTY_MAX_STEP: u64 = u64::MAX - u64::MAX % 1_000;
 /// Highest compute-unit use allowed for a REFUSED malformed batch (measured about 11,000 to 18,000; a blow-up would show here).
 const REFUSAL_CU_CEILING: u64 = 60_000;
@@ -48,6 +49,7 @@ enum Kind {
 }
 
 const SR: u8 = 0; // StaticFloor
+#[allow(dead_code)]
 const PQ: u8 = 1; // PhaseQuick
 
 fn budget() -> Instruction {
@@ -175,17 +177,21 @@ fn refuse_anchor(w: &mut JEnv, kind: Kind, clock: i64, data: Vec<u8>, markets: &
 }
 
 /// The account as stored, so a test can put it back after an ACCEPTED mutation.
+#[allow(dead_code)]
 fn save(w: &JEnv) -> RawAccount {
     w.v.e.svm.get_account(&w.acct).expect("trading account")
 }
+#[allow(dead_code)]
 fn restore(w: &mut JEnv, a: &RawAccount) {
     w.v.e.svm.set_account(w.acct, a.clone()).unwrap();
 }
 
 /// Every account a SUCCESSFUL `report_fail` writes (trading account, wallet profile, vault trader state), to undo it.
+#[allow(dead_code)]
 fn save_fail_set(w: &JEnv) -> Vec<(Pubkey, RawAccount)> {
     [w.acct, wallet_pda(&w.trader.pubkey()), w.vts()].into_iter().map(|k| (k, w.v.e.svm.get_account(&k).expect("account"))).collect()
 }
+#[allow(dead_code)]
 fn restore_set(w: &mut JEnv, set: &[(Pubkey, RawAccount)]) {
     for (k, a) in set {
         w.v.e.svm.set_account(*k, a.clone()).unwrap();
@@ -249,6 +255,7 @@ fn rich_fail(w: &JEnv, t: i64) -> (JournalBatch, [u16; 2]) {
 }
 
 /// A plain valid fail batch `[Fail, Meta]` (account exactly at the floor).
+#[allow(dead_code)]
 fn plain_fail(w: &JEnv, t: i64) -> JournalBatch {
     w.fail_batch(t, vec![], FailReason::StaticFloor, FLOOR, true)
 }
@@ -272,6 +279,7 @@ fn current(w: &JEnv) -> (Keypair, Pubkey) {
 }
 
 /// Overwrites the Meta `flat`... helper kept tiny: the `time` of the LAST event (the Meta).
+#[allow(dead_code)]
 fn with_last_time(mut b: JournalBatch, t: i64) -> JournalBatch {
     let last = b.events.len() - 1;
     b.events[last] = at(&b.events[last], t);
@@ -285,6 +293,7 @@ fn raw_ok(first_seq: u64, prev: [u8; 32], events: &[Vec<u8>], proofs: &[Vec<u8>]
 
 /// An error code the framework or the program can return as `Custom`; `None` for any other `InstructionError`
 /// (a panic or abort shows up as `ProgramFailedToComplete`, an out-of-memory abort the same).
+#[allow(dead_code)]
 fn custom_code(r: &TransactionResult) -> Option<u32> {
     match r {
         Err(f) => match &f.err {
@@ -296,6 +305,7 @@ fn custom_code(r: &TransactionResult) -> Option<u32> {
 }
 
 /// The program's own error range.
+#[allow(dead_code)]
 fn is_program_code(code: u32) -> bool {
     (6000..6300).contains(&code)
 }

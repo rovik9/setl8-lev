@@ -453,8 +453,8 @@ fn fill_and_close_prices_use_the_side_that_is_against_the_trader() {
             // a long fill buys at the ask, a short fill sells at the bid; a long close sells at the bid, a short close buys at the ask
             let want_f = if long { ask_from_mid(mid, h) } else { bid_from_mid(mid, h) };
             let want_c = if long { bid_from_mid(mid, h) } else { ask_from_mid(mid, h) };
-            assert_eq!(f.map_err(|e| e), want_f.map_err(ClaimError::Engine), "fill_price_e12({mid},{h},{long})");
-            assert_eq!(c.map_err(|e| e), want_c.map_err(ClaimError::Engine), "close_price_e12({mid},{h},{long})");
+            assert_eq!(f, want_f.map_err(ClaimError::Engine), "fill_price_e12({mid},{h},{long})");
+            assert_eq!(c, want_c.map_err(ClaimError::Engine), "close_price_e12({mid},{h},{long})");
             if let (Ok(f), Ok(c)) = (f, c) {
                 // opening and closing the same side at the same mid can never gain: you buy at ask >= mid and sell at bid <= mid
                 if long {
@@ -665,7 +665,7 @@ fn holding_fee_micro_rounds_up_and_nights_zero_overflow_is_pinned() {
     // the pinned example: an absurd notional charged for zero nights
     assert_eq!(holding_fee_micro(u64::MAX, u64::MAX, u32::MAX, 0), Err(EngineError::Overflow));
     // and the neighbours that must stay Ok: zero nights, ordinary notional; zero rate, absurd notional
-    assert_eq!(holding_fee_micro(u64::MAX, u64::MAX, u32::MAX, 0).is_err(), true);
+    assert!(holding_fee_micro(u64::MAX, u64::MAX, u32::MAX, 0).is_err());
     assert_eq!(holding_fee_micro(1_000_000_000_000, 1_000_000_000_000, 100, 0), Ok(0));
     assert_eq!(holding_fee_micro(u64::MAX, u64::MAX, 0, u32::MAX), Ok(0));
     // DESIGN 9.3: 0.01 % of 1,000,000 EUR at 1.0805 for one night
@@ -737,7 +737,7 @@ fn commission_double_ceiling_of_the_evaluator_is_never_below_the_exact_single_ce
         match (got, single.to_i64()) {
             (Ok(double), Some(single)) => {
                 assert!(double >= single, "the double ceiling is BELOW the exact commission for ({q},{p},{rate}): {double} < {single}");
-                let slack = (u64::from(rate) + E6 - 1) / E6;
+                let slack = u64::from(rate).div_ceil(E6);
                 assert!(i128::from(double) - i128::from(single) <= i128::from(slack), "double ceiling exceeds the single by more than {slack} for ({q},{p},{rate})");
                 strictly_above += u64::from(double > single);
                 t.ok += 1;
@@ -774,6 +774,7 @@ fn ref_pnl(long: bool, qty: u64, entry: u64, exit: u64) -> Option<(i64, bool)> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_pnl_value(what: &str, inputs: &dyn Debug, got: Result<i64, EngineError>, long: bool, qty: u64, entry: u64, exit: u64, t: &mut Tally) {
     match ref_pnl(long, qty, entry, exit) {
         Some((want, rounded)) => {
@@ -976,7 +977,7 @@ fn allowed_apply_errors(p: Option<Position>, side: Side, dq: u64, price: u64, t:
         return Some(errs);
     }
     let signed = if side == Side::Buy { i128::from(dq) } else { -i128::from(dq) };
-    let Some(p) = p else { return None };
+    let p = p?;
     if p.qty == 0 {
         return Some(vec![EngineError::InvalidInput]);
     }
@@ -1650,7 +1651,7 @@ fn no_account_state_function_panics_on_hostile_states() {
     st.r = st.b;
     st.l_start = 96_000_000_000;
     st.l_level = 96_000_000_000;
-    assert_eq!(check_breach(&st, i64::MAX, 96_000_000_000, st.b - 4_000_000_000).map_err(|e| e), Err(ClaimError::BreachBalance));
+    assert_eq!(check_breach(&st, i64::MAX, 96_000_000_000, st.b - 4_000_000_000), Err(ClaimError::BreachBalance));
     st.b = 96_000_000_000;
     st.r = st.b;
     assert_eq!(check_breach(&st, i64::MAX, 96_000_000_000, 96_000_000_000), Err(ClaimError::Engine(EngineError::Overflow)), "lock_until = now + 12 h must not wrap");
