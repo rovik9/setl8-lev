@@ -323,7 +323,7 @@ fn role(line: &str, p: usize) -> String {
 // LIMITED: which byte changes in the EVENTS file still verify. Everything that is not in this list is detected. The survivors
 // are fields the verifier does not use (slot: informational), keys whose loss has a default (`account` absent = line not tied to
 // an account, `type` absent = "event": the hash chain still binds the event to the account), the final line break, and four
-// `opened` fields that nothing cross-checks (challenge_id, tier_index, ruleset_version, time digits): see FINDING VRF-3.
+// `opened` fields that nothing cross-checks (challenge_id, tier_index, time digits; ruleset_version was one until VRF-3 was fixed).
 #[test]
 fn limited_event_file_single_byte_changes_that_still_verify_are_exactly_these_fields() {
     use std::collections::BTreeSet;
@@ -334,7 +334,6 @@ fn limited_event_file_single_byte_changes_that_still_verify_are_exactly_these_fi
         "event.<syntax>",
         "opened.challenge_id.val",
         "opened.tier_index.val",
-        "opened.ruleset_version.val",
         "opened.time.val",
     ]
     .into_iter()
@@ -416,14 +415,14 @@ fn rules_leaf_survivors(name: &str) -> Vec<String> {
 }
 
 // LIMITED: for the committed account (EURUSD, no overnight in two of three) the rule fields that can move without the verifier
-// noticing are exactly these. fee_bps, tier_sizes and ruleset_version are never read by the replay (the 0.4% fee is charged by
+// noticing are exactly these. fee_bps and tier_sizes are never read (ruleset_version IS compared with the opened line since the VRF-3 fix) by the replay (the 0.4% fee is charged by
 // open_account, not journaled); the rest are not exercised by the account (other classes, session edges, a notional far below
 // the cap, a proof age far below max_age_secs). Every exercised field (leverage_x[0], commission_e6[0], spread, feed id, qty
 // step, status, class, id, and holding_fee_e6[0] when an overnight is held) IS detected.
 #[test]
 fn limited_rule_fields_that_can_change_without_the_verifier_noticing() {
     let mut common: Vec<String> = ["commission_e6", "holding_fee_e6", "leverage_x"].iter().flat_map(|k| (1..8).map(move |i| format!("/{k}/{i}"))).collect();
-    common.extend(["/fee_bps", "/markets/0/max_age_secs", "/markets/0/max_notional_usd", "/markets/0/qty_min", "/markets/0/sessions/0/0", "/markets/0/sessions/0/1", "/ruleset_version", "/tier_sizes/0"].map(s));
+    common.extend(["/fee_bps", "/markets/0/max_age_secs", "/markets/0/max_notional_usd", "/markets/0/qty_min", "/markets/0/sessions/0/0", "/markets/0/sessions/0/1", "/tier_sizes/0"].map(s));
     let mut with_hold0 = common.clone();
     with_hold0.push(s("/holding_fee_e6/0"));
     for (name, expect) in [("quick_profit", &with_hold0), ("design_4_9", &with_hold0), ("holding_night", &common)] {
@@ -1260,9 +1259,8 @@ fn vrf_2_fixed_the_verifier_refuses_every_small_order_trader_key() {
 // ---------------------------------------------------------------------------------------------------------------------
 // FINDING VRF-3: the opened line is not cross-checked with the rules file
 
-// FINDING VRF-3
+// FINDING VRF-3 (FIXED in crates/verifier/src/verify.rs: the rules file's ruleset_version must equal the opened line's)
 #[test]
-#[ignore = "FINDING VRF-3: opened.ruleset_version is not compared with rules.json ruleset_version (a rules file of another version is replayed without a word)"]
 fn finding_vrf_3_a_rules_file_of_another_version_is_not_noticed() {
     let fx = Fx::load("design_4_9");
     let r = String::from_utf8(fx.rules.clone()).unwrap();
@@ -1276,12 +1274,12 @@ fn finding_vrf_3_a_rules_file_of_another_version_is_not_noticed() {
 }
 
 #[test]
-fn pin_vrf_3_current_behaviour() {
+fn pin_vrf_3_what_is_still_not_cross_checked() {
     let fx = Fx::load("design_4_9");
     let t = fx.text();
     let r = String::from_utf8(fx.rules.clone()).unwrap();
-    assert!(go(&fx.with_rules(&rep1(&r, "\"ruleset_version\":1", "\"ruleset_version\":2"))).valid());
-    assert!(go(&fx.with_events(&rep1(&t, "\"ruleset_version\":1", "\"ruleset_version\":9"))).valid());
+    assert!(!go(&fx.with_rules(&rep1(&r, "\"ruleset_version\":1", "\"ruleset_version\":2"))).valid());
+    assert!(!go(&fx.with_events(&rep1(&t, "\"ruleset_version\":1", "\"ruleset_version\":9"))).valid());
     // tier_index is read, range-checked as a u8 and then never used; tier_sizes is never read (the committed vectors even have
     // tier_index 8 with a one-entry tier_sizes)
     assert!(go(&fx.with_events(&rep1(&t, "\"tier_index\":8", "\"tier_index\":200"))).valid());

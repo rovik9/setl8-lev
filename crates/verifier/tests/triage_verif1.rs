@@ -384,29 +384,32 @@ fn v08_a_valid_verdict_without_a_chain_anchor_must_say_so() {
 // ------------------------------------------------------------------------------------------------ V-09
 
 fn with_rules(b: &Bundle, from: &str, to: &str) -> setl8_verify::Report {
+    try_with_rules(b, from, to).expect("inputs parse")
+}
+
+fn try_with_rules(b: &Bundle, from: &str, to: &str) -> Result<setl8_verify::Report, setl8_verify::InputError> {
     let mut f = b.files();
     f.snapshot = None;
     let text = String::from_utf8(f.rules.clone()).unwrap();
     assert!(text.contains(from), "{text}");
     f.rules = text.replace(from, to).into_bytes();
-    setl8_verify::verify_account(&f.inputs()).expect("inputs parse")
+    setl8_verify::verify_account(&f.inputs())
 }
 
 #[test]
-fn v09_control_today_a_rules_file_of_another_version_or_tier_is_valid() {
+fn v09_control_today_a_rules_file_of_another_tier_is_valid() {
     let b = honest_long();
-    let r = with_rules(&b, "\"ruleset_version\":1", "\"ruleset_version\":9");
-    assert_eq!((r.classes(), r.verdict), (vec![], Verdict::Valid), "{:#?}", r.findings);
     let r = with_rules(&b, "\"tier_sizes\":[100000000000]", "\"tier_sizes\":[5000000000]");
     assert_eq!((r.classes(), r.verdict), (vec![], Verdict::Valid), "{:#?}", r.findings);
 }
 
 // FINDING V-09
 #[test]
-#[ignore = "FINDING V-09: the rules file's ruleset_version is never compared with opened.ruleset_version"]
 fn v09_the_rules_version_must_match_the_account() {
-    let r = with_rules(&honest_long(), "\"ruleset_version\":1", "\"ruleset_version\":9");
-    assert_eq!(r.verdict, Verdict::Mismatch, "the account was bought under rule set 1, the file is rule set 9: {:#?}", r.findings);
+    // FIXED (verify.rs): the rules file's ruleset_version must equal opened.ruleset_version; it is an input error (exit code 2)
+    let r = try_with_rules(&honest_long(), "\"ruleset_version\":1", "\"ruleset_version\":9");
+    let e = r.expect_err("the account was bought under rule set 1, the file is rule set 9");
+    assert!(e.to_string().contains("rule set"), "{e}");
 }
 
 // FINDING V-09

@@ -72,6 +72,11 @@ pub fn parse_inputs(inputs: &Inputs) -> Result<Parsed, InputError> {
     if i64::try_from(opened.size_s).is_err() {
         return Err(InputError("opened.size_s does not fit i64".into()));
     }
+    // the rules file must be the rule set the account was opened under (M12 finding VRF-3): a file of another version would be
+    // replayed without a word
+    if opened.ruleset_version != rules.ruleset_version {
+        return Err(InputError(format!("the account was opened under rule set {} but the rules file is rule set {}", opened.ruleset_version, rules.ruleset_version)));
+    }
     Ok(Parsed { lines, rules, archive, second, intents, snapshot, opened })
 }
 
