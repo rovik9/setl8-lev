@@ -125,9 +125,8 @@ fn push_meta(b: &mut Bundle, time: i64) {
     b.lines.push(GLine::Event { seq, ev: E::Meta { time, flat: false, samples_hash: [0; 32], intents_hash: [0; 32], engine_version: 1 }, proof: None });
 }
 
-// FINDING V-12
+// FINDING V-12 (FIXED in crates/verifier/src/replay.rs before_event; this test hung before the fix)
 #[test]
-#[ignore = "FINDING V-12: two events at time i64::MAX with an open position loop forever in Replay::before_event (next_rollover_after saturates)"]
 fn v_12_the_replay_terminates_on_events_at_i64_max() {
     let mut b = open_position_bundle();
     assert_eq!(verify_no_snapshot(&b).verdict, Verdict::Valid, "baseline");

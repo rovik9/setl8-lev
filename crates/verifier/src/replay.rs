@@ -389,9 +389,15 @@ impl<'a> Replay<'a> {
                 }
             } else {
                 let mut r = next_rollover_after(cursor);
-                while r <= time && !self.positions.is_empty() {
+                // `r > cursor` is the progress test: near i64::MAX `next_rollover_after` saturates and would return the same
+                // instant for ever (M12 finding V-12)
+                while r > cursor && r <= time && !self.positions.is_empty() {
                     self.holding_expectations(ctx, r);
-                    r = next_rollover_after(r);
+                    let next = next_rollover_after(r);
+                    if next <= r {
+                        break;
+                    }
+                    r = next;
                 }
             }
         }
