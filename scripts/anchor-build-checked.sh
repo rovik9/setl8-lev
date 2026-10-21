@@ -14,12 +14,21 @@ cd "$(dirname "$0")/.."
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 
-# --locked: the build must use Cargo.lock exactly (audit F-39). Extra cargo arguments of the caller come after the one `--`.
-anchor build "$@" -- --locked 2>&1 | tee "$log"
+# --locked (audit F-39): the build must use Cargo.lock exactly. `anchor build` cannot pass `--locked` (it forwards its cargo arguments to
+# `cargo build-sbf` AND to the IDL step `cargo test`, and one of them rejects the flag), so the lock file is checked before and after:
+# `cargo metadata --locked` fails if Cargo.lock needs an update, and the file must be byte-identical after the build.
+cargo metadata --locked --offline --format-version 1 >/dev/null || { echo "Cargo.lock is out of date (cargo metadata --locked failed)" >&2; exit 1; }
+lock_before="$(shasum -a 256 Cargo.lock | cut -d' ' -f1)"
+anchor build "$@" 2>&1 | tee "$log"
 status="${PIPESTATUS[0]}"
 if [ "$status" -ne 0 ]; then
   echo "anchor build failed (exit $status)" >&2
   exit "$status"
+fi
+
+if [ "$(shasum -a 256 Cargo.lock | cut -d' ' -f1)" != "$lock_before" ]; then
+  echo "ERROR: the build changed Cargo.lock (it must build with the lock file as committed)" >&2
+  exit 1
 fi
 
 if grep -qE 'overflows the maximum allowed frame|Stack offset' "$log"; then

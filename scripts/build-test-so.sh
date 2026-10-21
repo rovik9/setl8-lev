@@ -13,7 +13,7 @@ log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 
 mkdir -p "$out"
-(cd programs/setl8-lev-trading && cargo build-sbf --locked --features localnet --sbf-out-dir "../../$out") 2>&1 | tee "$log"
+(cd programs/setl8-lev-trading && cargo build-sbf --features localnet --sbf-out-dir "../../$out" -- --locked) 2>&1 | tee "$log"
 status="${PIPESTATUS[0]}"
 if [ "$status" -ne 0 ]; then
   echo "localnet build failed (exit $status)" >&2
