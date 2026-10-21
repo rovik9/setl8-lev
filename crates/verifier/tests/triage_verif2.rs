@@ -82,9 +82,8 @@ fn pending_pass_bundle() -> Bundle {
     b
 }
 
-// FINDING V-11
+// FINDING V-11 (FIXED in crates/verifier/src/cli.rs: try_newest_pending_pass; this test failed before the fix)
 #[test]
-#[ignore = "FINDING V-11: watch prints NO_PENDING_PASS and exits 0 when the events file does not parse (garbage line, bad UTF-8)"]
 fn v_11_watch_exits_2_when_the_events_file_does_not_parse() {
     let b = pending_pass_bundle();
     let f = b.files();

@@ -124,10 +124,11 @@ fn exit_code(r: &Report) -> i32 {
 }
 
 /// The chain sequence of the newest pass that is still pending (requested or confirmed, not yet rejected, vetoed,
-/// finalized or ended by a fail), if any.
-pub fn newest_pending_pass(events: &[u8]) -> Option<u64> {
-    let text = std::str::from_utf8(events).ok()?;
-    let lines = crate::log::parse(text).ok()?;
+/// finalized or ended by a fail), if any. `Err` when the events file does not parse: an unreadable feed is not "no pending
+/// pass" (M12 finding V-11).
+pub fn try_newest_pending_pass(events: &[u8]) -> Result<Option<u64>, String> {
+    let text = std::str::from_utf8(events).map_err(|e| format!("events: not UTF-8 ({e})"))?;
+    let lines = crate::log::parse(text).map_err(|e| format!("events: {e}"))?;
     let mut pending = None;
     for l in &lines {
         match &l.line {
@@ -136,13 +137,25 @@ pub fn newest_pending_pass(events: &[u8]) -> Option<u64> {
             _ => {}
         }
     }
-    pending
+    Ok(pending)
+}
+
+/// `try_newest_pending_pass` for callers that treat an unreadable file as "none" (kept for the library API).
+pub fn newest_pending_pass(events: &[u8]) -> Option<u64> {
+    try_newest_pending_pass(events).ok().flatten()
 }
 
 fn watch(inputs: &mut Inputs, out: &mut String) -> i32 {
-    let Some(seq) = newest_pending_pass(inputs.events) else {
-        out.push_str("NO_PENDING_PASS\n");
-        return EXIT_VALID;
+    let seq = match try_newest_pending_pass(inputs.events) {
+        Ok(Some(seq)) => seq,
+        Ok(None) => {
+            out.push_str("NO_PENDING_PASS\n");
+            return EXIT_VALID;
+        }
+        Err(e) => {
+            out.push_str(&format!("error: {e}\n"));
+            return EXIT_INPUT;
+        }
     };
     inputs.as_of_seq = Some(seq);
     inputs.snapshot = None;
