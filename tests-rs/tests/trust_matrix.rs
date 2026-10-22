@@ -293,6 +293,21 @@ fn sc_overshoot() -> ::evaluator::testkit::PathSpec {
     base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 60, vec![(0, 10_080)])], 20, 2, s.steps)
 }
 
+/// F-16 (decision 69). Two long 1 M EUR positions (markets 0 and 1), each +5,603 raw in 30 s, so each quick credit alone is over 0.028 S:
+/// the trader closes market 0, which takes the quick tally over the limit; market 1 is closed with it, as `Close{Fail}`, then `Fail`.
+fn sc_two_quick() -> ::evaluator::testkit::PathSpec {
+    let mut s = Script::new();
+    s.s(0, T_1400, p4(10_000)).s(1, T_1400 + 1, p4(10_000));
+    s.o(market_order(0, true, MEUR, T_1400 + 1));
+    s.o(market_order(1, true, MEUR, T_1400 + 1));
+    s.post(T_1400 + 2);
+    s.s(0, T_1400 + 30, 1_005_603_000_000).s(1, T_1400 + 31, 1_005_603_000_000);
+    s.o(close_order(0, T_1400 + 31));
+    s.s(0, T_1400 + 40, 1_005_603_000_000).s(1, T_1400 + 41, 1_005_603_000_000);
+    s.end(T_1400 + 45);
+    base_spec(vec![eur_spec(0, "EURUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)]), eur_spec(1, "GBPUSD", TEST_HALF_SPREAD_E6, 900, vec![(0, 10_080)])], 20, 2, s.steps)
+}
+
 /// D2. A long 400,000 EUR, +0.20% in 20 s (credit 400, no overshoot, no tight mode), then a market sell of 1.2 M: a flip, `Close(Flip)`
 /// and a `Fill` of the remaining 800,000.
 fn sc_flip() -> ::evaluator::testkit::PathSpec {
@@ -1735,6 +1750,20 @@ fn rows() -> Vec<Row> {
             verifier: &[F::FeeMismatch],
         },
         Row {
+            name: "forced close after the quick-limit overshoot relabelled as the trader's own close (reason Manual)",
+            sc: sc_two_quick,
+            tamper: |t| {
+                let at = t.find(|e| matches!(e, JournalEvent::Close { reason: ::journal_types::CloseReason::Fail, .. }));
+                if let JournalEvent::Close { reason, .. } = t.ev(at) {
+                    *reason = ::journal_types::CloseReason::Manual;
+                }
+                t.fix();
+            },
+            who: Both,
+            program: Some(Setl8Error::QuickLimitExceeded),
+            verifier: &[F::ForgedTrade],
+        },
+        Row {
             name: "flip that drops its opening remainder although its closing slice did not overshoot",
             sc: sc_flip,
             tamper: |t| {
@@ -2172,6 +2201,7 @@ row_tests! {
     row_057_close_under_the_nonce_of_a_pending_order_that_no_sample => "Close under the nonce of a pending order that no sample triggers",
     row_058_close_under_the_nonce_of_a_set_sl_tp => "Close under the nonce of a set_sl_tp",
     row_059_commission_fee_posted_after_the_slice_that_overshoots => "commission fee posted after the slice that overshoots the quick limit",
+    row_073_forced_close_after_the_quick_limit_overshoot_relabelled_as_manual => "forced close after the quick-limit overshoot relabelled as the trader's own close (reason Manual)",
     row_060_flip_that_drops_its_opening_remainder_although_its => "flip that drops its opening remainder although its closing slice did not overshoot",
     row_061_pending_order_the_account_could_not_margin_is_filled => "pending order the account could not margin is filled anyway",
     row_062_breach_posted_where_its_closes_end_at_or_below_the => "breach posted where its closes end at or below the static floor",
@@ -2371,7 +2401,7 @@ fn every_row_has_exactly_one_named_test() {
     let all = rows();
     let chain = chain_rows();
     // the numbers the document states
-    assert_eq!(all.len(), 72, "72 batch/log rows");
+    assert_eq!(all.len(), 73, "73 batch/log rows");
     assert_eq!(chain.len(), 4, "4 chain rows");
     assert_eq!(ROW_TESTS.len(), all.len(), "the number of per-row tests differs from rows().len()");
     assert_eq!(CHAIN_ROW_TESTS.len(), chain.len(), "the number of per-chain-row tests differs from chain_rows().len()");
@@ -2396,7 +2426,7 @@ fn every_row_has_exactly_one_named_test() {
 }
 
 /// The document and the table in this file say the same thing: same names, same WHO, same program error (name and code), same verifier
-/// finding classes, for the 72 batch/log rows and the 4 chain rows; and the 11 Reset rows are the ones listed in `RESET_ROWS`.
+/// finding classes, for the 73 batch/log rows and the 4 chain rows; and the 11 Reset rows are the ones listed in `RESET_ROWS`.
 #[test]
 fn trust_matrix_document_matches_rows() {
     let doc = trust_doc();
