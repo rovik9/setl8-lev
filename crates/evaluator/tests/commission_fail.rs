@@ -46,10 +46,10 @@ fn three_closes_with_their_fees_fail_the_account_at_the_static_floor() {
             assert_eq!((evs.iter().filter(|e| matches!(e, JournalEvent::Close { .. })).count(), evs.iter().filter(|e| matches!(e, JournalEvent::Fee { .. })).count()), (3, 3), "seed {seed}");
             assert_eq!(failing[0].batch.proofs.len(), 3, "seed {seed}");
         }
-        // the slide is a slide, not a blow-up: every close is within 30% of its entry
+        // the slide is a slide, not a blow-up: every close is within 5% of its entry (the loss is shared by three positions)
         for e in &all {
             if let JournalEvent::Close { entry_e12, exit_e12, .. } = e {
-                assert!(*exit_e12 < *entry_e12 && *exit_e12 * 10 > *entry_e12 * 7, "seed {seed}: entry {entry_e12} exit {exit_e12}");
+                assert!(*exit_e12 < *entry_e12 && *exit_e12 * 100 > *entry_e12 * 95, "seed {seed}: entry {entry_e12} exit {exit_e12}");
             }
         }
         // the compute contract: the limit covers the measured shape, the transaction fits a packet
@@ -63,7 +63,7 @@ fn three_closes_with_their_fees_fail_the_account_at_the_static_floor() {
 
 #[test]
 fn the_story_has_its_slice_of_the_seeds_and_the_other_stories_keep_theirs() {
-    // the scenario mix is part of the campaigns' coverage floors: 4% commission stories, 12% nights, 5% static-floor stories, 6% quick-limit
+    // the scenario mix is part of the campaigns' coverage floors: 4% commission stories, 12% nights, 5% pass stories, 2% multi-quick
     // stories drawn from the first 5,000 seeds (a window of 1,000 would be too noisy)
     let n = 5_000u64;
     let count = |s: Scenario| (1..=n).filter(|x| generate(*x).scenario == s).count();
