@@ -13,4 +13,5 @@ fn error_code_anchors_match_design_section_12() {
     assert_eq!(u32::from(Setl8Error::AccountAlreadyReset), 6107);
     assert_eq!(u32::from(Setl8Error::ViolationNoReset), 6108);
     assert_eq!(u32::from(Setl8Error::MarketUnpriced), 6109);
+    assert_eq!(u32::from(Setl8Error::ReviewPending), 6110);
 }

@@ -229,6 +229,8 @@ pub enum Setl8Error {
     ViolationNoReset,
     #[msg("the market has no half-spread in the account's rule set: an exposure-increasing fill is refused")]
     MarketUnpriced,
+    #[msg("the account failed while held: both admins must release the hold or fail it for a violation first")]
+    ReviewPending,
 }
 
 #[cfg(test)]
@@ -312,5 +314,6 @@ mod tests {
         assert_eq!(u32::from(Setl8Error::AccountAlreadyReset), 6107);
         assert_eq!(u32::from(Setl8Error::ViolationNoReset), 6108);
         assert_eq!(u32::from(Setl8Error::MarketUnpriced), 6109);
+        assert_eq!(u32::from(Setl8Error::ReviewPending), 6110);
     }
 }

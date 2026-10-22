@@ -59,6 +59,7 @@ Events: `EventLog { account, seq, event_bytes, proof_bytes }` per journal event 
 | 6082 | MetaTwice | I-12 |
 | 6083 | EngineVersionMismatch | I-12 |
 | 6109 | MarketUnpriced | I-1 / decision 64 (P21): an exposure-increasing `Fill` in a market whose `spread_e6` in the account's rule set is 0 |
+| 6110 | ReviewPending | P25c (decision 67 amendment): `reset_account` / `close_account` on a Failed account whose hold is still set |
 
 Older codes reused where they were already exactly the reason: `Unauthorized` (I-1 signer), `AccountNotActive`, `PassPending` (pass_pending == 2), `AccountHeld`, `AccountLocked` (I-10), `BadSequence` (I-2 `first_seq`), `TimeBackwards`, `TimeInFuture` (I-3), `MarketUnknown`, `PnlMismatch`, `QuickMismatch` (I-5), `FeeInvalid` (I-6), `QuickLimitExceeded` (I-8), `BatchTooLarge` (limits), `MathOverflow`.
 

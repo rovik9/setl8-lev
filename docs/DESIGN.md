@@ -801,6 +801,7 @@ Every instruction is below the default 200,000 units, so no compute-budget instr
 | 6107 | `AccountAlreadyReset` | `reset_account`: the previous account was already reset (`ResetNotAllowed` 6027 stays the error for an account that is not Failed) |
 | 6108 | `ViolationNoReset` | `reset_account`: the previous account was failed by `fail_for_violation` (DESIGN 2.9: no reset), checked before any CPI |
 | 6109 | `MarketUnpriced` | `post_journal` / `report_fail`: an exposure-increasing `Fill` in a market whose half-spread in the account's rule set is 0 (decision 64; a `Close` is never refused by it) |
+| 6110 | `ReviewPending` | `reset_account` or `close_account` on an account that failed while held and whose hold is still set (decision 67 amendment, audit F-32): both admins must `release_hold` or `fail_for_violation` first |
 
 ---
 
