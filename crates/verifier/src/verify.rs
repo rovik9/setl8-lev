@@ -119,6 +119,7 @@ pub fn run(p: &Parsed, as_of: Option<u64>) -> Report {
             "genesis hash is not sha256(\"SL8LEV\" || account)",
         );
     }
+    rp.check_archive();
     rp.check_intents(&p.opened.trader);
     rp.init_walk();
     drive(&mut rp, &p.lines, as_of);
@@ -140,7 +141,7 @@ pub fn run(p: &Parsed, as_of: Option<u64>) -> Report {
 pub const ARCHIVE_TOLERANCE_E12: u64 = 0;
 
 /// The classes the second recorder can add: what the walk finds on the second archive.
-const WALK_CLASSES: [FindingClass; 13] = [
+const WALK_CLASSES: [FindingClass; 14] = [
     FindingClass::MissedBreach,
     FindingClass::MissedFail,
     FindingClass::FalseBreach,
@@ -154,6 +155,7 @@ const WALK_CLASSES: [FindingClass; 13] = [
     FindingClass::PendingFillWithoutMargin,
     FindingClass::FillWithoutMargin,
     FindingClass::FillNotAllowed,
+    FindingClass::ArchiveRecordInvalid,
 ];
 
 /// DESIGN 4.5 / 13.2 "dropped sample": replays the walk on the second archive and reports (a) the samples the two archives
@@ -182,6 +184,7 @@ fn second_recorder(p: &Parsed, b: &Archive, as_of: Option<u64>) -> Vec<Finding> 
     }
     out.extend(dis.list);
     let Some(mut rp) = Replay::new(&p.rules, b, &p.intents, p.opened.clone(), "second", Default::default(), Default::default()) else { return out };
+    rp.check_archive();
     rp.check_intents(&p.opened.trader);
     rp.init_walk();
     drive(&mut rp, &p.lines, as_of);

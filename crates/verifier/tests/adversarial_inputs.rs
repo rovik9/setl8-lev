@@ -674,7 +674,7 @@ fn blocked_archive_file_structure() {
         ("a record with flags = 1".into(), with_archive(flags), Want::Input("bad archive record")),
         ("one trailing byte".into(), with_archive([a.clone(), vec![0]].concat()), Want::Input("archive truncated")),
         ("a trailing 67 bytes".into(), with_archive([a.clone(), vec![0; 67]].concat()), Want::Input("archive truncated")),
-        ("a trailing all-zero record (flags 0, market 0, value 0)".into(), with_archive([a.clone(), vec![0; 68]].concat()), Want::ValidBecause(UNCOMMITTED_TAIL)),
+        ("a trailing all-zero record (flags 0, market 0, value 0)".into(), with_archive([a.clone(), vec![0; 68]].concat()), Want::Has(C::ArchiveRecordInvalid)),
         ("a trailing header (empty extra segment)".into(), with_archive([a.clone(), a[..16].to_vec()].concat()), Want::ValidBecause("an empty segment adds no records; the logical stream (what the hashes cover) is unchanged")),
         ("a header between every record (segments of one record)".into(), with_archive({
             let mut o = a[..16].to_vec();
@@ -684,7 +684,7 @@ fn blocked_archive_file_structure() {
             }
             o
         }), Want::ValidBecause("segment headers are excluded from the logical stream by design (archive.rs)")),
-        ("the whole archive twice (second copy as new segment)".into(), with_archive([a.clone(), a.clone()].concat()), Want::ValidBecause(UNCOMMITTED_TAIL)),
+        ("the whole archive twice (second copy as new segment)".into(), with_archive([a.clone(), a.clone()].concat()), Want::Has(C::ArchiveRecordInvalid)),
         ("2 MB of 0xff".into(), with_archive(vec![0xff; 2 << 20]), Want::Input("does not start")),
         ("magic then 2 MB of zeros".into(), with_archive([a[..16].to_vec(), vec![0; 2 << 20]].concat()), Want::NotValid),
     ];
@@ -712,7 +712,7 @@ fn blocked_archive_samples_duplicated_unsorted_negative_with_consistent_hashes()
     let cases: Vec<(String, Fx, Want)> = vec![
         ("control: refreshed commitments, nothing changed".into(), with_samples(&b, |_| {}), Want::ValidBecause("the generator's own output")),
         ("every sample duplicated in place".into(), with_samples(&b, |s| *s = s.iter().flat_map(|x| [*x, *x]).collect()), Want::NotValid),
-        ("the first sample duplicated at the end".into(), with_samples(&b, |s| s.push(s[0])), Want::ValidBecause(UNCOMMITTED_TAIL)),
+        ("the first sample duplicated at the end".into(), with_samples(&b, |s| s.push(s[0])), Want::Has(C::ArchiveRecordInvalid)),
         ("samples in reverse order".into(), with_samples(&b, |s| s.reverse()), Want::NotValid),
         ("samples swapped (unsorted)".into(), with_samples(&b, |s| s.swap(0, 1)), Want::NotValid),
         ("one sample removed".into(), with_samples(&b, |s| { s.remove(0); }), Want::NotValid),
@@ -731,7 +731,7 @@ fn blocked_archive_samples_duplicated_unsorted_negative_with_consistent_hashes()
         ("market 65535 (no such market)".into(), with_samples(&b, |s| s[0].market = 65535), Want::NotValid),
         ("source 9".into(), with_samples(&b, |s| s[0].source = 9), Want::NotValid),
         ("a blob digest on a source-2 sample".into(), with_samples(&b, |s| s[0].digest = [7; 32]), Want::ValidBecause("the digest is compared only for source 3 (replay.rs:340); a stray digest on another source is not read")),
-        ("a sample of a market the account never traded".into(), with_samples(&b, |s| { let mut x = s[0]; x.market = 7; s.push(x) }), Want::ValidBecause("an extra sample of an unlisted market is outside every proof and every walk; the commitments cover it (refreshed here) and nothing refers to it")),
+        ("a sample of a market the account never traded".into(), with_samples(&b, |s| { let mut x = s[0]; x.market = 7; s.push(x) }), Want::Has(C::ArchiveRecordInvalid)), // P25b: a copy of the FIRST record's second at the end is out of the stream's order
     ];
     table(cases);
 }

@@ -50,10 +50,12 @@ pub enum FindingClass {
     // ---- M9c
     FillWithoutMargin,
     FillNotAllowed,
+    // ---- P25b (decision 68), appended so the earlier classes keep their order
+    ArchiveRecordInvalid,
 }
 
 impl FindingClass {
-    pub const ALL: [FindingClass; 42] = [
+    pub const ALL: [FindingClass; 43] = [
         FindingClass::HashChain,
         FindingClass::SequenceGap,
         FindingClass::BadGenesis,
@@ -96,6 +98,7 @@ impl FindingClass {
         FindingClass::PendingFillWithoutMargin,
         FindingClass::FillWithoutMargin,
         FindingClass::FillNotAllowed,
+        FindingClass::ArchiveRecordInvalid,
     ];
 
     pub fn name(self) -> &'static str {
@@ -142,6 +145,7 @@ impl FindingClass {
             FindingClass::PendingFillWithoutMargin => "PendingFillWithoutMargin",
             FindingClass::FillWithoutMargin => "FillWithoutMargin",
             FindingClass::FillNotAllowed => "FillNotAllowed",
+            FindingClass::ArchiveRecordInvalid => "ArchiveRecordInvalid",
         }
     }
 }

@@ -242,6 +242,17 @@ impl<'a> Replay<'a> {
         self.positions.is_empty()
     }
 
+    /// D-F10/F11: every archive record the verifier will not use (a value that is not a positive price, a record out of the stream's
+    /// order) is a finding of its own; it is skipped everywhere else, so it cannot hide anything behind it.
+    pub fn check_archive(&mut self) {
+        let ctx = Ctx { seq: None, idx: None, time: self.opened.time };
+        let bad = self.arch.bad.clone();
+        for (i, why) in bad {
+            let (market, ts) = self.arch.samples.get(i).map(|s| (s.market, s.ts_sec())).unwrap_or((0, 0));
+            self.f.add(FindingClass::ArchiveRecordInvalid, ctx, "a record in the stream's order with a positive price", format!("record {i} (market {market}, second {ts})"), format!("archive record {i} is skipped: {why}"));
+        }
+    }
+
     /// Validates the signatures and decoding of every intent line that the committed prefixes cover (all lines when no
     /// `Meta` commits a prefix).
     pub fn check_intents(&mut self, trader: &[u8; 32]) {

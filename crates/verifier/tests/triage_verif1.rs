@@ -4,7 +4,7 @@
 mod common;
 use common::*;
 use journal_types::{CloseReason, JournalEvent as E};
-use setl8_verify::archive::{Sample, RECORD_LEN};
+use setl8_verify::archive::Sample;
 use setl8_verify::FindingClass as C;
 use setl8_verify::Verdict;
 
@@ -59,7 +59,6 @@ fn v01_control_the_omitted_breach_is_a_missed_breach_with_a_clean_archive() {
 
 // FINDING V-01
 #[test]
-#[ignore = "FINDING V-01: one record far in the future at stream index 0 stops the archive walk; the omitted breach is called VALID (module-9 decision 7 says order must be non-decreasing, nothing checks it)"]
 fn v01_an_out_of_order_poison_record_must_not_hide_an_omitted_breach() {
     let mut b = omitted_breach();
     // a well-framed record of an unknown market, dated year 2096, as the very first record of the stream
@@ -70,20 +69,10 @@ fn v01_an_out_of_order_poison_record_must_not_hide_an_omitted_breach() {
     b.refresh_commitments();
     let r = verify_no_snapshot(&b);
     assert_eq!(r.verdict, Verdict::Mismatch, "an archive whose records are not in non-decreasing second order, or the omitted breach behind it, must be a finding: {:#?}", r.findings);
-}
-
-#[test]
-fn v01_control_the_poison_record_is_framing_valid_and_today_the_verdict_is_valid() {
-    // pins the claim: if this starts to fail, V-01 was fixed (then delete this control and un-ignore the test above)
-    let mut b = omitted_breach();
-    b.samples.insert(0, raw_record(7, 4_000_000_000_000_000_000, 1_080_000_000_000_000_000));
-    for m in &mut b.metas {
-        m.n_samples += 1;
-    }
-    b.refresh_commitments();
-    assert_eq!(b.stream().len() % RECORD_LEN, 0);
-    let r = verify_no_snapshot(&b);
-    assert_eq!((r.classes(), r.verdict), (vec![], Verdict::Valid), "{:#?}", r.findings);
+    // P25b D-F10: the poison record is a finding of its own AND the walk still finds the omitted breach behind it
+    assert!(r.classes().contains(&C::ArchiveRecordInvalid), "{:#?}", r.findings);
+    assert!(r.classes().contains(&C::MissedTightStart), "{:#?}", r.findings);
+    assert_eq!(r.findings.iter().filter(|f| f.class == C::ArchiveRecordInvalid).count(), 1, "only the poison record, not the honest ones behind it");
 }
 
 // ------------------------------------------------------------------------------------------------ V-02
@@ -135,18 +124,13 @@ fn with_zero_gbp_record(mut b: Bundle) -> Bundle {
 
 // FINDING V-02
 #[test]
-#[ignore = "FINDING V-02: a value-0 record of another market, after its last real sample, makes marks_and_profit return None and the walk skips every later sample; the omitted breach is VALID"]
 fn v02_a_zero_value_record_must_not_suspend_the_walk_for_all_markets() {
     let b = with_zero_gbp_record(two_markets_omitted_breach());
     let r = verify_no_snapshot(&b);
     assert_eq!(r.verdict, Verdict::Mismatch, "a non-positive archive value (the evaluator itself rejects it as BadValue) must be a finding, or the omitted breach must still be found: {:#?}", r.findings);
-}
-
-#[test]
-fn v02_control_today_the_zero_value_record_gives_valid() {
-    let b = with_zero_gbp_record(two_markets_omitted_breach());
-    let r = verify_no_snapshot(&b);
-    assert_eq!((r.classes(), r.verdict), (vec![], Verdict::Valid), "{:#?}", r.findings);
+    // P25b D-F11: the record is reported and skipped; the walk of the OTHER markets goes on and finds the omitted breach
+    assert!(r.classes().contains(&C::ArchiveRecordInvalid), "{:#?}", r.findings);
+    assert!(r.classes().contains(&C::MissedTightStart), "{:#?}", r.findings);
 }
 
 // ------------------------------------------------------------------------------------------------ V-03 (a): protective exit

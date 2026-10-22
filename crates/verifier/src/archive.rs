@@ -138,9 +138,49 @@ pub struct Archive {
     pub samples: Vec<Sample>,
     /// The logical stream: the record bytes concatenated, headers removed (what `samples_hash` hashes).
     pub stream: Vec<u8>,
-    /// Sample indexes per market, in stream order.
+    /// Sample indexes per market, in stream order, of the VALID records only (`bad` ones are left out).
     pub by_market: BTreeMap<u16, Vec<usize>>,
     index: HashMap<(u16, u64, i128), usize>,
+    /// Records the verifier does not use (P25b, audit F-10/F-11): `(stream index, why)`, ascending. A poison record is reported as
+    /// a finding and skipped: it never reaches `by_market`, `find` or the walk, so it cannot switch the walk off for the others.
+    pub bad: Vec<(usize, String)>,
+    bad_set: HashSet<usize>,
+}
+
+/// Longest non-decreasing subsequence of `seconds` (indexes into it), O(n log n). Where several longest runs exist (one record
+/// out of place that could be blamed either way, a whole copy of the archive appended again) the run that keeps the EARLIEST
+/// records wins: the commitments (`Meta.samples_hash`) cover a prefix of the stream, so the front of the stream is the evidence.
+fn longest_nondecreasing(seconds: &[i64]) -> Vec<usize> {
+    // start_len[i] = length of the longest non-decreasing run that STARTS at i (patience sorting over the reversed, negated sequence)
+    let n = seconds.len();
+    let mut start_len = vec![0usize; n];
+    let mut tails: Vec<i64> = Vec::new(); // smallest tail (of the negated values) per run length
+    for i in (0..n).rev() {
+        let x = seconds.get(i).copied().unwrap_or(0).saturating_neg();
+        let pos = tails.partition_point(|&t| t <= x);
+        if pos == tails.len() {
+            tails.push(x);
+        } else if let Some(slot) = tails.get_mut(pos) {
+            *slot = x;
+        }
+        if let Some(l) = start_len.get_mut(i) {
+            *l = pos + 1;
+        }
+    }
+    let best = start_len.iter().copied().max().unwrap_or(0);
+    let mut out = Vec::with_capacity(best);
+    let (mut need, mut last) = (best, i64::MIN);
+    for (j, &v) in seconds.iter().enumerate() {
+        if need == 0 {
+            break;
+        }
+        if v >= last && start_len.get(j).copied() == Some(need) {
+            out.push(j);
+            need -= 1;
+            last = v;
+        }
+    }
+    out
 }
 
 impl Archive {
@@ -170,13 +210,57 @@ impl Archive {
             stream.extend_from_slice(rec);
             pos += RECORD_LEN;
         }
+        let bad = Self::validate(&samples);
+        let bad_set: HashSet<usize> = bad.iter().map(|(i, _)| *i).collect();
         let mut by_market: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
         let mut index = HashMap::new();
         for (i, s) in samples.iter().enumerate() {
+            if bad_set.contains(&i) {
+                continue;
+            }
             by_market.entry(s.market).or_default().push(i);
             index.entry((s.market, s.ts_ns, s.value)).or_insert(i);
         }
-        Ok(Archive { samples, stream, by_market, index })
+        Ok(Archive { samples, stream, by_market, index, bad, bad_set })
+    }
+
+    /// The records that cannot be used (D-F10/F11): (1) a value that is not a positive price (`price_e12_from_quantized` fails:
+    /// zero, negative, beyond u64); (2) a record out of the stream's order: the stream is in non-decreasing source-SECOND order
+    /// across all markets (module 9, decision 7), so the records outside the longest non-decreasing run are the poison; (3) per
+    /// market the source timestamps do not decrease: a record older than the market's last accepted one.
+    fn validate(samples: &[Sample]) -> Vec<(usize, String)> {
+        let mut bad: Vec<(usize, String)> = Vec::new();
+        let mut ok_idx: Vec<usize> = Vec::new();
+        for (i, s) in samples.iter().enumerate() {
+            if journal_types::price_e12_from_quantized(s.value).is_err() {
+                bad.push((i, format!("value {} is not a positive price", s.value)));
+            } else {
+                ok_idx.push(i);
+            }
+        }
+        let secs: Vec<i64> = ok_idx.iter().filter_map(|&i| samples.get(i).map(Sample::ts_sec)).collect();
+        let keep: HashSet<usize> = longest_nondecreasing(&secs).into_iter().filter_map(|k| ok_idx.get(k).copied()).collect();
+        let mut last_ts: HashMap<u16, u64> = HashMap::new();
+        for &i in &ok_idx {
+            let Some(s) = samples.get(i) else { continue };
+            if !keep.contains(&i) {
+                bad.push((i, format!("second {} is out of the stream's non-decreasing order", s.ts_sec())));
+                continue;
+            }
+            let last = last_ts.entry(s.market).or_insert(0);
+            if s.ts_ns < *last {
+                bad.push((i, format!("market {} timestamp {} ns is older than its previous record ({} ns)", s.market, s.ts_ns, *last)));
+            } else {
+                *last = s.ts_ns;
+            }
+        }
+        bad.sort_by_key(|(i, _)| *i);
+        bad
+    }
+
+    /// Whether record `i` is unusable (see `validate`).
+    pub fn is_bad(&self, i: usize) -> bool {
+        self.bad_set.contains(&i)
     }
 
     /// The first sample of `market` with this source timestamp and value.
@@ -232,7 +316,13 @@ pub fn find_prefixes(stream: &[u8], wanted: &HashSet<[u8; 32]>) -> HashMap<[u8; 
 mod tests {
     use super::*;
 
+    /// A sample; a small positive `v` is a test shorthand for `v` e12 units (value `v x 10^12`), so it is a valid price.
     fn s(market: u16, ts: u64, v: i128) -> Sample {
+        let value = if (1..1_000_000_000).contains(&v) { v * 1_000_000_000_000 } else { v };
+        Sample { market, source: 2, recv_ns: ts + 5, ts_ns: ts, value, digest: [0; 32] }
+    }
+    /// A sample with exactly this raw quantized value.
+    fn raw(market: u16, ts: u64, v: i128) -> Sample {
         Sample { market, source: 2, recv_ns: ts + 5, ts_ns: ts, value: v, digest: [0; 32] }
     }
 
@@ -274,8 +364,8 @@ mod tests {
         assert_eq!(a.samples.len(), 2);
         assert_eq!(a.stream.len(), 2 * RECORD_LEN);
         assert_eq!(a.by_market.get(&0), Some(&vec![0]));
-        assert_eq!(a.find(1, 2_000_000_000, 6), Some(1));
-        assert_eq!(a.find(1, 2_000_000_000, 7), None);
+        assert_eq!(a.find(1, 2_000_000_000, 6_000_000_000_000), Some(1));
+        assert_eq!(a.find(1, 2_000_000_000, 7_000_000_000_000), None);
     }
 
     #[test]
@@ -364,5 +454,78 @@ mod tests {
         assert_eq!(got.get(&at(5)), Some(&5));
         assert_eq!(got.get(&junk), None);
         assert!(find_prefixes(&a.stream, &HashSet::new()).is_empty());
+    }
+
+    // ---- D-F10 / D-F11: the records the verifier skips (hand-written expectations)
+
+    fn parse(list: &[Sample]) -> Archive {
+        let mut w = ArchiveWriter::new();
+        for x in list {
+            w.push(x);
+        }
+        Archive::parse(&w.into_bytes()).unwrap()
+    }
+    const V: i128 = 1_000_000_000_000_000_000;
+    const SEC: u64 = 1_000_000_000;
+
+    fn bad_ids(a: &Archive) -> Vec<usize> {
+        a.bad.iter().map(|(i, _)| *i).collect()
+    }
+
+    #[test]
+    fn an_honest_stream_has_no_bad_record_equal_seconds_included() {
+        let a = parse(&[s(0, SEC, V), s(1, SEC, V), s(0, SEC + 5, V), s(0, SEC + 5, V + 1), s(1, 9 * SEC, V)]);
+        assert!(a.bad.is_empty());
+        assert_eq!(a.by_market[&0], vec![0, 2, 3]);
+        assert!(!a.is_bad(0));
+    }
+
+    #[test]
+    fn a_value_that_is_not_a_positive_price_is_skipped_and_the_others_are_kept() {
+        for v in [0i128, -1, i128::MIN] {
+            let a = parse(&[s(0, SEC, V), raw(1, 2 * SEC, v), s(0, 3 * SEC, V)]);
+            assert_eq!(bad_ids(&a), vec![1], "value {v}");
+            assert!(!a.by_market.contains_key(&1));
+            assert_eq!(a.last_at_or_before(0, 9), Some(2));
+            assert_eq!(a.find(1, 2 * SEC, v), None, "a poison record is not found as a proof either");
+        }
+        // one e12 unit is the smallest positive price: value 10^6 is fine, 10^6 - 1 floors to 0 and is not a price
+        assert!(parse(&[raw(0, SEC, 1_000_000)]).bad.is_empty());
+        assert_eq!(bad_ids(&parse(&[raw(0, SEC, 999_999)])), vec![0]);
+    }
+
+    #[test]
+    fn a_future_record_at_the_start_is_the_poison_not_the_honest_records_behind_it() {
+        let a = parse(&[s(7, 4_000_000_000 * SEC, V), s(0, SEC, V), s(0, 2 * SEC, V), s(0, 3 * SEC, V)]);
+        assert_eq!(bad_ids(&a), vec![0]);
+        assert_eq!(a.last_at_or_before(0, 3), Some(3));
+    }
+
+    #[test]
+    fn a_back_dated_record_in_the_middle_is_the_poison_not_the_records_before_it() {
+        let a = parse(&[s(0, 10 * SEC, V), s(0, 11 * SEC, V), s(1, SEC, V), s(0, 12 * SEC, V), s(0, 13 * SEC, V)]);
+        assert_eq!(bad_ids(&a), vec![2]);
+    }
+
+    #[test]
+    fn a_market_whose_timestamp_goes_backwards_inside_a_second_is_skipped() {
+        // the same second, so the stream order holds, but the market's own timestamp falls by 1 ns
+        let a = parse(&[s(0, 5 * SEC + 500, V), s(0, 5 * SEC + 499, V), s(0, 5 * SEC + 501, V)]);
+        assert_eq!(bad_ids(&a), vec![1]);
+        assert_eq!(a.by_market[&0], vec![0, 2]);
+        // equal timestamps are fine (two recorders of one tick, or a repeated value)
+        assert!(parse(&[s(0, 5 * SEC, V), s(0, 5 * SEC, V)]).bad.is_empty());
+    }
+
+    #[test]
+    fn the_longest_run_decides_and_the_reasons_name_the_record() {
+        let a = parse(&[s(0, 5 * SEC, V), s(0, 9 * SEC, V), s(0, 6 * SEC, V), s(0, 7 * SEC, V)]);
+        assert_eq!(bad_ids(&a), vec![1]);
+        assert!(a.bad[0].1.contains("out of the stream's non-decreasing order"), "{}", a.bad[0].1);
+        assert_eq!(longest_nondecreasing(&[]), Vec::<usize>::new());
+        assert_eq!(longest_nondecreasing(&[3, 1, 2, 2, 5, 4]), vec![1, 2, 3, 4], "the earlier of two equal runs: 5 before 4");
+        // the whole stream twice: the first copy is the evidence, the second is the poison
+        assert_eq!(longest_nondecreasing(&[1, 2, 3, 1, 2, 3]), vec![0, 1, 2, 5]);
+        assert_eq!(longest_nondecreasing(&[2, 2, 2]), vec![0, 1, 2]);
     }
 }

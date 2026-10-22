@@ -216,6 +216,10 @@ impl<'a> Replay<'a> {
         let arch = self.arch;
         let mut cur: Option<i64> = None;
         while let Some(s) = arch.samples.get(w.cursor) {
+            if arch.is_bad(w.cursor) {
+                w.cursor += 1; // a poison record (D-F10/F11) is reported by `check_archive` and skipped
+                continue;
+            }
             if s.ts_sec() > upto {
                 break;
             }
