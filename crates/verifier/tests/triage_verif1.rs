@@ -254,7 +254,6 @@ fn set_intent(b: &mut Bundle, line: usize, nonce: u32) {
 
 // FINDING V-05
 #[test]
-#[ignore = "FINDING V-05: a signed market intent is accepted for a second fill in a later batch (quantity accounting is per batch, no global used-nonce set)"]
 fn v05_a_market_intent_must_not_be_reused_by_a_later_batch() {
     let honest = two_cycles();
     let r = verify_no_snapshot(&honest);
@@ -269,7 +268,6 @@ fn v05_a_market_intent_must_not_be_reused_by_a_later_batch() {
 
 // FINDING V-05
 #[test]
-#[ignore = "FINDING V-05: a Close(qty 0) intent signed once closes any later position in that market, in any later batch"]
 fn v05_a_close_all_intent_must_not_close_a_later_position() {
     let mut b = two_cycles();
     let c = closes(&b);
@@ -277,21 +275,6 @@ fn v05_a_close_all_intent_must_not_close_a_later_position() {
     set_intent(&mut b, c[1], 3); // the second close-all cites the first close-all's intent (nonce 3), signed 120 s earlier
     let r = verify_no_snapshot(&b);
     assert_eq!(r.verdict, Verdict::Mismatch, "close intent 3 reused for a position opened after it: {:#?}", r.findings);
-}
-
-#[test]
-fn v05_control_today_both_reuses_are_valid() {
-    let honest = two_cycles();
-    let mut a = honest.clone();
-    let f = fills(&a);
-    set_intent(&mut a, f[1], 1);
-    let ra = verify_no_snapshot(&a);
-    assert_eq!((ra.classes(), ra.verdict), (vec![], Verdict::Valid), "{:#?}", ra.findings);
-    let mut b = honest;
-    let c = closes(&b);
-    set_intent(&mut b, c[1], 3);
-    let rb = verify_no_snapshot(&b);
-    assert_eq!((rb.classes(), rb.verdict), (vec![], Verdict::Valid), "{:#?}", rb.findings);
 }
 
 // ------------------------------------------------------------------------------------------------ V-08

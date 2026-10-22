@@ -108,6 +108,8 @@ pub struct Replay<'a> {
     /// D-F13: `Close{Fail}` events no floor decision of their second supports (yet): the quick-limit forced closes of the other
     /// positions come BEFORE the overshooting slice and the `Fail{PhaseQuick}`, so they are judged when that `Fail` arrives.
     forced_pending: Vec<(Ctx, u16)>,
+    /// D-F14: the nonces of the intents the trades of EARLIER batches used up (one intent is executed in one batch, once).
+    closed_nonces: HashSet<u32>,
     /// D-F09: the seconds in which a forced close was flagged; a `Fail` of such a second is a `FalseFailMarks`.
     flagged_forced: HashSet<i64>,
 }
@@ -169,6 +171,10 @@ fn opposite(s: Side) -> ESide {
         Side::Short => ESide::Buy,
     }
 }
+
+/// An order that executes at once (market, close) is executed in the second the evaluator received it; the trader's signed `client_time`
+/// is within this many seconds of it (D-F18, mirrored by `evaluator::config::MAX_ORDER_SKEW_SECS`).
+pub const ORDER_WINDOW_SECS: i64 = 5;
 
 /// Longest stretch between two events over which holding-fee nights are checked one by one (about ten years).
 pub const MAX_ROLLOVER_GAP: i64 = 3_660;
@@ -234,6 +240,7 @@ impl<'a> Replay<'a> {
             last_proof_si: None,
             flip_checked: HashSet::new(),
             forced_pending: Vec::new(),
+            closed_nonces: HashSet::new(),
             flagged_forced: HashSet::new(),
             opened,
         })
@@ -549,7 +556,22 @@ impl<'a> Replay<'a> {
             bad(format!("intent {nonce} is for market {}", intent.market), market.to_string(), intent.market.to_string());
             return;
         }
-        if intent.client_time > time {
+        if self.closed_nonces.contains(&nonce) {
+            bad(format!("intent {nonce} was already executed by an earlier batch"), "an intent used once".into(), "a second batch under the same nonce".into());
+            return;
+        }
+        // D-F14/D-F18: an order that executes at once (market, close) is executed in the second the evaluator received it, which is
+        // within ORDER_WINDOW_SECS of the time the trader signed; a pending order (limit, stop) is placed before it fills
+        let immediate = matches!(intent.kind, IntentKind::Market | IntentKind::Close);
+        if immediate && (time < intent.client_time.saturating_sub(ORDER_WINDOW_SECS) || time > intent.client_time.saturating_add(ORDER_WINDOW_SECS)) {
+            bad(
+                format!("intent {nonce} was signed at {} and the trade is at {time}: outside its {ORDER_WINDOW_SECS} s window", intent.client_time),
+                format!("{}..={}", intent.client_time.saturating_sub(ORDER_WINDOW_SECS), intent.client_time.saturating_add(ORDER_WINDOW_SECS)),
+                time.to_string(),
+            );
+            return;
+        }
+        if !immediate && intent.client_time > time {
             bad(format!("intent {nonce} is dated after the trade"), format!("<= {time}"), intent.client_time.to_string());
             return;
         }
@@ -1128,6 +1150,7 @@ impl<'a> Replay<'a> {
                     self.f.add(FindingClass::ForgedTrade, ctx, w.to_string(), got.to_string(), format!("the trades under intent {nonce} do not add up to its quantity"));
                 }
             }
+            self.closed_nonces.insert(*nonce);
         }
         self.in_batch_events = 0;
     }
