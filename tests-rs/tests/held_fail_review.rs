@@ -288,3 +288,17 @@ fn a_failed_held_account_does_not_block_a_new_account_of_the_wallet() {
     assert_eq!(w.wallet_profile().held_count, 1);
     assert_eq!(w.v.account(&first).held, 1);
 }
+
+#[test]
+fn fail_for_violation_accepts_only_active_and_failed_accounts_even_on_an_edited_abandoned_or_graduated_one() {
+    // an Abandoned or Graduated account is never held (`end_account` clears the hold), so this coordinate cannot exist; the status
+    // check still has to hold on edited bytes: the instruction must not turn such an account into a Failed one
+    for status in [c::STATUS_ABANDONED, c::STATUS_GRADUATED] {
+        let (mut w, t) = base();
+        w.ok(|w| w.hold(t, hash(1)));
+        w.edit_account(|a| a.status = status);
+        assert_eq!(w.wallet_profile().held_count, 1);
+        w.fails(E::AccountNotActive, |w| w.violation(t + 5, hash(9)));
+        assert_eq!(w.account().status, status);
+    }
+}
