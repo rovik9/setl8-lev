@@ -1,7 +1,8 @@
 # P25b state (resume file)
 
-Task: handover/prompts/P25b-audit-fixes-evaluator-verifier.md (decision 68). Order: group A verifier F-08..F-14, group B evaluator F-15..F-21, group C the rest.
-Offline: export RUSTUP_TOOLCHAIN=stable.
-* DONE: F-10, F-11 (archive validation, class ArchiveRecordInvalid); F-08, F-09, F-12, F-13 (price rule + forced-close expectations: classes PriceSampleMismatch, ForcedCloseUnjustified, FalseFailMarks; DESIGN 4.5; trust-matrix moved 2 rows: older-sample row NEITHER->VERIFIER, event-dated-30s PROGRAM->BOTH)
-* NEXT: F-14 (intent nonces across the log, close(0) bound), then group B (evaluator): F-15 (same second breach+static fail), F-16 (D-F16: forced-close order; STOP for infeasible class: see notes), F-17, F-18 (+ evaluator order_sample without `arrival` cut, so the price rule is exact), F-21 (marks snapshot at the breach sample), then group C (F-19 F-20 F-24 F-22 F-23 F-26 F-35 F-36 F-37), mutation, gates, docs
-* NOTES: F-16 STOP evidence: E-03 scenario (3 x 0.5M EUR + 1M, +0.6%) cannot be ordered so the overshoot is last (sum of two smallest credits > limit); no sequence is postable by the program (Post refuses overshoot, report_fail allows one overshooting close then only Fail, and Fail needs Meta.flat). Needs a program/DESIGN change.
+Task: handover/prompts/P25b-audit-fixes-evaluator-verifier.md (decision 68). Offline: export RUSTUP_TOOLCHAIN=stable.
+* DONE group A (verifier): F-10 F-11 (archive validation), F-08 F-09 F-12 F-13 (price rule, forced-close expectations), F-14 (nonces across the log, 5 s window)
+* DONE group B (evaluator): F-15 (static fail wins over a breach in one second, both components), F-17 (hostile samples refused + counted), F-18 (order time = evaluator's own second; clock never moved by orders; order_sample without the arrival cut), F-21 (marks snapshot at the decision sample)
+* F-16: STOP for the infeasible class (evidence in the ignore messages of arith_03 / e_03 and the notes below); the feasible part is pinned by p25b_inputs.rs; Stats::unpostable asserted 0 over the campaigns
+* NEXT group C: F-19 F-20 F-24 (verifier log vocabulary: market changes on the log, pass_cancelled/account_abandoned lines, size tier), F-22 F-23 F-26, F-35, F-36, F-37; then mutation, gates, docs (verifier-formats, DESIGN 4.6/13.3, AUDIT_REPORT, decision 68, deploy checklist F-25 deferred, module notes)
+* NOTES: m9b vectors d1_untriggered and d3_refused_then_filled were regenerated (a close dated 1 s ahead of the evaluator's second now executes in the evaluator's second, so its Close time is one second earlier)

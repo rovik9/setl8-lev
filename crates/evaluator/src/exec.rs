@@ -12,10 +12,12 @@ use crate::types::*;
 type Reject = Result<(), OrderReject>;
 
 impl Evaluator {
-    /// The newest sample of `market` recorded before the order arrived (`arrival` samples existed), no later than second `t`.
-    fn order_sample(&self, market: u16, arrival: usize, t: i64) -> Option<usize> {
+    /// The newest sample of `market` recorded when second `t` closes, no later than second `t`: the sample the verifier recomputes from
+    /// the archive alone (DESIGN 4.5, price rule). It does not matter whether it arrived before or after the order (audit F-08: the
+    /// verifier cannot know the order of arrival inside a second).
+    fn order_sample(&self, market: u16, t: i64) -> Option<usize> {
         let tr = self.tracks.get(&market)?;
-        tr.idxs.iter().rev().copied().find(|&i| i < arrival && self.samples.get(i).is_some_and(|s| s.sec() <= t))
+        tr.idxs.iter().rev().copied().find(|&i| self.samples.get(i).is_some_and(|s| s.sec() <= t))
     }
 
     /// Price freshness and market state for an order at second `t` against sample `j`: the newest sample is no older than
@@ -52,6 +54,8 @@ impl Evaluator {
         }
         let cfg = self.market_cfg(it.market).ok_or(OrderReject::UnknownMarket)?;
         let latest = self.tracks.get(&it.market).and_then(|t| t.idxs.last().copied());
+        // a market or close order is judged at the evaluator's own second, the others at their signed time
+        let at = if matches!(it.kind, IntentKind::Market | IntentKind::Close) { self.clock } else { it.client_time };
         let pos = self.positions.get(&it.market);
         match it.kind {
             IntentKind::Market | IntentKind::Limit | IntentKind::Stop => {
@@ -63,7 +67,7 @@ impl Evaluator {
                     }
                 }
                 let j = latest.ok_or(OrderReject::NoFreshPrice)?;
-                self.market_state_ok(&cfg, j, it.client_time)?;
+                self.market_state_ok(&cfg, j, at)?;
                 if it.kind != IntentKind::Market && cfg.status != STATUS_ENABLED {
                     return Err(OrderReject::MarketNotTradable);
                 }
@@ -106,7 +110,7 @@ impl Evaluator {
                     }
                 }
                 let j = latest.ok_or(OrderReject::NoFreshPrice)?;
-                self.market_state_ok(&cfg, j, it.client_time)
+                self.market_state_ok(&cfg, j, at)
             }
             IntentKind::SetSlTp => {
                 let p = pos.ok_or(OrderReject::NoPosition)?;
@@ -131,7 +135,7 @@ impl Evaluator {
         match q.intent.kind {
             IntentKind::Market => {
                 let Some(cfg) = self.market_cfg(q.intent.market) else { return Ok(()) };
-                let Some(j) = self.order_sample(q.intent.market, q.arrival, t) else {
+                let Some(j) = self.order_sample(q.intent.market, t) else {
                     self.refuse(t, q.nonce, OrderReject::NoFreshPrice);
                     return Ok(());
                 };
@@ -171,7 +175,7 @@ impl Evaluator {
             self.refuse(t, q.nonce, OrderReject::NoPosition);
             return Ok(());
         };
-        let Some(j) = self.order_sample(it.market, q.arrival, t) else {
+        let Some(j) = self.order_sample(it.market, t) else {
             self.refuse(t, q.nonce, OrderReject::NoFreshPrice);
             return Ok(());
         };
@@ -470,7 +474,7 @@ impl Evaluator {
         let would_over = self.would_exceed_quick(prev.0, prev.1);
         let mut units: Vec<Vec<QEvent>> = Vec::new();
         if would_over {
-            units.extend(self.force_close_all(t, CloseReason::Fail, Some((market, qty)))?);
+            units.extend(self.force_close_all(t, CloseReason::Fail, Some((market, qty)), None)?);
         }
         // after the forced closes the slice may no longer exceed (it always does: Q only grows) - book it
         let (evs, over) = self.do_close_event(t, market, qty, price, j, reason, intent_id, !would_over)?;
@@ -492,8 +496,9 @@ impl Evaluator {
 
     /// Closes every position at the current marks with `reason` (intent 0): the ones whose slice adds least to the quick
     /// tally first, so that a slice that crosses the limit is the last one. `keep` names a position that stays open for
-    /// `qty` units (the slice the caller is about to book). Returns one unit per close (a close with its commission).
-    pub(crate) fn force_close_all(&mut self, t: i64, reason: CloseReason, keep: Option<(u16, u64)>) -> Result<Vec<Vec<QEvent>>, EvalError> {
+    /// `qty` units (the slice the caller is about to book). `marks` are the marks of the decision that forces the closes (the
+    /// breach or static-fail sample, audit F-21); `None` = the current marks. Returns one unit per close (a close with its commission).
+    pub(crate) fn force_close_all(&mut self, t: i64, reason: CloseReason, keep: Option<(u16, u64)>, marks: Option<&std::collections::BTreeMap<u16, usize>>) -> Result<Vec<Vec<QEvent>>, EvalError> {
         let mut todo: Vec<(i64, u16, u64, u64, usize)> = Vec::new();
         let list: Vec<(u16, Pos)> = self.positions.iter().map(|(k, v)| (*k, *v)).collect();
         for (m, p) in list {
@@ -505,7 +510,7 @@ impl Evaluator {
             if qty == 0 {
                 continue;
             }
-            let j = *self.marks.get(&m).ok_or(EvalError::Invariant("a position without a mark"))?;
+            let j = *marks.unwrap_or(&self.marks).get(&m).ok_or(EvalError::Invariant("a position without a mark"))?;
             let s = *self.samples.get(j).ok_or(EvalError::Invariant("sample index"))?;
             let price = if p.p.qty.is_positive() { s.bid } else { s.ask };
             let (_, tally) = self.preview_close(&p, qty, price, t)?;

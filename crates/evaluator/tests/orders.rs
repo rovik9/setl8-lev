@@ -56,14 +56,24 @@ fn signature_nonce_and_decoding() {
 fn order_times() {
     let mut w = w0();
     w.sample(0, T_1400 + 10, p4(10_000));
-    // the evaluator is at second T+10: an order dated T+9 is stale, T+10 is fine, T+15 (+5) is fine, T+16 is too far ahead
-    assert_eq!(w.order(market_order(0, true, MEUR, T_1400 + 9)), Err(R::StaleOrder));
+    // the evaluator is at second T+10. A MARKET or CLOSE order is executed in the evaluator's own second; its signed time only has to be
+    // within 5 s of it, on either side: T+4 is 6 s early (stale), T+5 is fine, T+15 is fine, T+16 is 6 s ahead
+    assert_eq!(w.order(market_order(0, true, MEUR, T_1400 + 4)), Err(R::StaleOrder));
+    assert!(w.order(market_order(0, true, MEUR, T_1400 + 5)).is_ok());
     assert!(w.order(market_order(0, true, MEUR, T_1400 + 10)).is_ok());
-    assert_eq!(w.order(market_order(0, true, MEUR, T_1400 + 16)), Err(R::FutureOrder));
     assert!(w.order(market_order(0, true, MEUR, T_1400 + 15)).is_ok());
-    // accepting an order dated ahead moves the clock: later samples of earlier seconds are out of order
-    assert_eq!(w.ev.clock(), T_1400 + 15);
-    assert_eq!(w.ev.on_sample_mid(0, T_1400 + 12, p4(10_000)), Err(evaluator::SampleError::OutOfOrder));
+    assert_eq!(w.order(market_order(0, true, MEUR, T_1400 + 16)), Err(R::FutureOrder));
+    // the other kinds keep their signed time (the verifier replays them by it): never in the past, at most 5 s ahead
+    let limit = |t: i64| order(IntentKind::Limit, 0, 0, MEUR, p4(9_000), 0, 0, 0, t);
+    assert_eq!(w.order(limit(T_1400 + 9)), Err(R::StaleOrder));
+    assert!(w.order(limit(T_1400 + 10)).is_ok());
+    assert!(w.order(limit(T_1400 + 15)).is_ok());
+    assert_eq!(w.order(limit(T_1400 + 16)), Err(R::FutureOrder));
+    // audit F-18: no order moves the evaluator's clock, so the next real sample of the next second is still recorded
+    assert_eq!(w.ev.clock(), T_1400 + 10);
+    let n = w.ev.sample_count();
+    assert!(w.ev.on_sample_mid(0, T_1400 + 11, p4(10_000)).is_ok());
+    assert_eq!(w.ev.sample_count(), n + 1);
 }
 
 #[test]

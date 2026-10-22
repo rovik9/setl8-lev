@@ -67,6 +67,12 @@ pub struct Stats {
     pub orders_rejected: u32,
     /// Orders refused at arrival because they would open exposure in a market whose half-spread is 0 (decision 64).
     pub unpriced_rejects: u32,
+    /// Price samples refused because their source second is more than `MAX_SAMPLE_FUTURE_SECS` ahead of the receive time (audit F-17).
+    pub samples_future: u32,
+    /// Price samples refused because they were older than the market's `max_age_secs` when received (audit F-17).
+    pub samples_stale: u32,
+    /// Price samples refused because they break the stream's order: the second is before the clock, or the market's time goes backwards.
+    pub samples_out_of_order: u32,
 }
 
 /// An accepted order (or a triggered pending order) that could not execute when its second closed.
@@ -90,8 +96,6 @@ pub(crate) struct Track {
 pub(crate) struct QOrder {
     pub nonce: u32,
     pub intent: OrderIntent,
-    /// Number of samples recorded when the order arrived: it trades at the newest of those.
-    pub arrival: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -333,11 +337,24 @@ impl Evaluator {
         let mid = journal_types::price_e12_from_quantized(value).map_err(|_| SampleError::BadValue)?;
         let rec = SampleRec { market, source: m.source, recv_ns, ts_ns, value, digest };
         let sec = rec.sec();
+        // audit F-17 (decision 68): a sample dated ahead of the evaluator's own receive time, or already older than the market's
+        // max_age when it arrives, is counted and dropped; it is never journalled and never moves the clock or the market's time
+        let recv_sec = i64::try_from(recv_ns / 1_000_000_000).unwrap_or(i64::MAX);
+        if sec > recv_sec.saturating_add(MAX_SAMPLE_FUTURE_SECS) {
+            self.stats.samples_future = self.stats.samples_future.saturating_add(1);
+            return Err(SampleError::FutureSample);
+        }
+        if recv_sec.saturating_sub(sec) > i64::from(m.max_age_secs) {
+            self.stats.samples_stale = self.stats.samples_stale.saturating_add(1);
+            return Err(SampleError::StaleSample);
+        }
         if sec < self.clock {
+            self.stats.samples_out_of_order = self.stats.samples_out_of_order.saturating_add(1);
             return Err(SampleError::OutOfOrder);
         }
         let prev_ts = self.tracks.get(&market).map(|t| t.last_ts_ns).unwrap_or(0);
         if ts_ns < prev_ts {
+            self.stats.samples_out_of_order = self.stats.samples_out_of_order.saturating_add(1);
             return Err(SampleError::MarketTimeBackwards);
         }
         let (Ok(bid), Ok(ask)) = (engine::bid_from_mid(mid, m.half_spread_e6), engine::ask_from_mid(mid, m.half_spread_e6)) else {
@@ -427,22 +444,25 @@ impl Evaluator {
             return Err(OrderReject::BadNonce);
         }
         let intent = OrderIntent::from_bytes(&s.order).ok_or(OrderReject::BadOrder)?;
-        if intent.client_time < self.clock {
+        // audit F-18 (decision 68): the trader's time never moves the evaluator's clock. A market or close order is executed in the
+        // evaluator's OWN second (the one it arrives in); its signed time only has to be within MAX_ORDER_SKEW_SECS of it. The other
+        // kinds keep their signed time (the verifier replays them by it) and may be dated ahead, never in the past.
+        let immediate = matches!(intent.kind, IntentKind::Market | IntentKind::Close);
+        let skew = intent.client_time.saturating_sub(self.clock);
+        if skew < if immediate { -MAX_ORDER_SKEW_SECS } else { 0 } {
             return Err(OrderReject::StaleOrder);
         }
-        if intent.client_time > self.clock.saturating_add(MAX_ORDER_FUTURE_SECS) {
+        if skew > MAX_ORDER_SKEW_SECS {
             return Err(OrderReject::FutureOrder);
         }
         self.validate_arrival(&intent)?;
         // accepted: from here the order is part of the record
         self.nonces.insert(s.nonce);
         self.intents.extend_from_slice(intents_line(s.nonce, &s.order, &s.sig).as_bytes());
-        // an order dated ahead of the clock moves it (every earlier second closes first)
-        self.advance_clock(intent.client_time);
-        let arrival = self.samples.len();
         match intent.kind {
             IntentKind::Limit | IntentKind::Stop => self.pending.push(Pending { nonce: s.nonce, intent }),
-            _ => self.buckets.entry(intent.client_time).or_default().orders.push(QOrder { nonce: s.nonce, intent, arrival }),
+            IntentKind::Market | IntentKind::Close => self.buckets.entry(self.clock).or_default().orders.push(QOrder { nonce: s.nonce, intent }),
+            IntentKind::Cancel | IntentKind::SetSlTp => self.buckets.entry(intent.client_time).or_default().orders.push(QOrder { nonce: s.nonce, intent }),
         }
         Ok(())
     }

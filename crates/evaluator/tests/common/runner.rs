@@ -546,6 +546,13 @@ pub struct M9cCover {
     pub pending_held_refused: u64,
     /// P21 (decision 64): an order that would open exposure in a market the rule set does not price was refused (an "unpriced attempt").
     pub unpriced_attempt_refused: u64,
+    /// P25b (decision 68, audit F-16): forced-close sequences the program cannot accept (`Stats::unpostable`), SUMMED over the paths. Must be 0.
+    pub unpostable: u64,
+    /// P25b (audit F-17): price samples the evaluator refused, summed over the paths (the campaign's generator feeds honest samples,
+    /// so these stay 0 here; `crates/evaluator/tests/p25b_inputs.rs` feeds the hostile ones).
+    pub samples_future: u64,
+    pub samples_stale: u64,
+    pub samples_out_of_order: u64,
 }
 
 impl M9cCover {
@@ -556,6 +563,10 @@ impl M9cCover {
         self.pending_quantity_refused += o.pending_quantity_refused;
         self.pending_held_refused += o.pending_held_refused;
         self.unpriced_attempt_refused += o.unpriced_attempt_refused;
+        self.unpostable += o.unpostable;
+        self.samples_future += o.samples_future;
+        self.samples_stale += o.samples_stale;
+        self.samples_out_of_order += o.samples_out_of_order;
     }
 
     /// Floors of the gate run over `n` paths (100 each, 150 for the market margin refusal at 10,000 paths; scaled down, never below 1).
@@ -611,5 +622,9 @@ pub fn m9c_cover(w: &World) -> M9cCover {
         pending_quantity_refused: n(OrderReject::InvalidRemainder, true),
         pending_held_refused: n(OrderReject::AccountHeld, true),
         unpriced_attempt_refused: u64::from(w.ev.stats().unpriced_rejects > 0),
+        unpostable: u64::from(w.ev.stats().unpostable),
+        samples_future: u64::from(w.ev.stats().samples_future),
+        samples_stale: u64::from(w.ev.stats().samples_stale),
+        samples_out_of_order: u64::from(w.ev.stats().samples_out_of_order),
     }
 }

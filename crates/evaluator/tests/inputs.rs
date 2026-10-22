@@ -61,24 +61,25 @@ fn sample_errors() {
     let mut w = World::base();
     let t = T_1400;
     let ns = |s: i64| (s as u64) * 1_000_000_000;
+    let rcv = ns(t) + 700_000_000;
     assert_eq!(w.ev.on_sample(7, ns(t), 1_000_000_000_000_000_000, 0, [0; 32]), Err(SampleError::UnknownMarket));
     assert_eq!(w.ev.on_sample(0, ns(t), 0, 0, [0; 32]), Err(SampleError::BadValue));
     assert_eq!(w.ev.on_sample(0, ns(t), -5, 0, [0; 32]), Err(SampleError::BadValue));
     assert_eq!(w.ev.on_sample(0, ns(t), 999_999, 0, [0; 32]), Err(SampleError::BadValue), "floors to a zero price");
     assert_eq!(w.ev.sample_count(), 0);
-    assert!(w.ev.on_sample(0, ns(t) + 600_000_000, 1_000_000_000_000_000_000, 5, [0; 32]).is_ok());
+    assert!(w.ev.on_sample(0, ns(t) + 600_000_000, 1_000_000_000_000_000_000, rcv, [0; 32]).is_ok());
     // earlier in the SAME second is a backwards step of the market's own clock
-    assert_eq!(w.ev.on_sample(0, ns(t) + 100_000_000, 1_000_000_000_000_000_000, 5, [0; 32]), Err(SampleError::MarketTimeBackwards));
+    assert_eq!(w.ev.on_sample(0, ns(t) + 100_000_000, 1_000_000_000_000_000_000, rcv, [0; 32]), Err(SampleError::MarketTimeBackwards));
     // an earlier second is out of order for the stream
-    assert_eq!(w.ev.on_sample(0, ns(t - 1), 1_000_000_000_000_000_000, 5, [0; 32]), Err(SampleError::OutOfOrder));
+    assert_eq!(w.ev.on_sample(0, ns(t - 1), 1_000_000_000_000_000_000, rcv, [0; 32]), Err(SampleError::OutOfOrder));
     assert_eq!(w.ev.sample_count(), 1);
     // a value too large for a price
-    assert_eq!(w.ev.on_sample(0, ns(t + 1), i128::MAX, 5, [0; 32]), Err(SampleError::BadValue));
+    assert_eq!(w.ev.on_sample(0, ns(t + 1), i128::MAX, rcv, [0; 32]), Err(SampleError::BadValue));
     // the half-spread of a huge price overflows
     let mut r = base_rules(vec![eur_market(0)]);
     r.markets[0].half_spread_e6 = 500_000;
     let mut w2 = World::new(r, S100K, 2, T_1400 - HOUR);
-    assert_eq!(w2.ev.on_sample(0, ns(t), i128::from(u64::MAX) * 1_000_000, 0, [0; 32]), Err(SampleError::BadValue));
+    assert_eq!(w2.ev.on_sample(0, ns(t), i128::from(u64::MAX) * 1_000_000, rcv, [0; 32]), Err(SampleError::BadValue));
     // samples before the account existed are out of order
     let mut w3 = World::base();
     assert_eq!(w3.ev.on_sample_mid(0, T_1400 - 2 * HOUR, E12), Err(SampleError::OutOfOrder));

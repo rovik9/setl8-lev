@@ -23,7 +23,6 @@ fn two_samples_in_one_second() -> (World, Vec<evaluator::Batch>) {
 
 // FINDING V-18
 #[test]
-#[ignore = "FINDING V-18: a breach-shaped sample and a static-fail sample in one second: the evaluator posts Close..Fail, the verifier keeps a MissedBreach expectation (honest account reads MISMATCH)"]
 fn v_18_breach_and_static_fail_samples_in_one_second_verify_valid() {
     let (w, batches) = two_samples_in_one_second();
     let evs = events_of(&batches);

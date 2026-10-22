@@ -321,11 +321,19 @@ impl<'a> Replay<'a> {
                     ),
                 };
                 if let Some(k) = kind {
-                    if matches!(k, FloorKind::Breach | FloorKind::Fail(_)) {
-                        let snap: Vec<(u16, usize)> = self.positions.keys().filter_map(|m| w.marks.get(m).map(|i| (*m, *i))).collect();
-                        w.floor_marks.insert(sec, snap);
+                    // D-F15 (decision 68): a breach-shaped and a static-fail sample in ONE second: the more severe outcome, the Fail,
+                    // wins; the evaluator acts once per second and posts the Fail
+                    let fail_here = |w: &Walker| w.exp.iter().any(|e| e.sec == sec && matches!(&e.kind, ExpKind::Floor(FloorKind::Fail(_), _)));
+                    if matches!(k, FloorKind::Fail(_)) {
+                        w.exp.retain(|e| !(e.sec == sec && matches!(&e.kind, ExpKind::Floor(FloorKind::Breach, _))));
                     }
-                    w.push(Expect { sec, kind: ExpKind::Floor(k, vals), market: 0, sample: si });
+                    if !(k == FloorKind::Breach && fail_here(w)) {
+                        if matches!(k, FloorKind::Breach | FloorKind::Fail(_)) {
+                            let snap: Vec<(u16, usize)> = self.positions.keys().filter_map(|m| w.marks.get(m).map(|i| (*m, *i))).collect();
+                            w.floor_marks.insert(sec, snap);
+                        }
+                        w.push(Expect { sec, kind: ExpKind::Floor(k, vals), market: 0, sample: si });
+                    }
                 }
                 floors_allow_orders = engine::sl_tp_allowed_after(&d.action);
             }

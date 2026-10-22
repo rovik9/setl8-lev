@@ -270,6 +270,9 @@ fn differential_campaign() {
                 short.push(format!("{name} {v} < {floor}"));
             }
         }
+        // P25b (audit F-16): every forced-close sequence the evaluator emitted is one the program accepts
+        println!("coverage unpostable: {} (must be 0); samples refused: future {}, stale {}, out of order {}", c.m9c.unpostable, c.m9c.samples_future, c.m9c.samples_stale, c.m9c.samples_out_of_order);
+        assert_eq!(c.m9c.unpostable, 0, "Stats::unpostable must stay 0 over the campaign");
         for (name, floor) in ResetCover::floors(n) {
             let v = c.resets.value_of(name);
             println!("coverage {name}: {v} (floor {floor})");

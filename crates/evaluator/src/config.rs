@@ -114,6 +114,11 @@ pub enum SampleError {
     AccountEnded,
     /// The sample's source (`PriceProof.source`) is not the market's.
     WrongSource,
+    /// The source second is more than `MAX_SAMPLE_FUTURE_SECS` ahead of the evaluator's own receive time (audit F-17): refused, so one
+    /// bad timestamp cannot move the clock or the market's time.
+    FutureSample,
+    /// The sample is already older than the market's `max_age_secs` when it is received (audit F-17).
+    StaleSample,
 }
 
 /// Why an order was refused. A refused order leaves no journal event and (for `Limit`/`Stop`/`Cancel`/`SetSlTp`) no line in the intents file.
@@ -126,9 +131,9 @@ pub enum OrderReject {
     /// The 48 order bytes do not decode.
     BadOrder,
     UnknownMarket,
-    /// `client_time` is before the second the evaluator is already at.
+    /// `client_time` is before the second the evaluator is at (a market or close order: more than `MAX_ORDER_SKEW_SECS` before it).
     StaleOrder,
-    /// `client_time` is more than `MAX_ORDER_FUTURE_SECS` ahead of the evaluator's second.
+    /// `client_time` is more than `MAX_ORDER_SKEW_SECS` ahead of the evaluator's second.
     FutureOrder,
     /// Failed, abandoned, graduated or ended.
     AccountEnded,
@@ -192,5 +197,11 @@ impl From<engine::EngineError> for EvalError {
     }
 }
 
-/// How far ahead of the evaluator's second an order may be dated.
-pub const MAX_ORDER_FUTURE_SECS: i64 = 5;
+/// How far the trader's signed `client_time` may be from the evaluator's own second when the order arrives (audit F-18, decision 68):
+/// a market or close order is executed in the evaluator's second, its signed time only has to be within this many seconds of it (either
+/// side); a pending order, a cancel and a set_sl_tp keep their signed time (the verifier uses it) and may be dated this far AHEAD.
+/// The verifier's `ORDER_WINDOW_SECS` is the same number. An order never moves the evaluator's clock.
+pub const MAX_ORDER_SKEW_SECS: i64 = 5;
+
+/// How far ahead of the evaluator's own receive time a price sample's source second may be (audit F-17).
+pub const MAX_SAMPLE_FUTURE_SECS: i64 = 5;

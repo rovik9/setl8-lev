@@ -733,6 +733,13 @@ impl<'a> Replay<'a> {
         if want == got {
             return true;
         }
+        // a proof carries no record index: two records with the same market, source timestamp, value and digest are the same price
+        // (a duplicate tick), whichever of them `Archive::find` returns
+        if let (Some(w), Some(g)) = (self.arch.samples.get(want), self.arch.samples.get(got)) {
+            if (w.market, w.source, w.ts_ns, w.value, w.digest) == (g.market, g.source, g.ts_ns, g.value, g.digest) {
+                return true;
+            }
+        }
         let describe = |i: usize| self.arch.samples.get(i).map(|s| format!("record {i} (second {}, ts {} ns)", s.ts_sec(), s.ts_ns)).unwrap_or_else(|| format!("record {i}"));
         let (older, newer) = match (self.arch.samples.get(got), self.arch.samples.get(want)) {
             (Some(g), Some(w)) => (g.ts_ns < w.ts_ns || (g.ts_ns == w.ts_ns && got < want), g.ts_ns > w.ts_ns || (g.ts_ns == w.ts_ns && got > want)),

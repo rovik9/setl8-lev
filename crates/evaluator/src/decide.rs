@@ -22,6 +22,10 @@ struct Plan {
     raised: Option<(usize, i64, i64)>,
     breach: Option<usize>,
     fail: Option<usize>,
+    /// The marks (market -> sample) as they stood at the breach / static-fail sample: the forced closes of the decision are priced
+    /// with these, not with whatever later samples of the same second left in `self.marks` (audit F-21).
+    breach_marks: BTreeMap<u16, usize>,
+    fail_marks: BTreeMap<u16, usize>,
     /// (market, 0 stop-loss / 1 take-profit) -> sample
     triggers: BTreeMap<(u16, u8), usize>,
     /// (market, nonce) -> (price, sample)
@@ -245,8 +249,14 @@ impl Evaluator {
                     SampleAction::None => {}
                     SampleAction::TightStart { r, l_start, g_peak, l_level } => plan.tight_start = Some((j, p_open, r, l_start, g_peak, l_level)),
                     SampleAction::FloorRaised { g_peak, l_level } => plan.raised = Some((j, g_peak, l_level)),
-                    SampleAction::Breach { .. } => plan.breach = Some(j),
-                    SampleAction::Fail(FailReason::StaticFloor) => plan.fail = Some(j),
+                    SampleAction::Breach { .. } => {
+                        plan.breach = Some(j);
+                        plan.breach_marks = self.marks.clone();
+                    }
+                    SampleAction::Fail(FailReason::StaticFloor) => {
+                        plan.fail = Some(j);
+                        plan.fail_marks = self.marks.clone();
+                    }
                     SampleAction::Fail(FailReason::PhaseQuick) => {}
                 }
                 floors_allow = engine::sl_tp_allowed_after(&d.action);
@@ -309,10 +319,12 @@ impl Evaluator {
         if self.is_ended() {
             return Ok(());
         }
-        if let Some(j) = plan.breach {
-            self.do_breach(sec, j)?;
-        } else if let Some(j) = plan.fail {
-            self.do_static_fail(sec, j)?;
+        // audit F-15 (decision 68): a breach-shaped sample and a static-fail sample in ONE second: the more severe outcome wins, the
+        // static fail (the verifier drops the Breach expectation of a second that also has a Fail one)
+        if let Some(j) = plan.fail {
+            self.do_static_fail(sec, j, &plan.fail_marks)?;
+        } else if let Some(j) = plan.breach {
+            self.do_breach(sec, j, &plan.breach_marks)?;
         }
         Ok(())
     }
@@ -328,8 +340,8 @@ impl Evaluator {
         Ok(())
     }
 
-    fn do_breach(&mut self, sec: i64, j: usize) -> Result<(), EvalError> {
-        let mut units = self.force_close_all(sec, CloseReason::Breach, None)?;
+    fn do_breach(&mut self, sec: i64, j: usize, marks: &BTreeMap<u16, usize>) -> Result<(), EvalError> {
+        let mut units = self.force_close_all(sec, CloseReason::Breach, None, Some(marks))?;
         let over = self.quick_over();
         let tail = if over {
             Some(self.fail_event(sec, j, journal_types::FailReason::PhaseQuick))
@@ -363,8 +375,8 @@ impl Evaluator {
         Ok(())
     }
 
-    fn do_static_fail(&mut self, sec: i64, j: usize) -> Result<(), EvalError> {
-        let mut units = self.force_close_all(sec, CloseReason::Fail, None)?;
+    fn do_static_fail(&mut self, sec: i64, j: usize, marks: &BTreeMap<u16, usize>) -> Result<(), EvalError> {
+        let mut units = self.force_close_all(sec, CloseReason::Fail, None, Some(marks))?;
         let tail = if self.quick_over() {
             Some(self.fail_event(sec, j, journal_types::FailReason::PhaseQuick))
         } else if self.st.b <= engine::static_floor_micro(&self.st)? {

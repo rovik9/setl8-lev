@@ -18,25 +18,20 @@ const ONE_E18: i128 = 1_000_000_000_000_000_000;
 // can skip his own floor, breach and SL checks for the skipped seconds; a second recorder shows MissedBreach). Needs a DESIGN change:
 // a rule for an order's `client_time` against a time that the trader does not control (newest sample second or a caller-supplied now).
 #[test]
-#[ignore = "FINDING E-01: valid orders dated clock+5 walk the evaluator clock ahead of real time and make it drop real price samples"]
 fn e_01_a_trader_cannot_walk_the_clock_ahead_of_the_price_stream() {
+    // P25b (decision 68, audit F-18): the trader's time never moves the evaluator's clock. Orders dated 5 s ahead are accepted ONCE and
+    // do not walk it: the next one dated 10 s ahead is refused, and the real feed's next sample is recorded.
     let mut w = fx_world(TEST_HALF_SPREAD_E6);
     w.sample(0, T_1400, p4(10_000));
-    let mut t = T_1400;
-    let mut last_limit = 0u32;
-    for i in 0..6 {
-        t += 5;
-        if i % 2 == 0 {
-            last_limit = w.order(order(IntentKind::Limit, 0, 0, MEUR, p4(9_000), 0, 0, 0, t)).expect("limit");
-        } else {
-            w.order(order(IntentKind::Cancel, 0, 0, 0, 0, 0, 0, last_limit, t)).expect("cancel");
-        }
-    }
-    assert_eq!(w.ev.clock(), T_1400 + 30, "the setup moved the clock");
+    let last_limit = w.order(order(IntentKind::Limit, 0, 0, MEUR, p4(9_000), 0, 0, 0, T_1400 + 5)).expect("a limit dated 5 s ahead");
+    assert_eq!(w.order(order(IntentKind::Cancel, 0, 0, 0, 0, 0, 0, last_limit, T_1400 + 10)), Err(evaluator::OrderReject::FutureOrder));
+    assert!(w.order(order(IntentKind::Cancel, 0, 0, 0, 0, 0, 0, last_limit, T_1400 + 5)).is_ok());
+    assert_eq!(w.ev.clock(), T_1400, "no order moved the clock");
     // real time is still about T_1400 + 1: the feed's next sample must be recorded
     let r = w.ev.on_sample_mid(0, T_1400 + 1, p4(10_000));
     assert!(r.is_ok(), "a real sample one second after the last one was refused: {r:?}");
     assert_eq!(w.ev.sample_count(), 2);
+    assert_eq!(w.ev.clock(), T_1400 + 1);
 }
 
 // FINDING E-02
@@ -45,7 +40,6 @@ fn e_01_a_trader_cannot_walk_the_clock_ahead_of_the_price_stream() {
 // account fed the poisoned stream, needs a bad upstream timestamp). Plain implementation error: refuse `ts_ns` more than a small
 // tolerance past `recv_ns` (recv_ns is already an argument), no signature or rule change.
 #[test]
-#[ignore = "FINDING E-02: one future-dated price sample poisons the clock and the market time; all honest samples are refused after it"]
 fn e_02_a_future_dated_sample_does_not_poison_the_stream() {
     let mut w = fx_world(TEST_HALF_SPREAD_E6);
     w.sample(0, T_1400, p4(10_000));
@@ -58,7 +52,6 @@ fn e_02_a_future_dated_sample_does_not_poison_the_stream() {
 
 // FINDING E-02 (consequence): the clock jump charges a holding fee for every night up to the poisoned second.
 #[test]
-#[ignore = "FINDING E-02: a future-dated sample makes the evaluator queue a holding fee for every night up to that date"]
 fn e_02_a_future_dated_sample_does_not_queue_a_year_of_holding_fees() {
     let mut w = fx_world(TEST_HALF_SPREAD_E6);
     w.sample(0, T_1400, p4(10_000));
@@ -99,7 +92,7 @@ fn quick_world(markets: usize) -> World {
 // continue nor be failed). Needs a DESIGN change: the program must accept several forced Close events after an overshoot (only
 // Close with reason Fail/Breach, then the Fail), or the evaluator must have another way to end the account.
 #[test]
-#[ignore = "FINDING E-03: a forced close of 3+ young profitable positions near the quick limit emits a Close sequence neither post_journal nor report_fail accepts"]
+#[ignore = "FINDING E-03: a forced close of 3+ young profitable positions near the quick limit emits a Close sequence neither post_journal nor report_fail accepts | P25b STOP (F-16): the evaluator already orders the closes so that an overshoot is last whenever any order allows it; THIS set cannot be ordered (the two smallest credits already exceed the limit), so no sequence is postable under the program rules I-8/I-11 without a program or DESIGN change"]
 fn e_03_forced_closes_over_the_quick_limit_are_a_sequence_the_program_accepts() {
     let mut w = quick_world(4);
     for m in 0..4u16 {

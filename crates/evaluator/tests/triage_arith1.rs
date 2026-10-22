@@ -18,7 +18,7 @@ fn world(markets: usize) -> World {
 /// FINDING arith-03: after the close that pushes the quick tally over 0.028 S the program accepts only `Fail` (then `Meta`),
 /// so no `Close` may be emitted between the overshooting close and the `Fail`.
 #[test]
-#[ignore = "FINDING arith-03: forced close-all emits closes after the quick-limit overshoot, the program rejects the batch"]
+#[ignore = "FINDING arith-03: forced close-all emits closes after the quick-limit overshoot, the program rejects the batch | P25b STOP (F-16): the evaluator already orders the closes so that an overshoot is last whenever any order allows it; THIS set cannot be ordered (the two smallest credits already exceed the limit), so no sequence is postable under the program rules I-8/I-11 without a program or DESIGN change"]
 fn arith_03_no_close_follows_the_close_that_overshoots_the_quick_limit() {
     // 3 positions of 0.5 M EUR (+0.6%: quick credit 1,499 each) and a 1 M EUR one (+0.6%); closing the big one by hand overshoots,
     // so the three others are force-closed first (same set-up as exec_edges::forced_close(3)).
@@ -63,7 +63,6 @@ fn arith_03_no_close_follows_the_close_that_overshoots_the_quick_limit() {
 /// FINDING arith-06: DESIGN 2.2 says a breach closes everything "at THAT sample's price". Two samples of one market in one second:
 /// the first touches the tight floor, the second recovers. The closes (and the Breach) must use the first one.
 #[test]
-#[ignore = "FINDING arith-06: breach closes use the last sample of the second, not the breach sample"]
 fn arith_06_breach_close_uses_the_breach_sample_not_the_last_of_the_second() {
     let mut w = world(1);
     w.sample(0, T_1400, p4(10_000));
