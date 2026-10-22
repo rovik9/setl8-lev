@@ -6,6 +6,9 @@ Task: handover/prompts/P23-devnet-rehearsal.md. Offline: `export RUSTUP_TOOLCHAI
 * step 1: tools/devnet-rehearsal (the driver, own Cargo.lock, 39 unit tests, clippy -D warnings clean) + scripts/devnet-rehearsal.sh (keys, build, needs, fund, deploy, run, status, all, selftest). The two programs build in scratch trees under ~/.setl8-devnet-lev (throwaway program ids AND throwaway admin keys; the scratch build WITHOUT the swaps reproduces the freeze note's localnet sha256 43fdd935...).
 * the offline selftest (`scripts/devnet-rehearsal.sh selftest ...`, a local solana-test-validator, Agave 4.0.2, a scratch program build whose MINIMUM pass delay is 60 s so the day-2 part runs in minutes): S0, S1, S2 (day 1 and day 2), S3, S5 PASS; S4 FAIL = the findings below.
 
+* step 2: handover/devnet-rehearsal.md (runbook, results, CU table, findings D-01..D-04, not covered), deploy-checklist section "Devnet rehearsal", decision 70. Repo gates re-run: build-test-so.sh = 43fdd935... (the freeze note), budget.rs green, the tool's clippy -D warnings and 39 tests green.
+* the devnet run itself: STOPPED at the faucet (every request rate limited, 0 SOL on all keys).
+
 ## NEXT
 * the devnet part needs SOL: `scripts/devnet-rehearsal.sh --cluster devnet needs` prints the amounts (the upgrade authority needs about 15.9 SOL for the two deployments, 17.4 SOL in all). The public faucet refused the first request (rate limited): Rovik funds the PUBLIC keys that `needs` prints, in the browser (https://faucet.solana.com).
 * then, in this order:

@@ -78,7 +78,7 @@ impl Rehearsal {
         let (s1, h1, _) = self.account_head(&g1)?;
         let (s2, h2, _) = self.account_head(&g2)?;
         if !self.st.is_done("S3:wrong-account") {
-            let now = self.c.now().map_err(|e| e.to_string())?;
+            let now = self.c.refresh_clock().map_err(|e| e.to_string())?;
             let b1 = heartbeat(s1 + 1, h1, now);
             self.check(s1 == 0 && s2 == 0 && h1 != h2, "G1 and G2 are both at sequence 0 with different genesis hashes");
             let ixn = ix::post_journal(&self.ids, &evaluator, &g2.trader, g2.challenge_id, rsv, b1.to_bytes().map_err(|e| format!("{e:?}"))?, &[]);
@@ -89,7 +89,7 @@ impl Rehearsal {
         // --- the same batch is valid for G1 ...
         if !self.st.is_done("S3:g1-first") {
             let (s, h, _) = self.account_head(&g1)?;
-            let now = self.c.now().map_err(|e| e.to_string())?;
+            let now = self.c.refresh_clock().map_err(|e| e.to_string())?;
             let b = heartbeat(s + 1, h, now);
             self.c.wait_until(now).map_err(|e| e.to_string())?;
             let ixn = ix::post_journal(&self.ids, &evaluator, &g1.trader, g1.challenge_id, rsv, b.to_bytes().map_err(|e| format!("{e:?}"))?, &[]);
@@ -105,7 +105,7 @@ impl Rehearsal {
         // --- 1. a batch signed by someone who is not the evaluator
         if !self.st.is_done("S3:non-evaluator") {
             let (s, h, last) = self.account_head(&g1)?;
-            let now = self.c.now().map_err(|e| e.to_string())?.max(last);
+            let now = self.c.refresh_clock().map_err(|e| e.to_string())?.max(last);
             let b = heartbeat(s + 1, h, now);
             let attacker = self.keys.pubkey("trader7");
             let ixn = ix::post_journal(&self.ids, &attacker, &g1.trader, g1.challenge_id, rsv, b.to_bytes().map_err(|e| format!("{e:?}"))?, &[]);
@@ -118,7 +118,7 @@ impl Rehearsal {
         // --- 5. a Fill in a market the account's rule set does not price
         if !self.st.is_done("S3:unpriced") {
             let (s, h, last) = self.account_head(&g1)?;
-            let now = self.c.now().map_err(|e| e.to_string())?.max(last);
+            let now = self.c.refresh_clock().map_err(|e| e.to_string())?.max(last);
             let mid: u64 = 100 * 1_000_000_000_000;
             let proof = PriceProof { source: 255, feed_id: [0x21; 32], timestamp_ns: u64::try_from(now).unwrap_or(0) * 1_000_000_000, quantized_value: i128::from(mid) * 1_000_000, signed_update: vec![] };
             let fill = JournalEvent::Fill { market: LATE_MARKET, side: Side::Long, order_kind: OrderKind::Market, qty: 10_000, price_e12: mid, time: now, avg_entry_after: mid, margin: 0, sl: 0, tp: 0, intent_id: 1, proof: 0 };

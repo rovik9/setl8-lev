@@ -383,6 +383,8 @@ impl Net for Rehearsal {
         self.c.wait_until(b.meta_time).map_err(|e| e.to_string())?;
         let evaluator = self.keys.pubkey("evaluator");
         let bytes = b.batch.to_bytes().map_err(|e| format!("batch encoding: {e:?}"))?;
+        // the cluster's own clock decides (see `wait_until_block_time`); a TimeInFuture (6009) is waited out and tried again
+        let time_in_future = u32::from(setl8_lev_trading::errors::Setl8Error::TimeInFuture);
         let (ix, label) = match b.kind {
             BatchKind::PostJournal => (
                 crate::ix::post_journal(&self.ids, &evaluator, &a.trader, a.challenge_id, cur.ruleset_version, bytes, &b.markets),
@@ -393,7 +395,18 @@ impl Net for Rehearsal {
                 format!("report_fail ev={} pr={} {}", b.batch.events.len(), b.batch.proofs.len(), a.name),
             ),
         };
-        let sent = self.send(&label, &[ix], "evaluator", &[], false).map_err(|e| format!("{} (seq {})", e.text, b.batch.first_seq))?;
+        let mut attempt = 0;
+        let sent = loop {
+            self.c.wait_until_block_time(b.meta_time).map_err(|e| e.to_string())?;
+            match self.send(&label, std::slice::from_ref(&ix), "evaluator", &[], false) {
+                Ok(s) => break s,
+                Err(e) if e.code == Some(time_in_future) && attempt < 8 => {
+                    attempt += 1;
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
+                Err(e) => return Err(format!("{} (seq {})", e.text, b.batch.first_seq)),
+            }
+        };
         if sent.size != b.tx_bytes {
             self.say(&format!("  note: {label}: the transaction is {} bytes, the evaluator's model says {}", sent.size, b.tx_bytes));
         }

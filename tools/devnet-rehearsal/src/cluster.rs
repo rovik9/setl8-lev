@@ -312,6 +312,18 @@ impl Cluster {
         }
     }
 
+    /// Waits until the MEASURED block time of the newest confirmed slot has reached `t` (two requests per look, no cached offset). The
+    /// program refuses an event dated more than 2 s after the block time (I-3), and a validator under load can fall behind the wall
+    /// clock, so a time-sensitive transaction is only sent when the cluster's own clock says so.
+    pub fn wait_until_block_time(&self, t: i64) -> Result<(), RpcError> {
+        loop {
+            if self.refresh_clock()? >= t {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(700));
+        }
+    }
+
     pub fn latest_blockhash(&self) -> Result<solana_hash::Hash, RpcError> {
         let v = self.rpc.call("getLatestBlockhash", json!([{"commitment": "confirmed"}]))?;
         let s = v.pointer("/value/blockhash").and_then(Value::as_str).unwrap_or_default();

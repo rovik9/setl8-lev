@@ -41,7 +41,7 @@ impl Rehearsal {
         }
         let g2 = self.acct_ref("G2")?;
         let acct = self.trading_account(&g2.trader, g2.challenge_id)?;
-        let now = self.c.now().map_err(|e| e.to_string())?.max(acct.last_batch_time);
+        let now = self.c.refresh_clock().map_err(|e| e.to_string())?.max(acct.last_batch_time);
         let rs = self.ruleset(acct.ruleset_version)?;
         let mids: [(u16, u64); 3] = [(0, 60_000 * 1_000_000_000_000), (1, 2_600 * 1_000_000_000_000), (2, 150 * 1_000_000_000_000)];
         let mut proofs = Vec::new();
@@ -108,7 +108,7 @@ impl Rehearsal {
         let mids: [(u16, u64); 3] = [(0, 60_000 * 1_000_000_000_000), (1, 2_600 * 1_000_000_000_000), (2, 150 * 1_000_000_000_000)];
         let evaluator = self.keys.pubkey("evaluator");
         // 1. the fills (one batch: 3 fills, 3 proofs, the Meta)
-        let now = self.c.now().map_err(|e| e.to_string())?.max(acct.last_batch_time);
+        let now = self.c.refresh_clock().map_err(|e| e.to_string())?.max(acct.last_batch_time);
         let mut plan = Vec::new(); // (market, qty, entry, exit)
         let mut fills = Vec::new();
         let mut fill_proofs = Vec::new();
@@ -134,7 +134,7 @@ impl Rehearsal {
         self.send(&format!("post_journal ev=4 pr=3 heavy-fail fills {name}"), &[ixn], "evaluator", &[], false).map_err(|e| e.text)?;
         // 2. the failing batch
         let acct = self.trading_account(&h1.trader, h1.challenge_id)?;
-        let t2 = self.c.now().map_err(|e| e.to_string())?.max(acct.last_batch_time);
+        let t2 = self.c.refresh_clock().map_err(|e| e.to_string())?.max(acct.last_batch_time);
         let mut events = Vec::new();
         let mut proofs = Vec::new();
         let mut b_after = acct.b;
@@ -218,7 +218,7 @@ impl Rehearsal {
                 "S4-ceilings",
                 "medium",
                 &worst_sig,
-                &format!("on the cluster runtime {} instructions exceed their LiteSVM-calibrated budget.rs ceilings (all far below the 200,000-unit limit): {}. Every one emits an event through the self-CPI of emit_cpi!, which costs about 12,500 CU inside the inner invocation plus the invoke on this runtime", over.len(), text.join("; ")),
+                &format!("on the cluster runtime {} instructions exceed their LiteSVM-calibrated budget.rs ceilings: {}. Every one emits events through the self-CPI of emit_cpi!, which costs about 17,300 CU per event on this runtime (12,539 inside the inner invocation) against 10,000 to 12,000 in LiteSVM; the cheap instructions are 5,000 to 14,000 CU over their ceilings, the event-heavy batches approach the 200,000-unit limit", over.len(), text.join("; ")),
             );
         }
         // every instruction the program has should have been measured at least once

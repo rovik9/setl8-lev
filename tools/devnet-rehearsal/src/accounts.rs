@@ -259,7 +259,7 @@ impl Rehearsal {
     /// While `pass_pending == 2` the program refuses `post_journal` (PassPending): a heartbeat batch goes in and must be refused.
     fn check_pass_pending_refuses_journal(&mut self, name: &str, a: &AcctRef) -> Result<(), String> {
         let acct = self.trading_account(&a.trader, a.challenge_id)?;
-        let now = self.c.now().map_err(|e| e.to_string())?;
+        let now = self.c.refresh_clock().map_err(|e| e.to_string())?;
         let batch = journal_types::JournalBatch {
             first_seq: acct.seq + 1,
             prev_hash: acct.journal_hash,
@@ -458,7 +458,7 @@ impl Rehearsal {
     /// Everything that needs the clock to have moved: the pass of A1 is finalized, A1 fails in phase 3 and resets, F1 trades after its
     /// lock. Returns false when nothing is due yet.
     pub fn s2_day2(&mut self) -> Result<bool, String> {
-        let now = self.c.now().map_err(|e| e.to_string())?;
+        let now = self.c.refresh_clock().map_err(|e| e.to_string())?;
         let mut worked = false;
         if self.st.pending_finalize.contains_key("A1") && !self.st.is_done("A1:day2") {
             let due = self.st.pending_finalize["A1"];
@@ -515,7 +515,7 @@ impl Rehearsal {
         self.check(events::decode(&self.ids.lev, &sent.info).iter().any(|e| matches!(e, Ev::Finalized(f) if f.to_phase == 3)), "A1: PassFinalized (to phase 3) is emitted");
         // phase 3: the evaluator starts it, then the account fails on the static floor
         l.ev.phase_started(3);
-        let now = self.c.now().map_err(|e| e.to_string())?;
+        let now = self.c.refresh_clock().map_err(|e| e.to_string())?;
         l.t = l.t.max(now);
         l.ev.tick(l.t);
         stories::static_fail_story(&mut l, self, &a, BTC.0, SIZE)?;
@@ -537,7 +537,7 @@ impl Rehearsal {
 
     fn run_f1_day2(&mut self) -> Result<(), String> {
         let (mut l, a) = self.replay("F1", &history_f1)?;
-        let now = self.c.now().map_err(|e| e.to_string())?;
+        let now = self.c.refresh_clock().map_err(|e| e.to_string())?;
         l.t = l.t.max(now);
         l.ev.tick(l.t);
         stories::pass_story(&mut l, self, &a, BTC.0, SIZE)?;
