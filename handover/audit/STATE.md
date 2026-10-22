@@ -12,3 +12,4 @@ Task: handover/prompts/P26-F16-forced-close-after-overshoot.md (decision 69). Of
 * NEXT: step 5 gates (build-test-so.sh, anchor-build-checked.sh, test-engine.sh, tests-rs, DIFF 10000, ENGINE 100000, golden, clippy, budget), AUDIT_REPORT part 4 with numbers, step 6 freeze note
 * step 5 DONE: gates green (build-test-so, anchor default, test-engine 1,491/0/6, tests-rs 825/0/5, DIFF 10,000, ENGINE 100,000, golden, clippy, budget); MultiQuick range narrowed to r 600..=619 (659 broke the sl/tp floors); AUDIT_REPORT part 4 written
 * NEXT: step 6 freeze note in handover/deploy-checklist.md
+* step 6 DONE: freeze note in handover/deploy-checklist.md. P26 complete.
