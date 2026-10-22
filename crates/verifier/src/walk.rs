@@ -23,7 +23,7 @@
 //!
 //! The walk runs up to the largest event time or `Meta.time` seen ("Meta.time = the time of the last sample the evaluator
 //! processed for the batch"); an expectation of an earlier second that no event satisfied is a miss.
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use engine::{AccountState, ProtectiveKind, SampleAction};
 use journal_types::{market_open, CloseReason, FailReason, OrderKind};
@@ -145,7 +145,10 @@ pub struct Walker {
     /// For every sample walked so far (by archive index): the second its market's price last changed, as of that sample.
     lc_at: Vec<i64>,
     /// (second, nonce) of a pending flip whose `Close` was seen: its opening `Fill` is the other half, not a second execution.
-    flip_open: HashSet<(i64, u32)>,
+    flip_open: HashMap<(i64, u32), Option<usize>>,
+    /// For the seconds with a Breach or Fail decision: the marks (market -> archive sample) the decision used for the markets that
+    /// had a position; the forced closes of that second must be priced with exactly these samples (D-F12, D-F21).
+    floor_marks: BTreeMap<i64, Vec<(u16, usize)>>,
 }
 
 impl Walker {
@@ -170,7 +173,7 @@ impl Walker {
 
     pub fn new(pending: Vec<(u32, OrderIntent)>, cancels: Vec<(i64, u32)>, mut sltp: Vec<(i64, OrderIntent)>) -> Walker {
         sltp.sort_by_key(|(t, _)| *t);
-        Walker { cursor: 0, marks: BTreeMap::new(), last_change: BTreeMap::new(), last_value: BTreeMap::new(), exp: vec![], filled: HashSet::new(), pending, cancels, sltp, sltp_cursor: 0, cand: BTreeMap::new(), refused: vec![], lc_at: Vec::new(), flip_open: HashSet::new() }
+        Walker { cursor: 0, marks: BTreeMap::new(), last_change: BTreeMap::new(), last_value: BTreeMap::new(), exp: vec![], filled: HashSet::new(), pending, cancels, sltp, sltp_cursor: 0, cand: BTreeMap::new(), refused: vec![], lc_at: Vec::new(), flip_open: HashMap::new(), floor_marks: BTreeMap::new() }
     }
 }
 
@@ -240,7 +243,8 @@ impl<'a> Replay<'a> {
 
     fn expire(&mut self, w: &mut Walker, upto: i64, prev_seq: u64) {
         w.refused.retain(|(s, _, _, _)| *s >= upto);
-        w.flip_open.retain(|(s, _)| *s >= upto);
+        w.flip_open.retain(|(s, _), _| *s >= upto);
+        w.floor_marks.retain(|s, _| *s >= upto);
         let old = std::mem::take(&mut w.exp);
         for e in old {
             if e.sec < upto {
@@ -317,6 +321,10 @@ impl<'a> Replay<'a> {
                     ),
                 };
                 if let Some(k) = kind {
+                    if matches!(k, FloorKind::Breach | FloorKind::Fail(_)) {
+                        let snap: Vec<(u16, usize)> = self.positions.keys().filter_map(|m| w.marks.get(m).map(|i| (*m, *i))).collect();
+                        w.floor_marks.insert(sec, snap);
+                    }
                     w.push(Expect { sec, kind: ExpKind::Floor(k, vals), market: 0, sample: si });
                 }
                 floors_allow_orders = engine::sl_tp_allowed_after(&d.action);
@@ -761,25 +769,30 @@ impl<'a> Replay<'a> {
 
     // ------------------------------------------------------------------ consumption at journal events
 
-    /// A `Fill` of a limit or stop order must be the fill of a pending order the samples trigger.
-    pub fn walk_fill(&mut self, ctx: Ctx, market: u16, kind: OrderKind, intent: u32) {
-        let Some(mut w) = self.walk.take() else { return };
+    /// A `Fill` of a limit or stop order must be the fill of a pending order the samples trigger. Returns the archive sample that
+    /// triggered it (the one the fill must be priced with, D-F12), if known.
+    pub fn walk_fill(&mut self, ctx: Ctx, market: u16, kind: OrderKind, intent: u32) -> Option<usize> {
+        let mut w = self.walk.take()?;
+        let mut sample = None;
         if matches!(kind, OrderKind::Limit | OrderKind::Stop) {
             // the opening half of a pending flip whose `Close` was already taken as the execution
-            if !w.flip_open.remove(&(ctx.time, intent)) {
-                self.consume_pending(&mut w, ctx, market, intent, &format!("{kind:?} fill of intent {intent}"));
-            }
+            sample = match w.flip_open.remove(&(ctx.time, intent)) {
+                Some(si) => si,
+                None => self.consume_pending(&mut w, ctx, market, intent, &format!("{kind:?} fill of intent {intent}")),
+            };
         }
         self.walk = Some(w);
+        sample
     }
 
     /// The execution of a pending order at this second: its `Pending` expectation is consumed; an execution the margin check
-    /// refused is a `PendingFillWithoutMargin`; one nothing triggers is a `TriggerFalse`.
-    fn consume_pending(&mut self, w: &mut Walker, ctx: Ctx, market: u16, intent: u32, what: &str) {
+    /// refused is a `PendingFillWithoutMargin`; one nothing triggers is a `TriggerFalse`. Returns the trigger sample.
+    fn consume_pending(&mut self, w: &mut Walker, ctx: Ctx, market: u16, intent: u32, what: &str) -> Option<usize> {
         let i = w.exp.iter().position(|e| e.sec == ctx.time && matches!(&e.kind, ExpKind::Pending(m, n, _) if *m == market && *n == intent));
+        let mut sample = None;
         match i {
             Some(i) => {
-                w.exp.remove(i);
+                sample = Some(w.exp.remove(i).sample);
             }
             None => {
                 if let Some(r) = w.refused.iter().position(|(s, m, n, _)| *s == ctx.time && *m == market && *n == intent) {
@@ -807,36 +820,50 @@ impl<'a> Replay<'a> {
             }
         }
         w.filled.insert(intent);
+        sample
     }
 
     /// A stop-loss or take-profit `Close` must be a trigger the samples produce; a `Manual` (or `Flip`) `Close` under the nonce
     /// of a pending order of that market is the execution of that order (decision D1: a pending order that only reduces a
-    /// position has no `Fill`).
-    pub fn walk_close(&mut self, ctx: Ctx, market: u16, reason: CloseReason, intent: u32, _qty: u64) {
+    /// position has no `Fill`); a `Breach` or `Fail` close must belong to a floor decision of its second (D-F13).
+    /// Returns the archive sample the close must be priced with, when the walk knows it (the trigger sample, the pending
+    /// order's trigger sample, the breach sample's mark of this market); a market order's sample is the caller's rule.
+    pub fn walk_close(&mut self, ctx: Ctx, market: u16, reason: CloseReason, intent: u32, _qty: u64) -> Option<usize> {
         let want = match reason {
             CloseReason::StopLoss => ProtectiveKind::StopLoss,
             CloseReason::TakeProfit => ProtectiveKind::TakeProfit,
             CloseReason::Manual | CloseReason::Flip => {
                 if intent == 0 {
-                    return;
+                    return None;
                 }
-                let Some(mut w) = self.walk.take() else { return };
+                let mut w = self.walk.take()?;
+                let mut sample = None;
                 if w.pending.iter().any(|(n, it)| *n == intent && it.market == market) {
-                    self.consume_pending(&mut w, ctx, market, intent, &format!("{reason:?} close under pending order {intent}"));
+                    sample = self.consume_pending(&mut w, ctx, market, intent, &format!("{reason:?} close under pending order {intent}"));
                     if reason == CloseReason::Flip {
-                        w.flip_open.insert((ctx.time, intent));
+                        w.flip_open.insert((ctx.time, intent), sample);
                     }
                 }
                 self.walk = Some(w);
-                return;
+                return sample;
             }
-            _ => return,
+            CloseReason::Breach | CloseReason::Fail => {
+                let w = self.walk.take()?;
+                let has = w.exp.iter().any(|e| e.sec == ctx.time && matches!(&e.kind, ExpKind::Floor(FloorKind::Breach | FloorKind::Fail(_), _)));
+                let sample = if has { w.floor_marks.get(&ctx.time).and_then(|v| v.iter().find(|(m, _)| *m == market)).map(|(_, i)| *i) } else { None };
+                self.walk = Some(w);
+                if !has {
+                    self.unjustified_forced_close(ctx, market, reason);
+                }
+                return sample;
+            }
         };
-        let Some(mut w) = self.walk.take() else { return };
+        let mut w = self.walk.take()?;
         let i = w.exp.iter().position(|e| e.sec == ctx.time && matches!(&e.kind, ExpKind::Trigger(m, k, _) if *m == market && *k == want));
+        let mut sample = None;
         match i {
             Some(i) => {
-                w.exp.remove(i);
+                sample = Some(w.exp.remove(i).sample);
             }
             None => self.f.add(
                 FindingClass::TriggerFalse,
@@ -847,6 +874,7 @@ impl<'a> Replay<'a> {
             ),
         }
         self.walk = Some(w);
+        sample
     }
 
     /// A TightStart / FloorRaised / Breach must be the decision the samples produce; its numbers must be the archive's.
@@ -1045,8 +1073,8 @@ mod replay_tests {
             rp.walk_close(at(11), 0, CloseReason::StopLoss, 0, 0); // other second
             assert_eq!(classes(rp), vec![FindingClass::TriggerFalse; 3]);
             assert_eq!(left(rp), 1);
-            // closes that are not protective are not judged here
-            for r in [CloseReason::Manual, CloseReason::Flip, CloseReason::Breach, CloseReason::Fail] {
+            // trader closes without a pending order are not judged here (a Breach or Fail close is, see the tests below)
+            for r in [CloseReason::Manual, CloseReason::Flip] {
                 rp.walk_close(at(10), 0, r, 0, 0);
             }
             assert_eq!((rp.f.list.len(), left(rp)), (3, 1));
@@ -1055,6 +1083,36 @@ mod replay_tests {
             put(rp, trigger(10, 0, ProtectiveKind::TakeProfit));
             rp.walk_close(at(10), 0, CloseReason::TakeProfit, 0, 0);
             assert_eq!((rp.f.list.len(), left(rp)), (3, 0));
+        });
+    }
+
+    #[test]
+    fn a_forced_close_needs_a_floor_decision_of_its_second_and_is_priced_with_the_decisions_marks() {
+        with_replay(&[], |rp| {
+            // no decision (a decision of another second exists): a Breach close is a finding at once, a Fail close waits for a quick-limit Fail
+            put(rp, floor(99, FloorKind::Breach, [0; 5]));
+            assert_eq!(rp.walk_close(at(10), 0, CloseReason::Breach, 0, 0), None);
+            assert_eq!(classes(rp), vec![FindingClass::ForcedCloseUnjustified]);
+            assert_eq!(rp.walk_close(at(10), 0, CloseReason::Fail, 0, 0), None);
+            assert_eq!(classes(rp), vec![FindingClass::ForcedCloseUnjustified], "the Fail close is pending, not yet a finding");
+        });
+        with_replay(&[], |rp| {
+            // a decision of second 10 with marks: market 0 -> record 7, market 1 -> record 9
+            put(rp, floor(10, FloorKind::Breach, [0; 5]));
+            if let Some(w) = rp.walk.as_mut() {
+                w.floor_marks.insert(10, vec![(0, 7), (1, 9)]);
+            }
+            assert_eq!(rp.walk_close(at(10), 0, CloseReason::Breach, 0, 0), Some(7));
+            assert_eq!(rp.walk_close(at(10), 1, CloseReason::Fail, 0, 0), Some(9));
+            assert_eq!(rp.walk_close(at(10), 2, CloseReason::Breach, 0, 0), None, "a market with no mark in the decision");
+            assert!(rp.f.list.is_empty());
+            // another second has no decision
+            assert_eq!(rp.walk_close(at(11), 0, CloseReason::Breach, 0, 0), None);
+            assert_eq!(classes(rp), vec![FindingClass::ForcedCloseUnjustified]);
+            // a floor decision of kind Fail supports the closes as well
+            put(rp, floor(12, FloorKind::Fail(FailReason::StaticFloor), [0; 5]));
+            assert_eq!(rp.walk_close(at(12), 0, CloseReason::Fail, 0, 0), None);
+            assert_eq!(rp.f.list.len(), 1);
         });
     }
 

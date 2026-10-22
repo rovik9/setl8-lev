@@ -168,7 +168,6 @@ fn sl_close_at_the_old_sample(honest: &Bundle) -> Bundle {
 
 // FINDING V-03
 #[test]
-#[ignore = "FINDING V-03a: an evaluator-originated StopLoss close priced with an older sample of the max_age window (not the triggering sample) is VALID; the walk's Trigger expectation carries the price but never compares it"]
 fn v03a_a_stop_loss_close_must_use_the_triggering_sample() {
     let honest = sl_run();
     let r = verify_no_snapshot(&honest);
@@ -176,13 +175,9 @@ fn v03a_a_stop_loss_close_must_use_the_triggering_sample() {
     let b = sl_close_at_the_old_sample(&honest);
     let r = verify_no_snapshot(&b);
     assert_eq!(r.verdict, Verdict::Mismatch, "a stop-loss executed at the +30 s sample instead of the +60 s trigger sample: {:#?}", r.findings);
-}
-
-#[test]
-fn v03a_control_today_the_old_sample_stop_close_is_valid() {
-    let b = sl_close_at_the_old_sample(&sl_run());
-    let r = verify_no_snapshot(&b);
-    assert_eq!((r.classes(), r.verdict), (vec![], Verdict::Valid), "{:#?}", r.findings);
+    // P25b D-F12: the finding is the price-sample class (an OLDER sample than the trigger)
+    assert_eq!(r.classes(), vec![C::PriceSampleMismatch], "{:#?}", r.findings);
+    assert!(r.findings[0].message.contains("OLDER"), "{}", r.findings[0].message);
 }
 
 // ------------------------------------------------------------------------------------------------ V-04
@@ -199,7 +194,6 @@ fn reason_of_the_close(mut b: Bundle, reason: CloseReason) -> Bundle {
 
 // FINDING V-04
 #[test]
-#[ignore = "FINDING V-04: a Close{reason Breach, intent 0} with no Breach event, no floor sample and no trader order is VALID (walk_close ignores Breach/Fail); it flattens a pass account"]
 fn v04_a_breach_reason_close_needs_a_breach() {
     let honest = pass_case(0);
     let r = verify_no_snapshot(&honest);
@@ -207,21 +201,17 @@ fn v04_a_breach_reason_close_needs_a_breach() {
     let b = reason_of_the_close(honest, CloseReason::Breach);
     let r = verify_no_snapshot(&b);
     assert_eq!(r.verdict, Verdict::Mismatch, "a Close{{Breach}} with no breach event or breach sample: {:#?}", r.findings);
+    assert!(r.classes().contains(&C::ForcedCloseUnjustified), "{:#?}", r.findings);
 }
 
 // FINDING V-04
 #[test]
-#[ignore = "FINDING V-04: same for reason Fail"]
 fn v04_a_fail_reason_close_needs_a_fail() {
     let b = reason_of_the_close(pass_case(0), CloseReason::Fail);
     let r = verify_no_snapshot(&b);
     assert_eq!(r.verdict, Verdict::Mismatch, "a Close{{Fail}} with no Fail event or floor sample: {:#?}", r.findings);
-}
-
-#[test]
-fn v04_control_today_the_breach_reason_close_is_valid() {
-    let r = verify_no_snapshot(&reason_of_the_close(pass_case(0), CloseReason::Breach));
-    assert_eq!((r.classes(), r.verdict), (vec![], Verdict::Valid), "{:#?}", r.findings);
+    // a Fail close with no Fail after it is judged when the batch ends (Meta)
+    assert!(r.classes().contains(&C::ForcedCloseUnjustified), "{:#?}", r.findings);
 }
 
 // ------------------------------------------------------------------------------------------------ V-05

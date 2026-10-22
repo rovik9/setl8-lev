@@ -897,7 +897,8 @@ fn cases() -> Vec<Case> {
                 }
                 t.fix();
             },
-            expect: Verifier(&[F::FalseBreach, F::MissedBreach]),
+            // P25b (D-F13): the late Breach's forced closes are no decision of the archive at their posted second either
+            expect: Verifier(&[F::FalseBreach, F::MissedBreach, F::ForcedCloseUnjustified]),
             after: None,
         },
         Case {
@@ -915,7 +916,7 @@ fn cases() -> Vec<Case> {
                 t.batches[at.0].batch.proofs = vec![t.proof_of_sample(old)];
                 t.fix();
             },
-            expect: Neither("market order executed at an older sample inside max_age (worse price)"),
+            expect: Verifier(&[F::PriceSampleMismatch]),
             after: None,
         },
         Case {
@@ -933,7 +934,7 @@ fn cases() -> Vec<Case> {
                 t.set_meta_time(0, m);
                 t.fix();
             },
-            expect: Neither("market order executed at an older sample inside max_age (worse price)"),
+            expect: Verifier(&[F::PriceSampleMismatch]),
             after: None,
         },
         Case {
@@ -992,10 +993,10 @@ fn cases() -> Vec<Case> {
             row: None, // the Breach version of this story is trust-matrix row "breach built from the worst sample of each market (never simultaneous)" (VERIFIER)
             sc: sc_dips,
             tamper: dips_fail,
-            // FINDING TMX-1: the program accepts (every claim is arithmetically true, every proof is a real sample inside max_age) and the
-            // verifier says VALID, although the account's equity was never at or below the floor at any instant. For a Breach built the
-            // same way the verifier answers FalseBreach (row 31); for a Fail `walk_floor` only reports a MISSED one.
-            expect: Gap("TMX-1"),
+            // TMX-1 (F-09, fixed by P25b, decision 68): the program still accepts (every claim is arithmetically true, every proof is a real
+            // sample inside max_age), but the verifier now flags the story: the forced closes are not supported by any floor decision of
+            // the archive (ForcedCloseUnjustified, D-F13) and the Fail rests on marks that were never simultaneous (FalseFailMarks, D-F09).
+            expect: Verifier(&[F::ForcedCloseUnjustified, F::FalseFailMarks]),
             after: Some(status_failed),
         },
         // ============================================================ 5. double-fills a pending order
@@ -1301,21 +1302,20 @@ fn dishonest_evaluator_table_is_complete() {
     }
 }
 
-// FINDING TMX-1 (verifier gap, mass fail by a stolen evaluator key): a `report_fail(StaticFloor)` built from the lows of two markets that
+// TMX-1 (F-09, FIXED by P25b / decision 68: FalseFailMarks + ForcedCloseUnjustified; verifier gap, mass fail by a stolen evaluator key): a `report_fail(StaticFloor)` built from the lows of two markets that
 // never existed together is accepted by the program (it re-derives only b and the floor from the claimed Closes, whose proofs are real
 // samples inside `max_age`) and the verifier answers VALID: `walk_floor` for a Fail only removes the expectation of a MISSED one, and
 // `on_fail` justifies the Fail from the replayed closed balance alone. DESIGN 13.2 A-18 and the stolen-key row of 1.3 say this attack is
 // "possible and visible"; for a Breach built the same way the verifier does answer FalseBreach (trust-matrix row 31). The Fail is final:
 // `flag_trader_failed` has already been called, there is no 2-day window and no veto.
 #[test]
-#[ignore = "FINDING TMX-1: a Fail built from non-simultaneous lows is accepted by the program and VALID for the verifier"]
 fn tmx_1_verifier_must_flag_a_fail_built_from_non_simultaneous_lows() {
     let (mut t, mut chain) = honest(&sc_dips());
     dips_fail(&mut t);
     let r = run(&t, &mut chain);
     assert!(r.rejected.is_none(), "the program accepts it (its limit, A-18)");
     assert!(
-        r.classes.contains(&F::FalseFail) || r.classes.contains(&F::FalseBreach),
+        r.classes.contains(&F::FalseFailMarks) && r.classes.contains(&F::ForcedCloseUnjustified),
         "the verifier must flag a Fail whose Closes were never justified by an instant at or below the floor (as it flags the same story as a Breach); it said: {:?}\n{}",
         r.classes,
         r.text

@@ -335,7 +335,10 @@ fn forged_trade_evaluator_close_claiming_an_intent_and_trader_close_without_one(
     if let E::Close { reason, .. } = b.ev_mut(i) {
         *reason = CloseReason::Breach; // an evaluator-originated close must carry intent 0
     }
-    only(&verify_no_snapshot(&b), C::ForgedTrade);
+    // P25b (D-F13): such a close is also a forced close that no Breach decision of the archive supports
+    let r = verify_no_snapshot(&b);
+    assert_eq!(r.classes(), vec![C::ForgedTrade, C::ForcedCloseUnjustified], "findings: {:#?}", r.findings);
+    assert_eq!(r.verdict, Verdict::Mismatch);
 }
 
 #[test]

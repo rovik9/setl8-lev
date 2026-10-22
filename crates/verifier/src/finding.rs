@@ -52,10 +52,16 @@ pub enum FindingClass {
     FillNotAllowed,
     // ---- P25b (decision 68), appended so the earlier classes keep their order
     ArchiveRecordInvalid,
+    /// A market Fill/Close (or a trigger's close) priced with another archive sample than the rule names (D-F08/D-F12).
+    PriceSampleMismatch,
+    /// A `Close{Breach|Fail}` that no floor decision of the archive supports (D-F13).
+    ForcedCloseUnjustified,
+    /// A `Fail` whose forced closes were not priced with one simultaneous set of archive samples (D-F09).
+    FalseFailMarks,
 }
 
 impl FindingClass {
-    pub const ALL: [FindingClass; 43] = [
+    pub const ALL: [FindingClass; 46] = [
         FindingClass::HashChain,
         FindingClass::SequenceGap,
         FindingClass::BadGenesis,
@@ -99,6 +105,9 @@ impl FindingClass {
         FindingClass::FillWithoutMargin,
         FindingClass::FillNotAllowed,
         FindingClass::ArchiveRecordInvalid,
+        FindingClass::PriceSampleMismatch,
+        FindingClass::ForcedCloseUnjustified,
+        FindingClass::FalseFailMarks,
     ];
 
     pub fn name(self) -> &'static str {
@@ -146,6 +155,9 @@ impl FindingClass {
             FindingClass::FillWithoutMargin => "FillWithoutMargin",
             FindingClass::FillNotAllowed => "FillNotAllowed",
             FindingClass::ArchiveRecordInvalid => "ArchiveRecordInvalid",
+            FindingClass::PriceSampleMismatch => "PriceSampleMismatch",
+            FindingClass::ForcedCloseUnjustified => "ForcedCloseUnjustified",
+            FindingClass::FalseFailMarks => "FalseFailMarks",
         }
     }
 }

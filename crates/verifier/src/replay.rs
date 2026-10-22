@@ -105,6 +105,11 @@ pub struct Replay<'a> {
     pub(crate) last_proof_si: Option<usize>,
     /// (second, nonce) of a market flip whose margin was judged at its `Close{Flip}`: its opening `Fill` is the other half.
     flip_checked: HashSet<(i64, u32)>,
+    /// D-F13: `Close{Fail}` events no floor decision of their second supports (yet): the quick-limit forced closes of the other
+    /// positions come BEFORE the overshooting slice and the `Fail{PhaseQuick}`, so they are judged when that `Fail` arrives.
+    forced_pending: Vec<(Ctx, u16)>,
+    /// D-F09: the seconds in which a forced close was flagged; a `Fail` of such a second is a `FalseFailMarks`.
+    flagged_forced: HashSet<i64>,
 }
 
 /// Collects findings with the cap and the miss de-duplication.
@@ -228,6 +233,8 @@ impl<'a> Replay<'a> {
             holds: Vec::new(),
             last_proof_si: None,
             flip_checked: HashSet::new(),
+            forced_pending: Vec::new(),
+            flagged_forced: HashSet::new(),
             opened,
         })
     }
@@ -692,6 +699,57 @@ impl<'a> Replay<'a> {
         }
     }
 
+    /// D-F08: the archive sample a market order of `market` executed in second `time` must be priced with: the newest sample of the
+    /// market at or before that second (the rule of DESIGN 4.5; the evaluator follows it).
+    fn market_sample(&self, market: u16, time: i64) -> Option<usize> {
+        self.arch.last_at_or_before(market, time)
+    }
+
+    /// D-F08/D-F12: the sample the event's proof used must be the one the rule names. `false` when it is not.
+    fn check_sample(&mut self, ctx: Ctx, market: u16, want: Option<usize>, what: &str) -> bool {
+        let (Some(want), Some(got)) = (want, self.last_proof_si) else { return true };
+        if want == got {
+            return true;
+        }
+        let describe = |i: usize| self.arch.samples.get(i).map(|s| format!("record {i} (second {}, ts {} ns)", s.ts_sec(), s.ts_ns)).unwrap_or_else(|| format!("record {i}"));
+        let (older, newer) = match (self.arch.samples.get(got), self.arch.samples.get(want)) {
+            (Some(g), Some(w)) => (g.ts_ns < w.ts_ns || (g.ts_ns == w.ts_ns && got < want), g.ts_ns > w.ts_ns || (g.ts_ns == w.ts_ns && got > want)),
+            _ => (false, false),
+        };
+        let how = if older {
+            "an OLDER sample than the rule names"
+        } else if newer {
+            "a NEWER sample than the rule names"
+        } else {
+            "another sample than the rule names"
+        };
+        self.f.add(FindingClass::PriceSampleMismatch, ctx, describe(want), describe(got), format!("the {what} in market {market} is priced with {how}"));
+        false
+    }
+
+    /// D-F13: a forced close no floor decision of the archive supports. A `Breach` close is flagged at once; a `Fail` close may be one
+    /// of the others closed before a quick-limit overshoot, which only the `Fail{PhaseQuick}` that follows can justify.
+    pub(crate) fn unjustified_forced_close(&mut self, ctx: Ctx, market: u16, reason: CloseReason) {
+        if reason == CloseReason::Fail {
+            self.forced_pending.push((ctx, market));
+        } else {
+            self.flagged_forced.insert(ctx.time);
+            self.f.add(FindingClass::ForcedCloseUnjustified, ctx, "a Breach decision of the samples of this second", format!("Close{{{reason:?}}} in market {market}"), "a forced close that no sample of this second calls for");
+        }
+    }
+
+    /// The pending `Close{Fail}` events are justified by a `Fail{PhaseQuick}` of their own second; any others are findings.
+    fn settle_forced_closes(&mut self, fail_time: Option<i64>) {
+        let list = std::mem::take(&mut self.forced_pending);
+        for (c, market) in list {
+            if fail_time == Some(c.time) {
+                continue;
+            }
+            self.flagged_forced.insert(c.time);
+            self.f.add(FindingClass::ForcedCloseUnjustified, c, "a Fail decision of the samples of this second, or a quick-limit Fail right after", format!("Close{{Fail}} in market {market}"), "a forced close that no sample of this second calls for and no quick-limit Fail followed");
+        }
+    }
+
     fn floating_proof(&mut self, ctx: Ctx, ev: &JournalEvent, proof: &Option<PriceProof>, time: i64) {
         let _ = self.proof_for(ctx, ev, proof, None, time);
     }
@@ -714,7 +772,9 @@ impl<'a> Replay<'a> {
             }
         }
         self.check_intent(ctx, intent, market, qty, time, IntentUse::Fill { side, order_kind: kind, sl, tp });
-        self.walk_fill(ctx, market, kind, intent);
+        let trigger = self.walk_fill(ctx, market, kind, intent);
+        let want = if kind == OrderKind::Market { self.market_sample(market, time) } else { trigger };
+        self.check_sample(ctx, market, want, "fill");
         // M9c: a market order the evaluator's own rules refuse (margin, caps, status, lock, closed market). The opening half of
         // a flip was judged with its `Close{Flip}`.
         if kind == OrderKind::Market && priced.is_some() && !self.flip_checked.remove(&(time, intent)) {
@@ -770,7 +830,12 @@ impl<'a> Replay<'a> {
             }
         }
         self.check_intent(ctx, intent, market, qty, time, IntentUse::Close { reason, position_side: side });
-        self.walk_close(ctx, market, reason, intent, qty);
+        let walked = self.walk_close(ctx, market, reason, intent, qty);
+        let market_order = matches!(reason, CloseReason::Manual | CloseReason::Flip) && (walked.is_none() && self.market_intent(intent, market).is_some());
+        let want = if market_order { self.market_sample(market, time) } else { walked };
+        if !self.check_sample(ctx, market, want, "close") && matches!(reason, CloseReason::Breach | CloseReason::Fail) {
+            self.flagged_forced.insert(time);
+        }
         // M9c: the execution of a MARKET order that reduces or flips: the market must be open; a flip is judged as a whole
         // here (the evaluator checks margin, caps and lock before it books the closing slice)
         if priced.is_some() && matches!(reason, CloseReason::Manual | CloseReason::Flip) {
@@ -986,6 +1051,12 @@ impl<'a> Replay<'a> {
         if !justified {
             self.f.add(FindingClass::FalseFail, ctx, format!("{reason:?} conditions"), format!("b {} q {}", self.st.b, self.st.q_tally), "the account state does not justify this Fail");
         }
+        // D-F13/D-F09: forced closes of this second that a quick-limit Fail justifies are settled; the others were flagged
+        let quick_fail = (reason == FailReason::PhaseQuick).then_some(ctx.time);
+        self.settle_forced_closes(quick_fail);
+        if self.flagged_forced.contains(&ctx.time) {
+            self.f.add(FindingClass::FalseFailMarks, ctx, "closes priced with the simultaneous samples of one decision", "forced closes that no decision of the archive supports", "the Fail rests on marks that are not simultaneous archive samples");
+        }
         self.terminal = true;
         self.quick_fail_due = false;
         self.bump_epoch();
@@ -999,6 +1070,7 @@ impl<'a> Replay<'a> {
             self.f.add_once(FindingClass::MissedFail, ctx, "a Fail{PhaseQuick} right after the closing slice", "none before the batch ended", "the quick tally is above 0.028 S and the account was not failed");
             self.quick_fail_due = false;
         }
+        self.settle_forced_closes(None);
         if flat != self.is_flat() {
             self.f.add(FindingClass::StateMismatch, ctx, self.is_flat().to_string(), flat.to_string(), "Meta.flat disagrees with the replayed positions");
         }

@@ -119,7 +119,8 @@ fn false_breach_when_the_primary_archive_was_manipulated() {
     let quiet = eur_run(Spec::base(), &[eur(10_806), eur(10_813), eur(10_831), eur(10_811), eur(10_805), eur(10_830)]);
     let manipulated = breach_then_recovery();
     let r = verify_second(&manipulated, quiet.archive_bytes());
-    assert_eq!(r.classes(), vec![C::FalseBreach, C::ArchiveDisagreement], "{:#?}", r.findings);
+    // P25b (D-F13): the manipulated journal's forced closes are not supported by the honest recorder's samples either
+    assert_eq!(r.classes(), vec![C::FalseBreach, C::ArchiveDisagreement, C::ForcedCloseUnjustified], "{:#?}", r.findings);
     assert!(r.findings.iter().all(|f| f.source == "second"));
 }
 

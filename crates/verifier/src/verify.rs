@@ -141,7 +141,7 @@ pub fn run(p: &Parsed, as_of: Option<u64>) -> Report {
 pub const ARCHIVE_TOLERANCE_E12: u64 = 0;
 
 /// The classes the second recorder can add: what the walk finds on the second archive.
-const WALK_CLASSES: [FindingClass; 14] = [
+const WALK_CLASSES: [FindingClass; 17] = [
     FindingClass::MissedBreach,
     FindingClass::MissedFail,
     FindingClass::FalseBreach,
@@ -156,6 +156,9 @@ const WALK_CLASSES: [FindingClass; 14] = [
     FindingClass::FillWithoutMargin,
     FindingClass::FillNotAllowed,
     FindingClass::ArchiveRecordInvalid,
+    FindingClass::PriceSampleMismatch,
+    FindingClass::ForcedCloseUnjustified,
+    FindingClass::FalseFailMarks,
 ];
 
 /// DESIGN 4.5 / 13.2 "dropped sample": replays the walk on the second archive and reports (a) the samples the two archives

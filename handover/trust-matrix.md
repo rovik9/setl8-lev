@@ -12,7 +12,7 @@ An honest history is scripted (samples and signed orders), run through the refer
 
 Honest outputs of all ten base scenarios are accepted by both (`honest_outputs_are_accepted_by_both`).
 
-Summary (after P21): BOTH 30, PROGRAM 3, VERIFIER 35, NEITHER 4, plus 4 chain-level PROGRAM rows and the 11 Reset (M8) rows below. P21 (decision 64, unpriced markets are untradable) added three rows and moved none: two BOTH ("a market fill in a market the account's rule set does not price" and "the fill of a triggered pending order in a market the rule set does not price") and one NEITHER that is the rule itself, not an attack ("a triggered pending order in an unpriced market that the evaluator does not fill"). Before that, after M9c: BOTH 28, PROGRAM 3, VERIFIER 35, NEITHER 3, plus 4 chain-level PROGRAM rows and the 11 Reset (M8) rows below. M9c moved four rows: "fill in a closed session", "fill on a held account" and "fill during the 12 h lock after a breach" from PROGRAM to BOTH, and "a market fill the account cannot margin" from NEITHER to VERIFIER; it added "a market fill above the market's notional cap" (VERIFIER). Before that (M9b): BOTH 25, PROGRAM 6, VERIFIER 33, NEITHER 4. M9b (decisions D1 to D5 of design decision 53) added 14 rows: 5 BOTH, 8 VERIFIER, 1 NEITHER; the NEITHER row is NOT a row that moved: it is a limit the work on D3 made visible (below). No existing row changed class.
+Summary (after P21; P25b moved one row from NEITHER to VERIFIER): BOTH 31, PROGRAM 2, VERIFIER 36, NEITHER 3, plus 4 chain-level PROGRAM rows and the 11 Reset (M8) rows below. P21 (decision 64, unpriced markets are untradable) added three rows and moved none: two BOTH ("a market fill in a market the account's rule set does not price" and "the fill of a triggered pending order in a market the rule set does not price") and one NEITHER that is the rule itself, not an attack ("a triggered pending order in an unpriced market that the evaluator does not fill"). Before that, after M9c: BOTH 28, PROGRAM 3, VERIFIER 35, NEITHER 3, plus 4 chain-level PROGRAM rows and the 11 Reset (M8) rows below. M9c moved four rows: "fill in a closed session", "fill on a held account" and "fill during the 12 h lock after a breach" from PROGRAM to BOTH, and "a market fill the account cannot margin" from NEITHER to VERIFIER; it added "a market fill above the market's notional cap" (VERIFIER). Before that (M9b): BOTH 25, PROGRAM 6, VERIFIER 33, NEITHER 4. M9b (decisions D1 to D5 of design decision 53) added 14 rows: 5 BOTH, 8 VERIFIER, 1 NEITHER; the NEITHER row is NOT a row that moved: it is a limit the work on D3 made visible (below). No existing row changed class.
 
 ## Caught by the program, and also by the verifier (BOTH)
 
@@ -48,6 +48,7 @@ Summary (after P21): BOTH 30, PROGRAM 3, VERIFIER 35, NEITHER 4, plus 4 chain-le
 | breach posted where its closes end at or below the static floor | Both | BreachBelowStaticFloor (6077) | [FalseBreach] | D4 (static floor). The verifier expects `Fail(StaticFloor)` at that sample. |
 | Fail omitted (a TightEnd instead) where a breach's closes end at or below the static floor | Both | MustReportFail (6089) | [MissedFail] | D4: a flat batch at or below the static floor must be `report_fail`; the verifier reports the missing `Fail`. |
 | breach posted where its closes overshoot the quick limit | Both | QuickLimitExceeded (6018) | [FalseBreach] | D4 (quick limit). |
+| event dated 30 s after the block time | Both | TimeInFuture (6009) | [PriceSampleMismatch] | The program compares with the cluster time (I-3, +2 s). P25b (was PROGRAM): the verifier has no clock, but the shifted event second no longer matches the sample the price rule names (the fill is priced with an OLDER sample than the newest at the new second). |
 
 ## Caught by the program only (PROGRAM)
 
@@ -55,7 +56,6 @@ Summary (after P21): BOTH 30, PROGRAM 3, VERIFIER 35, NEITHER 4, plus 4 chain-le
 |---|---|---|---|---|
 | wrong prev_hash | Program | BadPrevHash (6043) | - | `prev_hash` is a batch field, not an event: it is in no log line, so only the program ever sees it. |
 | posted by a key that is not the evaluator | Program | Unauthorized (6000) | - | The signer is an account of the transaction, not part of the journal. |
-| event dated 30 s after the block time | Program | TimeInFuture (6009) | - | The verifier has no clock; the program compares with the cluster time (I-3, +2 s). |
 
 ## Caught by the verifier only (VERIFIER)
 
@@ -98,6 +98,7 @@ These are the classes the chain cannot see (DESIGN 1.6 right-hand column): price
 | phase_advanced with no pass line before it | Verifier | - | [StateMismatch] | D5. |
 | a market fill the account cannot margin | Verifier | - | [FillWithoutMargin] | M9c, B1 (was NEITHER): neither the program (DESIGN 7.3 puts margin off-chain) nor, until M9c, the verifier said no. The verifier now judges every exposure-increasing execution with the evaluator's own formula. Exactly enough margin is accepted, one micro-USD short is not (`crates/verifier/src/walk.rs refusal_tests`, `tests/m9c.rs`). |
 | a market fill above the market's notional cap | Verifier | - | [FillNotAllowed] | M9c, B2: the cap is an evaluator rule (`max_notional_usd`, micro-USD); the program does not check it. |
+| market order executed at an older sample inside max_age (worse price) | Verifier | - | [PriceSampleMismatch] | P25b (decision 68, F-08, was NEITHER): the verifier prices every market Fill/Close with the NEWEST archive sample of the market at or before the event second (DESIGN 4.5); an older sample, favourable or not, and a newer one are `PriceSampleMismatch`. |
 
 ## Chain-level rows (the pass flow; PROGRAM)
 
@@ -115,7 +116,6 @@ Unchanged by M9c except for one row that left it ("a market fill the account can
 | class | who | program (error code) | verifier (finding class) | note |
 |---|---|---|---|---|
 | a sample that caused a breach dropped from the archive, breach omitted (no second recorder) | Neither | - | - |  |
-| market order executed at an older sample inside max_age (worse price) | Neither | - | - |  |
 | a trader's market order ignored (no fill, intent on file) | Neither | - | - |  |
 | a triggered pending order in an unpriced market that the evaluator does not fill (the rule itself) | Neither | - | - | P21: not an attack. The order is on file, the samples trigger it, the evaluator does not fill it; the verifier computes the same refusal (`Refusal::Unpriced`) and expects no fill, so there is no `TriggerMissed`. The same silence in a PRICED market is a miss (`TriggerMissed`, rows above). |
 
@@ -144,7 +144,6 @@ A policy point that used to be open here is closed (P19, decision 60): a violati
 Every NEITHER row, with the reason it stays open. These are what a user of option C trusts the evaluator operator (or the second recorder) for.
 
 * **a sample that caused a breach dropped from the archive, breach omitted (no second recorder)**: A malicious evaluator that rewrites its own sample stream and its own journal consistently leaves nothing to contradict (DESIGN 4.5 "Honest limit", R-2): only an independent second recorder (next row) exposes it.
-* **market order executed at an older sample inside max_age (worse price)**: The proof only has to be a real sample no older than `max_age_secs` (A-1, A-7); nothing says it must be the NEWEST one at the order's time, so the evaluator can pick the worst price of the window (up to 900 s in this test's markets). Bounded by `max_age_secs` and the spread; shorten it per market to shrink the slack.
 * **a trader's market order ignored (no fill, intent on file)**: A signed market or close intent with no trade under it is indistinguishable from an order the evaluator never received or that was rejected for margin; the intents file proves what was signed, not that it was executed (censorship). Pending orders are different: those are checked (`TriggerMissed`). M9c recomputes the reasons that depend on the account and the rules (margin, hold, lock, status, step and minimum, caps, a closed market) for every execution and for every triggered pending order; what stays out of reach for a market order is why NOTHING happened: the evaluator may refuse at arrival or at execution for reasons that depend on the moment (the newest sample older than `max_age_secs`, an invalid stop or take-profit level, the order sample it saw), none of which the files record.
 * **a triggered pending order in an unpriced market that the evaluator does not fill (the rule itself)**: Listed so that the table is complete, not because trust is needed: decision 64 makes the non-fill REQUIRED, and the verifier agrees with it (the account's rule set has no half-spread for the market, so no exposure can be opened there). What an operator could do instead, fill it, is the BOTH row above. An honest evaluator refuses such an order at placement and never writes it to the intents file; the row exists for the order a dishonest evaluator publishes in the file.
 
@@ -152,7 +151,7 @@ Two more limits follow from the table without being separate rows: a verifier th
 
 ## M12 additions (self-audit, handover/AUDIT_REPORT.md)
 * No row moved class. The dishonest-evaluator table (`tests-rs/tests/adversarial_evaluator.rs`) re-asserts 17 rows from the evaluator's side and found ONE case that belongs in no row: a `report_fail(StaticFloor)` built from the real lows of two markets that never coexisted is accepted by the program and VALID for the verifier (finding F-09 / TMX-1, a GAP, not a NEITHER row: DESIGN A-18 says a mass fail is "visible", and for this shape it is not). It is an open finding with a failing ignored test, not an accepted limit.
-* The NEITHER row "market order executed at an older sample inside max_age (worse price)" has an unreported favourable twin (F-08 / ATK-1): the same slack lets the evaluator pick a better price for the trader; the verifier does not flag it either.
+* The row "market order executed at an older sample inside max_age (worse price)" and its favourable twin (F-08 / ATK-1) moved from NEITHER to VERIFIER in P25b (see below).
 * The verifier now refuses (input error) a rules file whose version differs from the account's (F-04) and verifies intent signatures with `verify_strict` (F-03); neither changes a row.
 
 ## P25a changes (decision 67, handover/AUDIT_REPORT.md "Changes after the audit")

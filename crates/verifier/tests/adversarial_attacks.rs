@@ -3,8 +3,8 @@
 //! changes exactly what a dishonest evaluator would change and requires a named finding class. The program-side half is in
 //! `tests-rs/tests/adversarial.rs` (what the program lets through).
 //!
-//! * A-1: a breach posted late with an old sample (caught), a proof older than the window (caught), and FINDING ATK-1 (an old
-//!   sample of the window on a market close is NOT caught, ignored test).
+//! * A-1: a breach posted late with an old sample (caught), a proof older than the window (caught), and ATK-1 (an old
+//!   sample of the window on a market close: caught since P25b, decision 68, finding F-08).
 //! * A-9: a `timer_start` that does not follow from the fills (the timer-restart evasion).
 //! * A-14: a stale or false `Meta.flat` with a pass requested while a position is open.
 //! * A-18: a fabricated loss (a Fee no rule calls for; a Close of a position nobody opened) used to fail an honest account.
@@ -79,11 +79,12 @@ fn a01_the_old_sample_close_is_what_the_program_accepts_and_the_honest_journal_i
 
 // FINDING ATK-1
 #[test]
-#[ignore = "FINDING ATK-1: the verifier calls VALID a market close priced with an older sample of the max_age window (DESIGN 13.2 A-1 says it compares with the archive)"]
 fn a01_finding_atk1_a_market_close_priced_with_an_older_favourable_sample_must_be_flagged() {
     let b = close_with_the_old_spike(&spike_then_close());
     let r = verify_no_snapshot(&b);
     assert_eq!(r.verdict, Verdict::Mismatch, "an old but genuine sample of the last 60 s was accepted for a close at +60 s: {:#?}", r.findings);
+    // P25b D-F08: the finding is the price-sample class
+    assert!(r.classes().contains(&C::PriceSampleMismatch), "{:#?}", r.findings);
 }
 
 /// DESIGN 13.2 A-1, the case the verifier DOES catch: the breach is posted late (30 s) with the old sample. The program accepts it

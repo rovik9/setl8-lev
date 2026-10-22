@@ -1049,9 +1049,9 @@ fn rows() -> Vec<Row> {
                 // the block time stays the honest one
                 t.fix();
             },
-            who: Program,
+            who: Both,
             program: Some(Setl8Error::TimeInFuture),
-            verifier: &[],
+            verifier: &[F::PriceSampleMismatch],
         },
         Row {
             name: "proof carries another market's feed",
@@ -1638,9 +1638,9 @@ fn rows() -> Vec<Row> {
                 t.batches[at.0].batch.proofs = vec![t.proof_of_sample(old)];
                 t.fix();
             },
-            who: Neither,
+            who: Verifier,
             program: None,
-            verifier: &[],
+            verifier: &[F::PriceSampleMismatch],
         },
         Row {
             name: "a trader's market order ignored (no fill, intent on file)",
