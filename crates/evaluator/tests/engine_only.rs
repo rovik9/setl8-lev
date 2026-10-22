@@ -4,6 +4,12 @@ mod common;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+/// The largest `SetComputeUnitLimit` and the largest transaction (with a priority fee) any campaign batch asked for (P27).
+static BIGGEST_LIMIT: AtomicU64 = AtomicU64::new(0);
+static BIGGEST_TX: AtomicU64 = AtomicU64::new(0);
+/// Batches that needed a version-0 transaction with a lookup table (a group that cannot be split and does not fit a legacy transaction).
+static LOOKUP_TX: AtomicU64 = AtomicU64::new(0);
+
 use common::runner::*;
 use common::*;
 use evaluator::testkit::{generate, generate_after_reset, generate_wild, reset_story, PathSpec};
@@ -82,12 +88,21 @@ fn check(spec: &PathSpec, r: &RunResult) -> Result<(), String> {
     // the SPLIT model is exact for every batch of every path: the size follows from the real bytes, the compute bound from the shape
     for b in &batches {
         let len = b.batch.to_bytes().expect("encodes").len();
-        if b.tx_bytes != evaluator::batch::tx_size(b.kind, b.markets.len(), len, false) || b.cu != evaluator::batch::cu_estimate(b.kind, b.batch.events.len(), b.batch.proofs.len()) {
+        let (ne, np) = (b.batch.events.len(), b.batch.proofs.len());
+        if b.tx_bytes != evaluator::compute::tx_size_with_budget(b.kind, b.markets.len(), len, b.tx_format, false) || b.cu != evaluator::compute::measured_cu(b.kind, ne, np) || b.cu_limit != evaluator::compute::recommended_cu_limit(b.kind, ne, np) {
             return Err(format!("batch model off: {} bytes vs {len}-byte batch ({:?})", b.tx_bytes, spec.scenario));
         }
-        if b.tx_bytes > 1_232 || b.cu > 200_000 || b.batch.events.len() > 8 || b.batch.proofs.len() > 3 {
-            return Err(format!("batch above the chain's limits ({:?})", spec.scenario));
+        // P27 (decision 71): the requested limit covers the modelled compute, never exceeds the transaction maximum; the transaction, the
+        // limit instruction included (and with a priority fee), fits the packet; the batch is inside the format
+        let with_price = evaluator::compute::tx_size_with_budget(b.kind, b.markets.len(), len, b.tx_format, true);
+        if b.cu_limit < b.cu || b.cu_limit > evaluator::compute::MAX_CU_LIMIT || b.tx_bytes > 1_232 || with_price > 1_232 || ne > 8 || np > 3 {
+            return Err(format!("batch above the chain's limits: limit {} cu {} bytes {} (+price {with_price}) ({:?})", b.cu_limit, b.cu, b.tx_bytes, spec.scenario));
         }
+        if b.tx_format == evaluator::TxFormat::V0Lookup {
+            LOOKUP_TX.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        BIGGEST_LIMIT.fetch_max(b.cu_limit, std::sync::atomic::Ordering::Relaxed);
+        BIGGEST_TX.fetch_max(with_price as u64, std::sync::atomic::Ordering::Relaxed);
     }
     Ok(())
 }
@@ -113,6 +128,8 @@ fn cover_of(spec: &PathSpec, r: &RunResult) -> Cover {
     let lines: Vec<String> = r.items.iter().filter_map(|i| if let Item::Line(l) = i { Some(l.clone()) } else { None }).collect();
     c.m9b = m9b_cover(spec, w, &r.items, &lines);
     c.m9c = m9c_cover(w);
+    // P27: report_fail batches of 8 events that carry commission fees (3 closes, 3 fees, Fail, Meta)
+    c.m9c.fail8_commission = fail8_commission_of(&r.items);
     c
 }
 
@@ -189,6 +206,7 @@ fn engine_only_campaign() {
     // P25b (audit F-16): every forced-close sequence the evaluator emitted is one the program accepts
     println!("coverage unpostable: {} (must be 0); samples refused: future {}, stale {}, out of order {}", c.m9c.unpostable, c.m9c.samples_future, c.m9c.samples_stale, c.m9c.samples_out_of_order);
     assert_eq!(c.m9c.unpostable, 0, "Stats::unpostable must stay 0 over the campaign");
+    println!("compute (P27): the largest SetComputeUnitLimit requested {} (maximum {}), the largest transaction {} bytes with limit and price instructions (maximum 1232); batches that needed a lookup-table transaction: {}", BIGGEST_LIMIT.load(Ordering::Relaxed), evaluator::compute::MAX_CU_LIMIT, BIGGEST_TX.load(Ordering::Relaxed), LOOKUP_TX.load(Ordering::Relaxed));
     for (name, floor) in ResetCover::floors(n) {
         println!("coverage {name}: {} (floor {floor})", c.resets.value_of(name));
         if c.resets.value_of(name) < floor {

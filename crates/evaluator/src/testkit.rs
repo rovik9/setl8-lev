@@ -149,6 +149,10 @@ pub enum Scenario {
     /// the trader closes them one after the other. The first close is small, the second alone takes the quick tally over 2.8% of S:
     /// the account fails and the positions still open are closed with it (`Close{Fail}` after the crossing close, then the `Fail`).
     MultiQuick,
+    /// P27 (decision 71): three long positions in three class-0 markets with a commission, a slide of 9 to 13% of S through the static
+    /// floor: the failing batch holds the three forced closes, their three commissions, the `Fail` and the `Meta` (8 events, 3 proofs),
+    /// the heaviest legal `report_fail` the evaluator emits with fees.
+    CommissionFail,
 }
 
 /// A complete history.
@@ -461,7 +465,9 @@ fn generate_inner(seed: u64, wild: bool) -> PathSpec {
         100..=149 => Scenario::StaticFail,
         150..=219 => Scenario::QuickFail,
         220..=269 => Scenario::Pass,
-        270..=429 => Scenario::Night,
+        270..=389 => Scenario::Night,
+        // P27: 4% of the paths (taken from the night stories, whose coverage is far above its floor)
+        390..=429 => Scenario::CommissionFail,
         430..=489 => Scenario::Closed,
         490..=599 => Scenario::TightClean,
         940..=999 => Scenario::Convert,
@@ -484,7 +490,15 @@ fn generate_inner(seed: u64, wild: bool) -> PathSpec {
     shape_markets(&mut markets, scenario, size);
     let mut commission = [0u32; 8];
     // commission on some paths; more often on the quick-limit stories, where the overshooting slice has no fee (decision D2)
-    let comm_ppm = if wild { 600_000 } else if matches!(scenario, Scenario::QuickFail | Scenario::Convert) { 500_000 } else { 250_000 };
+    let comm_ppm = if wild {
+        600_000
+    } else if scenario == Scenario::CommissionFail {
+        1_000_000
+    } else if matches!(scenario, Scenario::QuickFail | Scenario::Convert) {
+        500_000
+    } else {
+        250_000
+    };
     if rng.chance(comm_ppm) && scenario != Scenario::Edge {
         commission = [rng.range(5, 40) as u32, 30, 30, 30, 40, 50, 60, 80];
     }
@@ -521,6 +535,7 @@ fn build_path(seed: u64, scenario: Scenario, tier: usize, size: i64, phase: u8, 
         Scenario::Remainder => remainder(&mut p, &ctx),
         Scenario::Hold => hold(&mut p, &ctx),
         Scenario::MultiQuick => multi_quick(&mut p, &ctx),
+        Scenario::CommissionFail => commission_fail(&mut p, &ctx),
     }
     // a final tick one second after the last input closes the last second
     let end = p.last + 2;
@@ -754,9 +769,10 @@ fn convert_flip(p: &mut Plot, ctx: &Ctx) {
 /// `Remainder`. All three trade a single FX market (class 0, 50x). `Unpriced` keeps two markets and takes the half-spread of the
 /// second away (the rule set does not price it, decision 64).
 fn shape_markets(markets: &mut Vec<MarketSpec>, scenario: Scenario, size: i64) {
-    if scenario == Scenario::MultiQuick {
-        // three markets, four when the draw gave three: all class 0 (50x), open all week, one source and spread each
-        let n: u16 = if markets.len() >= 3 { 4 } else { 3 };
+    if matches!(scenario, Scenario::MultiQuick | Scenario::CommissionFail) {
+        // three markets, four when the draw gave three (always three for the commission story): all class 0 (50x), open all week, one
+        // source and spread each
+        let n: u16 = if markets.len() >= 3 && scenario == Scenario::MultiQuick { 4 } else { 3 };
         markets.truncate(1);
         let Some(m0) = markets.first_mut() else { return };
         m0.class = 0;
@@ -1196,6 +1212,34 @@ fn multi_quick(p: &mut Plot, _ctx: &Ctx) {
     p.post(false);
     for m in 0..n {
         p.close_order(m, 0);
+    }
+    p.run(30, 5, 0, 20, 0);
+    p.post(false);
+}
+
+/// P27: three long positions in as many class-0 markets slide together through the static floor: the account fails with its three
+/// positions closed, each with its commission (`Close, Fee` x 3, `Fail`, `Meta`: 8 events, 3 proofs).
+fn commission_fail(p: &mut Plot, _ctx: &Ctx) {
+    let n = p.mk.len();
+    let k = p.rng.range(1_500, 2_500);
+    p.run(20, 5, 0, 200, 20_000);
+    p.long = true;
+    p.k_milli = k;
+    for m in 0..n {
+        let q = p.qty_for(m, k);
+        p.market_order(m, true, q, 0, 0);
+    }
+    p.run(5, 5, 0, 50, 0);
+    let loss = p.rng.range(90_000, 130_000);
+    let steps = 6;
+    for _ in 0..steps {
+        p.t += 5;
+        for m in 0..n {
+            let ppb = -i64::try_from(i128::from(loss) * 1_000_000 / i128::from(k) / i128::try_from(n).unwrap_or(1) / i128::from(steps)).unwrap_or(0);
+            p.bump(m, ppb);
+            p.mk[m].next_due = p.t;
+        }
+        p.tick(5);
     }
     p.run(30, 5, 0, 20, 0);
     p.post(false);

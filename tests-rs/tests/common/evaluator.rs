@@ -22,9 +22,9 @@ use setl8_lev_trading::{
     state::{Session, TradingAccount},
 };
 use solana_keypair::Keypair;
-use solana_message::Message;
+use solana_message::{v0, AddressLookupTableAccount, Message, VersionedMessage};
 use solana_signer::Signer;
-use solana_transaction::Transaction;
+use solana_transaction::{versioned::VersionedTransaction, Transaction};
 
 use super::journal::*;
 use super::pass::*;
@@ -126,6 +126,8 @@ pub struct LiteChain {
     pub txs: u64,
     pub opened_line: String,
     pub pass_events: u32,
+    /// The address lookup table of the version-0 transactions (P27): created in the VM on first use.
+    pub alt: Option<AddressLookupTableAccount>,
 }
 
 fn market_args(spec: &PathSpec, i: usize) -> CreateMarketArgs {
@@ -204,7 +206,7 @@ impl LiteChain {
             opened_time: a.created_at,
         };
         let opened_line = ::setl8_verify::log::opened_line(&shared::opened_rec(&params));
-        LiteChain { account: acct.to_bytes(), j, params, lines: Vec::new(), clock: spec.opened_time, slot: 1000, shapes: BTreeMap::new(), txs: 0, opened_line, pass_events: 0 }
+        LiteChain { account: acct.to_bytes(), j, params, lines: Vec::new(), clock: spec.opened_time, slot: 1000, shapes: BTreeMap::new(), txs: 0, opened_line, pass_events: 0, alt: None }
     }
 
     /// M8: the trader pays the reset price and continues in a NEW account of the same phase. The failed account (`self.j.acct`)
@@ -257,15 +259,68 @@ impl LiteChain {
         self.j.v.e.set_clock(self.clock);
     }
 
-    fn sign_and_send(&mut self, ix: Instruction) -> (TransactionResult, usize) {
+    /// The address lookup table of the shared accounts (config, the rule set, the event authority, the sector authority, the vault program, the
+    /// product registry and the markets 0 to 7), stored in the VM on first use as an account of the lookup-table program that has been
+    /// active since slot 0.
+    fn lookup_table(&mut self) -> AddressLookupTableAccount {
+        if let Some(t) = &self.alt {
+            return t.clone();
+        }
+        let mut addresses = vec![config_pda(), ruleset_pda(self.j.account().ruleset_version), event_authority_pda(), sector_authority_pda(), VAULT_ID, registry_pda()];
+        addresses.extend((0..8u16).map(market_pda));
+        let key = Pubkey::new_unique();
+        // ProgramState::LookupTable: u32 tag 1, deactivation slot u64::MAX (active), last extended slot 0, start index 0, no authority, 2 padding bytes
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&u64::MAX.to_le_bytes());
+        data.extend_from_slice(&0u64.to_le_bytes());
+        data.push(0);
+        data.push(0);
+        data.extend_from_slice(&[0u8; 32]);
+        data.extend_from_slice(&[0u8; 2]);
+        assert_eq!(data.len(), 56);
+        for a in &addresses {
+            data.extend_from_slice(a.as_ref());
+        }
+        let svm = &mut self.j.v.e.svm;
+        let lamports = svm.minimum_balance_for_rent_exemption(data.len());
+        svm.set_account(key, solana_account::Account { lamports, data, owner: "AddressLookupTab1e1111111111111111111111111".parse().unwrap(), executable: false, rent_epoch: 0 }).expect("sets the table");
+        // the addresses of a table are usable from the slot after the one that extended it
+        svm.warp_to_slot(100);
+        let t = AddressLookupTableAccount { key, addresses };
+        self.alt = Some(t.clone());
+        t
+    }
+
+    /// Signs and sends `ix` behind the `SetComputeUnitLimit` the compute contract demands (P27, decision 71): the transaction is the
+    /// one the backend builds, so its size is the evaluator's modelled size with the limit instruction. `lookup` = a version-0
+    /// transaction that loads the shared accounts from the lookup table (the format of a batch that cannot be split and does not fit a
+    /// legacy transaction).
+    fn sign_and_send(&mut self, ix: Instruction, cu_limit: u64, lookup: bool) -> (TransactionResult, usize) {
         let kp = dup(&self.j.v.evaluator);
+        let table = if lookup { Some(self.lookup_table()) } else { None };
         let svm = &mut self.j.v.e.svm;
         let bh = svm.latest_blockhash();
-        let msg = Message::new_with_blockhash(&[ix], Some(&kp.pubkey()), &bh);
-        let mut tx = Transaction::new_unsigned(msg);
-        tx.partial_sign(&[&kp], bh);
-        let size = bincode::serialize(&tx).expect("serialize").len();
-        let r = svm.send_transaction(tx);
+        let budget = Instruction {
+            program_id: "ComputeBudget111111111111111111111111111111".parse().unwrap(),
+            accounts: vec![],
+            data: [vec![2u8], u32::try_from(cu_limit).expect("a limit fits u32").to_le_bytes().to_vec()].concat(),
+        };
+        let (r, size) = match table {
+            None => {
+                let msg = Message::new_with_blockhash(&[budget, ix], Some(&kp.pubkey()), &bh);
+                let mut tx = Transaction::new_unsigned(msg);
+                tx.partial_sign(&[&kp], bh);
+                let size = bincode::serialize(&tx).expect("serialize").len();
+                (svm.send_transaction(tx), size)
+            }
+            Some(t) => {
+                let msg = v0::Message::try_compile(&kp.pubkey(), &[budget, ix], &[t], bh).expect("compiles");
+                let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&kp]).expect("signs");
+                let size = bincode::serialize(&tx).expect("serialize").len();
+                (svm.send_transaction(tx), size)
+            }
+        };
         svm.expire_blockhash();
         self.txs += 1;
         (r, size)
@@ -342,14 +397,16 @@ impl LiteChain {
         };
         let _ = w;
         format!(
-            "{} events={} proofs={} sources={:?}",
+            "{} events={} proofs={} sources={:?} limit={}{}",
             match b.kind {
                 BatchKind::PostJournal => "post_journal",
                 BatchKind::ReportFail(_) => "report_fail",
             },
             b.batch.events.len(),
             b.batch.proofs.len(),
-            proof_sources
+            proof_sources,
+            b.cu_limit,
+            if b.tx_format == ::evaluator::TxFormat::V0Lookup { " LOOKUP-TABLE-TX" } else { "" }
         )
     }
 
@@ -401,7 +458,7 @@ impl Chain for LiteChain {
         self.set_clock(b.meta_time);
         let ix = self.post_ix(b, None);
         let before = self.j.account();
-        let (r, size) = self.sign_and_send(ix);
+        let (r, size) = self.sign_and_send(ix, b.cu_limit, b.tx_format == ::evaluator::TxFormat::V0Lookup);
         let meta = match r {
             Ok(m) => m,
             Err(f) => panic!(
@@ -435,7 +492,7 @@ impl Chain for LiteChain {
         assert_eq!(size, b.tx_bytes, "the modelled transaction size is exact");
         assert!(size <= 1_232, "transaction of {size} bytes");
         assert!(meta.compute_units_consumed <= b.cu, "compute units {} above the model {}", meta.compute_units_consumed, b.cu);
-        assert!(meta.compute_units_consumed <= 200_000);
+        assert!(meta.compute_units_consumed <= b.cu_limit && b.cu_limit <= 1_400_000, "compute units {} above the requested limit {}", meta.compute_units_consumed, b.cu_limit);
         let key = Self::shape_key(b, w);
         let s = self.shapes.entry(key).or_default();
         s.count += 1;

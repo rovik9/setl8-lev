@@ -3,7 +3,8 @@ use std::collections::BTreeSet;
 
 use journal_types::{apply_batch, JournalBatch, JournalEvent, PriceProof, NO_PROOF};
 
-use crate::batch::{cu_estimate, tx_size};
+use crate::batch::{tx_size, tx_size_v0, TX_LIMIT};
+use crate::compute::{measured_cu, recommended_cu_limit, MAX_CU_LIMIT};
 use crate::eval::Evaluator;
 use crate::sha256::chain_hasher;
 use crate::types::*;
@@ -49,7 +50,9 @@ struct Measure {
     proofs: usize,
     markets: BTreeSet<u16>,
     tx: usize,
+    format: TxFormat,
     cu: u64,
+    cu_limit: u64,
 }
 
 impl Evaluator {
@@ -65,7 +68,7 @@ impl Evaluator {
         })
     }
 
-    fn measure(&self, units: &[&Unit], policy: &BatchPolicy) -> Measure {
+    fn measure(&self, units: &[&Unit], policy: &BatchPolicy, v0: bool) -> Measure {
         let kind = match fail_reason_of(units) {
             Some(r) => BatchKind::ReportFail(r),
             None => BatchKind::PostJournal,
@@ -100,9 +103,14 @@ impl Evaluator {
         }
         let proof_bytes: usize = proof_set.iter().filter_map(|j| self.proof_for(*j)).map(|p| 61 + p.signed_update.len()).sum();
         let batch_len = 8 + 32 + 4 + ev_bytes + 4 + proof_bytes;
-        let tx = tx_size(kind, markets.len(), batch_len, policy.compute_budget_ix);
-        let cu = cu_estimate(kind, events, proof_set.len());
-        Measure { needs_flat, ends_flat, kind, events, proofs: proof_set.len(), markets, tx, cu }
+        let (tx, format) = if v0 {
+            (tx_size_v0(kind, markets.len(), batch_len, policy.compute_budget_ix), TxFormat::V0Lookup)
+        } else {
+            (tx_size(kind, markets.len(), batch_len, policy.compute_budget_ix), TxFormat::Legacy)
+        };
+        let cu = measured_cu(kind, events, proof_set.len());
+        let cu_limit = recommended_cu_limit(kind, events, proof_set.len());
+        Measure { needs_flat, ends_flat, kind, events, proofs: proof_set.len(), markets, tx, format, cu, cu_limit }
     }
 
     fn fits(m: &Measure, p: &BatchPolicy) -> bool {
@@ -111,7 +119,7 @@ impl Evaluator {
             && m.proofs <= p.max_proofs.min(journal_types::MAX_PROOFS_PER_BATCH)
             && m.markets.len() <= 8
             && m.tx <= p.max_tx_bytes
-            && m.cu <= p.max_cu
+            && m.cu_limit <= p.max_cu
     }
 
     /// Turns the queued events into batches under `policy`, in order, each ending with a `Meta`. Units (a flip, the last
@@ -124,13 +132,24 @@ impl Evaluator {
         }
         while !self.queue.is_empty() {
             let mut take = 0usize;
+            // a first unit that does not fit a legacy transaction (it cannot be split) may use a version-0 transaction with a lookup table;
+            // the rest of the batch then follows the same format. Anything that does fit legacy stays legacy and is split as before.
+            let v0 = policy.allow_lookup_table && {
+                let first: Vec<&Unit> = self.queue.iter().take(1).collect();
+                self.measure(&first, policy, false).tx > policy.max_tx_bytes
+            };
             loop {
                 if take >= self.queue.len() {
                     break;
                 }
                 let cand: Vec<&Unit> = self.queue.iter().take(take + 1).collect();
-                let m = self.measure(&cand, policy);
+                let m = self.measure(&cand, policy, v0);
                 if Self::fits(&m, policy) || take == 0 {
+                    if take == 0 && (m.tx > TX_LIMIT || m.cu_limit > MAX_CU_LIMIT) && m.events <= journal_types::MAX_EVENTS_PER_BATCH && m.proofs <= journal_types::MAX_PROOFS_PER_BATCH {
+                        // a unit that cannot be split and that no transaction can carry (P27; a group over the batch format was counted already
+                        // by `exec.rs`): counted, never silently emitted as if it were fine
+                        self.stats.unpostable = self.stats.unpostable.saturating_add(1);
+                    }
                     take += 1;
                 } else {
                     break;
@@ -141,18 +160,18 @@ impl Evaluator {
                 }
             }
             let units: Vec<Unit> = (0..take).filter_map(|_| self.queue.pop_front()).collect();
-            let b = self.seal(units, policy);
+            let b = self.seal(units, policy, v0);
             out.push(b);
         }
         if policy.heartbeat && self.processed_through > self.last_meta_time && matches!(self.status, Status::Active) && !self.ended_externally {
-            out.push(self.seal(Vec::new(), policy));
+            out.push(self.seal(Vec::new(), policy, false));
         }
         out
     }
 
-    fn seal(&mut self, units: Vec<Unit>, policy: &BatchPolicy) -> Batch {
+    fn seal(&mut self, units: Vec<Unit>, policy: &BatchPolicy, v0: bool) -> Batch {
         let unit_refs: Vec<&Unit> = units.iter().collect();
-        let m = self.measure(&unit_refs, policy);
+        let m = self.measure(&unit_refs, policy, v0);
         let flat_events: Vec<&QEvent> = units.iter().flat_map(|u| u.events.iter()).collect();
         // proof table in order of first use
         let mut table: Vec<usize> = Vec::new();
@@ -236,6 +255,8 @@ impl Evaluator {
             account_after,
             tx_bytes: m.tx,
             cu: m.cu,
+            cu_limit: m.cu_limit,
+            tx_format: m.format,
         }
     }
 }

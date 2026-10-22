@@ -1,0 +1,2002 @@
+{
+  "complete": true,
+  "errors": [],
+  "format": "setl8-cu-runtime",
+  "limit_requested": 400000,
+  "program": {
+    "id": "HmkvQfgCMnihGzdZE1FTKVacZN76JS9bfEu2QBJBAdvY",
+    "sha256": "e1795e205b4a0e93952a20e48fe0607325c9059788623586f94363207f61aec5",
+    "vault_commit": "4ca958c"
+  },
+  "runs_per_shape": 3,
+  "shapes": [
+    {
+      "instruction": "ban_wallet",
+      "max_cu": 39078,
+      "max_signature": "2s7HyacMViCqFMsv1WyCvkKa3WGTSYtUkavPMZpWMS7WtWpvghRPjMxVx3gKhnTF1PvUfabW4UQ8fTCWXovFffAw",
+      "params": {
+        "tx_format": "legacy"
+      },
+      "runs": [
+        37578,
+        39078,
+        37578
+      ],
+      "shape": "wallet profile created",
+      "tx_bytes": 609
+    },
+    {
+      "instruction": "cancel_pass",
+      "max_cu": 31150,
+      "max_signature": "5JY7eiEwzNBkQntGuHxSgwWBFSAKM1GokNUVtSm9EP5Ma3UKMFmxhMg5YLXC698RqVJBkczmQiM9oriGWhzCcz4D",
+      "params": {
+        "tx_format": "legacy"
+      },
+      "runs": [
+        31150,
+        31150,
+        31150
+      ],
+      "shape": "after the (selftest) delay",
+      "tx_bytes": 245
+    },
+    {
+      "instruction": "close_account",
+      "max_cu": 3340,
+      "max_signature": "2DsKcjgfR2rm54PFCt4zx67YX8R2WCvPifaf1fFRnRvJ2NrvBhQyjfPswLK2Prc4hGqFCvaGY4gMTzv7XfV6azVq",
+      "params": {
+        "tx_format": "legacy"
+      },
+      "runs": [
+        3340,
+        3340,
+        3340
+      ],
+      "shape": "failed account after the (selftest) retention",
+      "tx_bytes": 211
+    },
+    {
+      "instruction": "confirm_pass",
+      "max_cu": 35159,
+      "max_signature": "2wn8NzSrkchipTzeWS1P58GMqAhWryLnWm8hN1A1KrcreDGhzta5K51qFXN7XZwAfnVe5WJdtMYidpsgvaHxxTCQ",
+      "params": {
+        "phase": 1,
+        "tx_format": "legacy"
+      },
+      "runs": [
+        35159,
+        35159,
+        35159
+      ],
+      "shape": "phase 1 (starts phase 2 at once)",
+      "tx_bytes": 278
+    },
+    {
+      "instruction": "confirm_pass",
+      "max_cu": 35652,
+      "max_signature": "3BJALgDjx3HAeLptELNe7YLiQTiLtjUDVxP1VZnvXE21ZLJg4EEDK31rGq4NKxvT5mqbSTGvA4De6Hzw3a9D1NvR",
+      "params": {
+        "phase": 2,
+        "tx_format": "legacy"
+      },
+      "runs": [
+        35652,
+        35652,
+        35652
+      ],
+      "shape": "phase 2 to 5 (pending)",
+      "tx_bytes": 278
+    },
+    {
+      "instruction": "create_market",
+      "max_cu": 42247,
+      "max_signature": "2QCMNE2HcYnGkATYwq7SPUwCvBeeYajzigf9qsB8sYu2T8vS3NanX267P5WNhzGsPbA7QMgEqbXAsojk16Epgpm7",
+      "params": {
+        "sessions": 6,
+        "tx_format": "legacy"
+      },
+      "runs": [
+        39247,
+        42247,
+        39247
+      ],
+      "shape": "six sessions",
+      "tx_bytes": 634
+    },
+    {
+      "instruction": "create_ruleset",
+      "max_cu": 58447,
+      "max_signature": "3BawaJhmkpcvrceSLRPG8iU8vW2rEtMcbScVtpZeLxoZ62qkM7Uofx7WtbG19NN4NxD2FuRe6k4qmWsJzFrRWwpd",
+      "params": {
+        "tx_format": "legacy",
+        "version": 2
+      },
+      "runs": [
+        58447,
+        58447,
+        55447
+      ],
+      "shape": "the 552-byte rule set, 10 tiers",
+      "tx_bytes": 1058
+    },
+    {
+      "instruction": "fail_for_violation",
+      "max_cu": 49938,
+      "max_signature": "2EvKkUsauS1DbrPQ1uHqbKKfLLkGbTaQXqmAr9LeojteHPXtHk4BzPKp4W3jXGHaU4ciDqvXrk82FBzgt9HqWCVV",
+      "params": {
+        "tx_format": "legacy"
+      },
+      "runs": [
+        49938,
+        49938,
+        49938
+      ],
+      "shape": "held account (vault flag_trader_failed)",
+      "tx_bytes": 668
+    },
+    {
+      "instruction": "finalize_pass",
+      "max_cu": 87115,
+      "max_signature": "QsgFMqHY87SARRtVnguLXMELbkicaAs2t4LAvHdfhMH8DYJnhawhpc5GuvgWwsnwb1HW3oYwmjk9ggx6a92NBxH",
+      "params": {
+        "phase": 2,
+        "tx_format": "legacy"
+      },
+      "runs": [
+        84116,
+        84115,
+        87115
+      ],
+      "shape": "phase 2 -> 3 (payout claim created, vault CPI)",
+      "tx_bytes": 575
+    },
+    {
+      "instruction": "hold_account",
+      "max_cu": 36578,
+      "max_signature": "3My25MpWwJMMD62mxsvaqMoMA6hdkTNT6cu6ACUhEsrkfDpb34A1xPF6V8yUXzbnEkMmoA6aRFMqEfrQABWjHUgb",
+      "params": {
+        "tx_format": "legacy"
+      },
+      "runs": [
+        36578,
+        36578,
+        36578
+      ],
+      "shape": "fresh account",
+      "tx_bytes": 343
+    },
+    {
+      "instruction": "init_config",
+      "max_cu": 14442,
+      "max_signature": "5ajo1PcfqKdW7b9yyrKawBAgCmDVAkXrRHKjPJw8dfa1iSHg7ntep2o237npFjzHB6ZNF93Z9SG7ff6CFZUoFs5Z",
+      "params": {
+        "singleton": true,
+        "tx_format": "legacy"
+      },
+      "runs": [
+        14442
+      ],
+      "shape": "both admins + payer (singleton: one run; the limit instruction is added to the size)",
+      "tx_bytes": 623
+    },
+    {
+      "instruction": "open_account",
+      "max_cu": 103181,
+      "max_signature": "3CrLpYjwkAgX1x1ZyV3SjgYt7GyEtAma6JjiXdBK7T8wptgtBfDZYes54LchyHsdAkT1S7nEBNZqoMfqEQqpMrDV",
+      "params": {
+        "bump_score": 27,
+        "first_account_of_wallet": true,
+        "seed": 20213,
+        "tier": 9,
+        "tx_format": "legacy"
+      },
+      "runs": [
+        103181,
+        88536,
+        88536
+      ],
+      "shape": "worst key, tier 9",
+      "tx_bytes": 782
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 42675,
+      "max_signature": "335SE9aNRQFAjEDw9XrDm2cLkyUef3NG1rSfCXbVo7A96TZi2xXMZ2NnV7jYSRKfo1im3EqKsYVoNr2QcgcdMnPw",
+      "params": {
+        "events": 1,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 0,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        42675,
+        42674,
+        42674
+      ],
+      "shape": "events=1 proofs=0 fees",
+      "tx_bytes": 480
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 61672,
+      "max_signature": "e2VTrnat5W1NwRQwX65GXjKuy7rHaxeEZzYBKs8ZHsx39f2GqwDwoHmfJFQNxBQzK77iNFZ5oMQn25UMgfTQd6U",
+      "params": {
+        "events": 2,
+        "fee_events": 1,
+        "limit": 400000,
+        "proofs": 0,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        61672,
+        61672,
+        61672,
+        61672,
+        61672,
+        61672
+      ],
+      "shape": "events=2 proofs=0 fees",
+      "tx_bytes": 533
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 64798,
+      "max_signature": "5h7YbSQAUq9ffNRTQRneyiXPtSSitzZPCBbkK7s95T6w5Dq7MH95qjKTYqeE2WTdNxMKAZ1WNg1Y97LBesUHdDkK",
+      "params": {
+        "events": 2,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 1,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        64798,
+        64798,
+        64798
+      ],
+      "shape": "events=2 proofs=1 fills/closes",
+      "tx_bytes": 640
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 78224,
+      "max_signature": "gwrpbodd5k7MqKryT3HmGB1S5uefCeNubuw727bNC9dvAtf9yvAgbxo9pNB3Tdr8SBgM4fjH6EuT2b6vy3FEWQL",
+      "params": {
+        "events": 3,
+        "fee_events": 2,
+        "limit": 400000,
+        "proofs": 0,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        78224,
+        78224,
+        78224,
+        78224,
+        78224,
+        78224
+      ],
+      "shape": "events=3 proofs=0 fees",
+      "tx_bytes": 553
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 81350,
+      "max_signature": "3C69QpcnCNesofeXSbewNKAZUVztaV6QibSX4Ng7XD9jVUFpU3cPsry4gD56qFGh35TMJHinw7FZmzaS5BY51ft5",
+      "params": {
+        "events": 3,
+        "fee_events": 1,
+        "limit": 400000,
+        "proofs": 1,
+        "tx_format": "legacy",
+        "variant": "fees"
+      },
+      "runs": [
+        81350,
+        81350,
+        81350
+      ],
+      "shape": "events=3 proofs=1 fees+fills/closes",
+      "tx_bytes": 660
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 85046,
+      "max_signature": "3KyA9u8vPM9FDipEJhSJBCUyguThMC3Mv4FbnZnUgRc5GYshEujW5nFX2GtkenW5TvsuNuXqDwfG3w2fFmp4Tpfj",
+      "params": {
+        "events": 3,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 1,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        85046,
+        85046,
+        85046
+      ],
+      "shape": "events=3 proofs=1 fills/closes",
+      "tx_bytes": 707
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 87537,
+      "max_signature": "3zTUoxyk5QKfCJCwiUGv7bHH69FqwK7csNCrWpfQt39LyL5sKFwcantBi6s8T4qKUi8LorkfvzNsGWo1K9U4rhHH",
+      "params": {
+        "events": 3,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 2,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        87537,
+        87537,
+        87537
+      ],
+      "shape": "events=3 proofs=2 fills/closes",
+      "tx_bytes": 801
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 94776,
+      "max_signature": "3cc41oHXGh9XXcBToco7nUf3MQ1Gc3McqQcKJwtdymEEJKEEKfczQE2XQ8hWB6UgDWz94Cff4tRMKwkEJkCzUAuL",
+      "params": {
+        "events": 4,
+        "fee_events": 3,
+        "limit": 400000,
+        "proofs": 0,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        94776,
+        94776,
+        94776,
+        94776,
+        94776,
+        94776
+      ],
+      "shape": "events=4 proofs=0 fees",
+      "tx_bytes": 573
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 97902,
+      "max_signature": "4GwV8YhPyvw8GNqWAkcBiLawai3qUbquztFntRMnF7ipSKewQrBp99ugDFPNgUKpRnM9mvknpSQ4W5tvdhvPCSQW",
+      "params": {
+        "events": 4,
+        "fee_events": 2,
+        "limit": 400000,
+        "proofs": 1,
+        "tx_format": "legacy",
+        "variant": "fees"
+      },
+      "runs": [
+        97902,
+        97902,
+        97902
+      ],
+      "shape": "events=4 proofs=1 fees+fills/closes",
+      "tx_bytes": 680
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 104361,
+      "max_signature": "3grZ9zguzSWUd7egpPdrexKawCLGQjNT2ivSNJAoYiySJ4QufQUvGDXBos6R2k9x8QHEkHkmLg4CPjkkb3qonFWG",
+      "params": {
+        "events": 4,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 1,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        104361,
+        104361,
+        104361
+      ],
+      "shape": "events=4 proofs=1 fills/closes",
+      "tx_bytes": 773
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 104089,
+      "max_signature": "4ttEyR2xF1QotdtyKmaw6qduzQhQc4KS6sEe87DyJe72whi4yS1kYJAWcR6U1Lma9yhFkFev9jGVsGGMZk9DUYzG",
+      "params": {
+        "events": 4,
+        "fee_events": 1,
+        "limit": 400000,
+        "proofs": 2,
+        "tx_format": "legacy",
+        "variant": "fees"
+      },
+      "runs": [
+        104089,
+        104089,
+        104089
+      ],
+      "shape": "events=4 proofs=2 fees+fills/closes",
+      "tx_bytes": 821
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 106852,
+      "max_signature": "3LCm7fu2cfdQq1gSNi3MQ169rNJnS4BzBDhRVqziobUQFPAJDdf6GiUUokTTZXsNBmjcLaut63xqmkgMoJB9AC1F",
+      "params": {
+        "events": 4,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 2,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        106852,
+        106852,
+        106852
+      ],
+      "shape": "events=4 proofs=2 fills/closes",
+      "tx_bytes": 867
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 109348,
+      "max_signature": "2nZnap73yumD41YaXM56coy4zuaNqmyYiDLyZmGtCKfxYY4PeDScBA7MCph6T18ZdhT9vYDYiAb4WqTZiTCJCF2t",
+      "params": {
+        "events": 4,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 3,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        109348,
+        109348,
+        109348
+      ],
+      "shape": "events=4 proofs=3 fills/closes",
+      "tx_bytes": 961
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 111638,
+      "max_signature": "48Gzct1W3UYjQcRCDgTFx35ZJMXmcCBNBm6T4Gkag6ckKejiDvkQCuuPBFSf2nnwd4Kw9eLjWt9LLy27KdqPARq8",
+      "params": {
+        "events": 5,
+        "fee_events": 4,
+        "limit": 400000,
+        "proofs": 0,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        111638,
+        111638,
+        111638,
+        111638,
+        111638,
+        111638
+      ],
+      "shape": "events=5 proofs=0 fees",
+      "tx_bytes": 593
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 114764,
+      "max_signature": "46mfbxXkbeC3JudgjtjCH9a5oLtDGTLuTMSX41FZBsnyYFGBi8BUQg1i9NAj4ASPFKfwTBDdQn6WukCp6D8LwBPX",
+      "params": {
+        "events": 5,
+        "fee_events": 3,
+        "limit": 400000,
+        "proofs": 1,
+        "tx_format": "legacy",
+        "variant": "fees"
+      },
+      "runs": [
+        114764,
+        114764,
+        114764
+      ],
+      "shape": "events=5 proofs=1 fees+fills/closes",
+      "tx_bytes": 700
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 124919,
+      "max_signature": "oYB2ugKchY6cX4VV1erJkxg3Jwh2o7Z7aDPwLrmRL5PhEBb8edoZCLCEcinTmksZof8aB6yrDvJ9wYFi7y294Uq",
+      "params": {
+        "events": 5,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 1,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        124919,
+        124919,
+        124919
+      ],
+      "shape": "events=5 proofs=1 fills/closes",
+      "tx_bytes": 840
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 120951,
+      "max_signature": "38FmxCDyQLRXeiij7M9cebGHAdguVbN5xqjPqKNkLuoZXemVdzZb5J954DX6mDk4wDmiSVX6Y1CuaTZCBcyDn4EV",
+      "params": {
+        "events": 5,
+        "fee_events": 2,
+        "limit": 400000,
+        "proofs": 2,
+        "tx_format": "legacy",
+        "variant": "fees"
+      },
+      "runs": [
+        120951,
+        120951,
+        120951
+      ],
+      "shape": "events=5 proofs=2 fees+fills/closes",
+      "tx_bytes": 841
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 127415,
+      "max_signature": "vrPpeNavfqPNs2FxqLqY1tU6UpcatszwoN8L2MXocRuaXpjupvv3JsYv6LfduZUwD2W2xnVgvAQR6tF1sWyyxie",
+      "params": {
+        "events": 5,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 2,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        127415,
+        127415,
+        127415
+      ],
+      "shape": "events=5 proofs=2 fills/closes",
+      "tx_bytes": 934
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 126210,
+      "max_signature": "37ui1xWfoCxeuMoX8FB6iU1PjrH34sgy2V5VcQAuzb5C7bTy9Tvk9Z75uRhV6zr36hRaXFQexQz7JS4SANByPeDp",
+      "params": {
+        "events": 5,
+        "fee_events": 1,
+        "limit": 400000,
+        "proofs": 3,
+        "tx_format": "legacy",
+        "variant": "fees"
+      },
+      "runs": [
+        126210,
+        126210,
+        126210
+      ],
+      "shape": "events=5 proofs=3 fees+fills/closes",
+      "tx_bytes": 981
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 129906,
+      "max_signature": "5MaDved8Qmt5LjsYNFZgaHkBgfuxGb6CU5Ntj1zKpyLFozq1kLxgsgbQNN1Rjk2mqSR6xyxN3Z5J1582u5XuVPCD",
+      "params": {
+        "events": 5,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 3,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        129906,
+        129906,
+        129906
+      ],
+      "shape": "events=5 proofs=3 fills/closes",
+      "tx_bytes": 1028
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 128190,
+      "max_signature": "xc64dMP5zLn94EAxMVgtu2SkpXD3vdzJwBarrUiZQE6NwFmAFSJ5rKr1Aa4uMsq9rFehYXncgVmYpsuQZj8qYuu",
+      "params": {
+        "events": 6,
+        "fee_events": 5,
+        "limit": 400000,
+        "proofs": 0,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        128190,
+        128190,
+        128190,
+        128190,
+        128190,
+        128190
+      ],
+      "shape": "events=6 proofs=0 fees",
+      "tx_bytes": 613
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 131316,
+      "max_signature": "4ACpnpB8HHe5viNULk2Vdvffqjhqfnynq3VogXQgtAnkYKMyH7xEiGTekE9EnGZ5mmrgxcESWrKeXu25bD82ea69",
+      "params": {
+        "events": 6,
+        "fee_events": 4,
+        "limit": 400000,
+        "proofs": 1,
+        "tx_format": "legacy",
+        "variant": "fees"
+      },
+      "runs": [
+        131316,
+        131316,
+        131316
+      ],
+      "shape": "events=6 proofs=1 fees+fills/closes",
+      "tx_bytes": 720
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 144234,
+      "max_signature": "4nB6KeCXX66cFTCeyAHgyMyAuDguQRMcs4Ubo5WdAsdtcMA8x3PKw9GmjwJxAfthrAwUR7ivqQNoyA1AZ8rfxrbL",
+      "params": {
+        "events": 6,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 1,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        144234,
+        144234,
+        144234
+      ],
+      "shape": "events=6 proofs=1 fills/closes",
+      "tx_bytes": 906
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 137503,
+      "max_signature": "55m5FsryESZZGPDkWKWMBhr61bdXwWNWh9YbDsY3TzPnMwRJzvvcJ6RnxAtMYqQnUoJAkp1Fghgvigy2PVsuNhxb",
+      "params": {
+        "events": 6,
+        "fee_events": 3,
+        "limit": 400000,
+        "proofs": 2,
+        "tx_format": "legacy",
+        "variant": "fees"
+      },
+      "runs": [
+        137503,
+        137503,
+        137503
+      ],
+      "shape": "events=6 proofs=2 fees+fills/closes",
+      "tx_bytes": 861
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 146730,
+      "max_signature": "48RBCaGakBex8xx52QQsrAGSe5BFuumx4Q4ggXpSGkUqWb6n2vFAZ8qJrf1Yo9iVVcppwEwZByq44xnGMbRooFaA",
+      "params": {
+        "events": 6,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 2,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        146730,
+        146730,
+        146730
+      ],
+      "shape": "events=6 proofs=2 fills/closes",
+      "tx_bytes": 1000
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 142762,
+      "max_signature": "58dmS3CmwucEJhsx3EzvoFm77WSteJpvWsc94t5bM4kxxbGryQY2KDDDmC4dfckbMUL5GDbCiUN3XVkFFq22oz67",
+      "params": {
+        "events": 6,
+        "fee_events": 2,
+        "limit": 400000,
+        "proofs": 3,
+        "tx_format": "legacy",
+        "variant": "fees"
+      },
+      "runs": [
+        142762,
+        142762,
+        142762
+      ],
+      "shape": "events=6 proofs=3 fees+fills/closes",
+      "tx_bytes": 1001
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 149226,
+      "max_signature": "4hqmmJuoirifzi5qdfggqxifVZsR7fCyvfhyS1FccR5xaRFkkYbthtknm8H1wNFetJodP7QUvitpShv899tD5ryz",
+      "params": {
+        "events": 6,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 3,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        149226,
+        149226,
+        149226
+      ],
+      "shape": "events=6 proofs=3 fills/closes",
+      "tx_bytes": 1094
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 144742,
+      "max_signature": "2f3UZVTnU1aWWTcV5U15JG1tw1iFSJ9e8etgzQRusKUUB6Da2DBkATCB2y3wDYbMdssx5QvYh115tMcbLNYT4usd",
+      "params": {
+        "events": 7,
+        "fee_events": 6,
+        "limit": 400000,
+        "proofs": 0,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        144742,
+        144742,
+        144742,
+        144742,
+        144742,
+        144742
+      ],
+      "shape": "events=7 proofs=0 fees",
+      "tx_bytes": 633
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 147868,
+      "max_signature": "9PUrRMBuz3VubnhgQbqYWWKFY496tJqLEMt3fjUXPFcFeQieBRUN7vKksfWmcCm25oLwRu5j3QFcbWNgbp34pVR",
+      "params": {
+        "events": 7,
+        "fee_events": 5,
+        "limit": 400000,
+        "proofs": 1,
+        "tx_format": "legacy",
+        "variant": "fees"
+      },
+      "runs": [
+        147868,
+        147868,
+        147868
+      ],
+      "shape": "events=7 proofs=1 fees+fills/closes",
+      "tx_bytes": 740
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 164482,
+      "max_signature": "2fi3m7FGfFp3UQzSemdfbNRcLbq9BypKRwcRX98Fw7m3r8hsk8B7drpG9dVS3ycKv9QLUik8kM9TZHY5mT7BzAEE",
+      "params": {
+        "events": 7,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 1,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        164482,
+        164482,
+        164482
+      ],
+      "shape": "events=7 proofs=1 fills/closes",
+      "tx_bytes": 973
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 154055,
+      "max_signature": "qGJw2ps56SsMNQQTzta6FuH4U6qmSsjApZc1SfLmMmaDZyCmcijfacpcgVhG3HNk41QZGpSfmijpxViFatZoyyh",
+      "params": {
+        "events": 7,
+        "fee_events": 4,
+        "limit": 400000,
+        "proofs": 2,
+        "tx_format": "legacy",
+        "variant": "fees"
+      },
+      "runs": [
+        154055,
+        154055,
+        154055
+      ],
+      "shape": "events=7 proofs=2 fees+fills/closes",
+      "tx_bytes": 881
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 166983,
+      "max_signature": "2o2YjdSGqMkCZNY1zwyFuJ2neZGroKAbEJvnLo8bdcvmGk6oE6dsLtGBsN6AYXHfBna6QN4RgXzecbhJnTkiDH7X",
+      "params": {
+        "events": 7,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 2,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        166983,
+        166983,
+        166983
+      ],
+      "shape": "events=7 proofs=2 fills/closes",
+      "tx_bytes": 1067
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 159314,
+      "max_signature": "5YWFXVPgAVCQRThBPBJcvacm5XptgZ3P6e9Qmr47fxCjpGu6yjiBF74hV2KMFesbSGuXHB5aCcYFttDTjU7Zyckb",
+      "params": {
+        "events": 7,
+        "fee_events": 3,
+        "limit": 400000,
+        "proofs": 3,
+        "tx_format": "legacy",
+        "variant": "fees"
+      },
+      "runs": [
+        159314,
+        159314,
+        159314
+      ],
+      "shape": "events=7 proofs=3 fees+fills/closes",
+      "tx_bytes": 1021
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 169484,
+      "max_signature": "2Wopg3fTQSQKtviFNsiiPz4oRi5BjggWYKsQqWnjPTpDKJkHGfJNHYQPBCXtSMFFwfAc4eAuHmZkG6yZb2CZioY5",
+      "params": {
+        "events": 7,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 3,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        169484,
+        169484,
+        169484
+      ],
+      "shape": "events=7 proofs=3 fills/closes",
+      "tx_bytes": 1161
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 161294,
+      "max_signature": "31JHS1XYrg6NEN1jDzYQ9Ahr5Aq9RrdFKCAraFXDMcZvkGRjb339MsrGusWtduMaeChjJPaEEpkkitB1ZAqSgR8b",
+      "params": {
+        "events": 8,
+        "fee_events": 7,
+        "limit": 400000,
+        "proofs": 0,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        161294,
+        161294,
+        161294,
+        161294,
+        161294,
+        161294
+      ],
+      "shape": "events=8 proofs=0 fees",
+      "tx_bytes": 653
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 164420,
+      "max_signature": "2ojPaa5nTJ6VvDeeEH1GtMvwxKrYrPnXprj4T3WHjFjrr12kU9zmxuwMC3ZTURFgxc1AJDUBnGK1aatHi5V4JJpg",
+      "params": {
+        "events": 8,
+        "fee_events": 6,
+        "limit": 400000,
+        "proofs": 1,
+        "tx_format": "legacy",
+        "variant": "fees"
+      },
+      "runs": [
+        164420,
+        164420,
+        164420
+      ],
+      "shape": "events=8 proofs=1 fees+fills/closes",
+      "tx_bytes": 760
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 183797,
+      "max_signature": "3KshLoupz3yonNg3yDYUmcoznMFFRAt6qLoqEoxExkighUtLyhicjVX4tk8WSKrEGrScicxXqAnrj5dNHP85NJKc",
+      "params": {
+        "events": 8,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 1,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        183797,
+        183797,
+        183797
+      ],
+      "shape": "events=8 proofs=1 fills/closes",
+      "tx_bytes": 1039
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 170607,
+      "max_signature": "BevJ95fKuoDsyyCkAKFhFPbjVCSyChZqbod1mnTD7arnVThFZ8K7PRqeGbYXXEeyRSUuwmkz4C6RqicxJGfdhrg",
+      "params": {
+        "events": 8,
+        "fee_events": 5,
+        "limit": 400000,
+        "proofs": 2,
+        "tx_format": "legacy",
+        "variant": "fees"
+      },
+      "runs": [
+        170607,
+        170607,
+        170607
+      ],
+      "shape": "events=8 proofs=2 fees+fills/closes",
+      "tx_bytes": 901
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 186298,
+      "max_signature": "3VUj4yrpR1v2c9Ea4Ruhv9Gem7VjGidr2gkKLGvESQ7TJTPQwvF2iEnqFS3JgrknqMB2vJhTC1x3w2R9XTSbWgWm",
+      "params": {
+        "events": 8,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 2,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        186298,
+        186298,
+        186298
+      ],
+      "shape": "events=8 proofs=2 fills/closes",
+      "tx_bytes": 1133
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 175866,
+      "max_signature": "tJ3cSsfMvdWy26HrJcVxrJyQ9EFVbNnxtPioczRDFvYTRamQYC6epJryCFffRZWFoZjgrjgimeo5CHfTZzd81Tn",
+      "params": {
+        "events": 8,
+        "fee_events": 4,
+        "limit": 400000,
+        "proofs": 3,
+        "tx_format": "legacy",
+        "variant": "fees"
+      },
+      "runs": [
+        175866,
+        175866,
+        175866
+      ],
+      "shape": "events=8 proofs=3 fees+fills/closes",
+      "tx_bytes": 1041
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 188799,
+      "max_signature": "2aRvjspxDzDTxH5Be4tydbVLrViaP9DpBtv3B9LvtFcoGqygJZhpkrZ4nQ7n7de6VGzA3tZxSg22tbVGfRfP9L9m",
+      "params": {
+        "events": 8,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 3,
+        "tx_format": "legacy",
+        "variant": "proof-bearing"
+      },
+      "runs": [
+        188799,
+        188799,
+        188799
+      ],
+      "shape": "events=8 proofs=3 fills/closes",
+      "tx_bytes": 1227
+    },
+    {
+      "instruction": "post_journal",
+      "max_cu": 183978,
+      "max_signature": "4K8aZF4R9XLQxchGWc9tteUm4tez6EnXR52dkAtRk1sSGHhvFbpEUguUuxHV18o5ymsPjabrx82nBy2c7c1PHsLN",
+      "params": {
+        "events": 8,
+        "fee_events": 1,
+        "limit": 400000,
+        "proofs": 3,
+        "tx_format": "legacy",
+        "variant": "mix"
+      },
+      "runs": [
+        183978,
+        183978,
+        183978
+      ],
+      "shape": "events=8 proofs=3 mix (2 fills, 2 closes, tight start, floor raise, fee)",
+      "tx_bytes": 1124
+    },
+    {
+      "instruction": "reject_pass",
+      "max_cu": 33633,
+      "max_signature": "28ZVK7SqhszSU4fvNa2pEb4SWKvidiWE5k9MPaqybyWeUkAfUFjnreehCvsCkVij3q3ueQDj8uxtNCLfphLsd3H5",
+      "params": {
+        "tx_format": "legacy"
+      },
+      "runs": [
+        33633,
+        33633,
+        33633
+      ],
+      "shape": "NotFlat",
+      "tx_bytes": 279
+    },
+    {
+      "instruction": "release_account",
+      "max_cu": 38596,
+      "max_signature": "3WrgmREiQJU8zxx6rPiF1MJvPPULwLeFo8zLN6C6cycVbp4Gccd7ccDAVjhtEZXUSkFqDRGTxqMWuUGE6TC35Prp",
+      "params": {
+        "tx_format": "legacy"
+      },
+      "runs": [
+        37096,
+        37096,
+        38596
+      ],
+      "shape": "with the vault call",
+      "tx_bytes": 443
+    },
+    {
+      "instruction": "release_hold",
+      "max_cu": 36546,
+      "max_signature": "2nogiGaLyomVMt5221V9PsbM8f8bSn7gqsNqgUpkv477r3FxcC6pNZp5V9sMn9GkUjfDE5zmx1UFMLecZRfoMkKd",
+      "params": {
+        "tx_format": "legacy"
+      },
+      "runs": [
+        36546,
+        36546,
+        36546
+      ],
+      "shape": "held account",
+      "tx_bytes": 504
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 137523,
+      "max_signature": "2wU5PRbRjfkj3hndy11665yje798xRKjiNjunHvjVLrdz4oovFutk7vEZZvTYfkjJJWVXUTwWQHJ8eD3GX9AhU7J",
+      "params": {
+        "closes": 2,
+        "events": 4,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 2,
+        "reason": "quick limit (decision 69)",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        137523,
+        137523,
+        137523
+      ],
+      "shape": "quick limit forced close-all closes=2 proofs=2 fees=0",
+      "tx_bytes": 987
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 160556,
+      "max_signature": "5ZSiR38QG3q1fGm7ewex7mnW8kVDTNy4uEiPGuJhUf9vYUmbEWohFCmfQU9QH4biMFucNDTWrijPYD6mLkFPDUTM",
+      "params": {
+        "closes": 3,
+        "events": 5,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 3,
+        "reason": "quick limit (decision 69)",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        160556,
+        160556,
+        160556
+      ],
+      "shape": "quick limit forced close-all closes=3 proofs=3 fees=0",
+      "tx_bytes": 1148
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 212347,
+      "max_signature": "sXBwP6XuooBUM184QjdpnaYGvaRAS4D79UqZgvMyoj63HX1JLhQEug1pBauJL8ggsS65qe7FE338KogR1nEhL66",
+      "params": {
+        "closes": 3,
+        "events": 8,
+        "fee_events": 3,
+        "limit": 400000,
+        "proofs": 3,
+        "reason": "quick limit (decision 69)",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        212347,
+        212347,
+        212347
+      ],
+      "shape": "quick limit forced close-all closes=3 proofs=3 fees=3",
+      "tx_bytes": 1208
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 221252,
+      "max_signature": "3iKpChURBsfAUXAcQkxSHSi4JSxGcPdez9QCwss1uMvwLQPgftHFzqSaSMt1TvN5Whd4DzN9HNsxzxocyH9Fx8CJ",
+      "params": {
+        "closes": 6,
+        "events": 8,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 3,
+        "reason": "quick limit (decision 69)",
+        "tx_format": "v0_lookup"
+      },
+      "runs": [
+        221252,
+        221252,
+        221252
+      ],
+      "shape": "quick limit forced close-all closes=6 proofs=3 fees=0",
+      "tx_bytes": 1106
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 94016,
+      "max_signature": "54scacCQf8kqZ9sDFFQxW8CSE5tsxnRpgGa7xDaFGGQuCzfv9DEPoV2VKjwU67QYfDLZSSddmWxiXg5THpam2juJ",
+      "params": {
+        "closes": 0,
+        "events": 2,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 1,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        94016,
+        94016,
+        94016
+      ],
+      "shape": "static floor events=2 proofs=1 closes=0 fees=0",
+      "tx_bytes": 759
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 114868,
+      "max_signature": "2k42Zbe36y4URdtL9CvQTtwtL3E5YTHSQ2AwC2MBYWsyDegrFrWvwDQTzDutLbKpd4XQ7ESTrjrZnsdt83PAQsqy",
+      "params": {
+        "closes": 1,
+        "events": 3,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 1,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        114868,
+        114868,
+        114868
+      ],
+      "shape": "static floor events=3 proofs=1 closes=1 fees=0",
+      "tx_bytes": 826
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 132132,
+      "max_signature": "3uPT1pDwF7uLcvwikn8F9mXnGwraSURNcfb9RTTNb2egV4ttBAzqZbtmkaBEum6ek8B1bwqYve1VJTnXvHNXvK43",
+      "params": {
+        "closes": 1,
+        "events": 4,
+        "fee_events": 1,
+        "limit": 400000,
+        "proofs": 1,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        132132,
+        132132,
+        132132
+      ],
+      "shape": "static floor events=4 proofs=1 closes=1 fees=1",
+      "tx_bytes": 846
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 135720,
+      "max_signature": "4tLbx5yZ6bwVFeamZvSuiCymmKKzSwZeDbRYY7QP5wS2DZvuqTF7UQCmkyXb8Q5ENdYp13N83P8jbBKFvVLPXhJQ",
+      "params": {
+        "closes": 2,
+        "events": 4,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 1,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        135720,
+        135720,
+        135720
+      ],
+      "shape": "static floor events=4 proofs=1 closes=2 fees=0",
+      "tx_bytes": 893
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 138211,
+      "max_signature": "4BxMfXg68gWGj7zd593HmWycMqWciQ75XH8w6a1AxJmuXVRtLs5sQQSZcbkxCiVnvQXrjV17FX9C17cry1GvkVMc",
+      "params": {
+        "closes": 2,
+        "events": 4,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 2,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        138211,
+        138211,
+        138211
+      ],
+      "shape": "static floor events=4 proofs=2 closes=2 fees=0",
+      "tx_bytes": 987
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 149706,
+      "max_signature": "TgKSFoZQYQqHyqjtQxoBRRCwbNZBgZ3F2fuqHnoRWpuqzckTQHb2tkpHR1wLen2YxF3t2REfX2smPjL1XsMusNR",
+      "params": {
+        "closes": 1,
+        "events": 5,
+        "fee_events": 2,
+        "limit": 400000,
+        "proofs": 1,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        149706,
+        149706,
+        149706
+      ],
+      "shape": "static floor events=5 proofs=1 closes=1 fees=2",
+      "tx_bytes": 866
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 156882,
+      "max_signature": "55WFhrQyCHSHn1HQjAUUPpf48XPc5QN6EJNJuBucexMef6gZhrX7P7xxLGFMgZXov6TyqWmENtwB4yFpdB6jJi6s",
+      "params": {
+        "closes": 3,
+        "events": 5,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 1,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        156882,
+        156882,
+        156882
+      ],
+      "shape": "static floor events=5 proofs=1 closes=3 fees=0",
+      "tx_bytes": 960
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 155785,
+      "max_signature": "34c8gNCHZ8movyaujM4tmJtta2ycxomXeVcXHhNXhhTFE2zmkw886UHf3nDo5CfQdAjShqJB2W2Npz2FAFRVLhCo",
+      "params": {
+        "closes": 2,
+        "events": 5,
+        "fee_events": 1,
+        "limit": 400000,
+        "proofs": 2,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        155785,
+        155785,
+        155785
+      ],
+      "shape": "static floor events=5 proofs=2 closes=2 fees=1",
+      "tx_bytes": 1007
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 159373,
+      "max_signature": "rQz1ppzJ8WkeEVKvsRbUY2MdHDHvbaVSjSMJ46XgVkCL8e3BHMJ3jmwwpPHATvHZUFsxHC9Sb1JfEVtNYTMXJYt",
+      "params": {
+        "closes": 3,
+        "events": 5,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 2,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        159373,
+        159373,
+        159373
+      ],
+      "shape": "static floor events=5 proofs=2 closes=3 fees=0",
+      "tx_bytes": 1054
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 161869,
+      "max_signature": "2YJd2dLYZCUpAWA8BusqQ29DWkYDuEK8bApddxqwX6JHEcX9GL1eyrrdkPmNisKS7co3C4oLCdZ81qhmqMhf8ED6",
+      "params": {
+        "closes": 3,
+        "events": 5,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 3,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        161869,
+        161869,
+        161869
+      ],
+      "shape": "static floor events=5 proofs=3 closes=3 fees=0",
+      "tx_bytes": 1148
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 166970,
+      "max_signature": "3hEskt1uCtNm3L3eSQMx4rgm3UF9FUQqJBFDT68JkZxH8bZAoc7Jv4n8BG3W3Cnnzr6rF2sGTHVZwUpgWE1CxaBP",
+      "params": {
+        "closes": 1,
+        "events": 6,
+        "fee_events": 3,
+        "limit": 400000,
+        "proofs": 1,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        166970,
+        166970,
+        166970
+      ],
+      "shape": "static floor events=6 proofs=1 closes=1 fees=3",
+      "tx_bytes": 886
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 177734,
+      "max_signature": "5G1qKFDinJxc6DxEDfX38gawaq3q45qwiv4VhRWQDYWYTFZrtQAtAuLXyTJ6Xs9h9hwMpGk6rWnLcwsuT8NSqzcY",
+      "params": {
+        "closes": 4,
+        "events": 6,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 1,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        177734,
+        177734,
+        177734
+      ],
+      "shape": "static floor events=6 proofs=1 closes=4 fees=0",
+      "tx_bytes": 1027
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 173049,
+      "max_signature": "vDnNAeQKcxCEbMCkmoiA6RHPACDN8LjeueDpMK4Chj7akU244k74VS2HW6sFRSCKgfMrRaD2Ue9pKFqsDPqBbJF",
+      "params": {
+        "closes": 2,
+        "events": 6,
+        "fee_events": 2,
+        "limit": 400000,
+        "proofs": 2,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        173049,
+        173049,
+        173049
+      ],
+      "shape": "static floor events=6 proofs=2 closes=2 fees=2",
+      "tx_bytes": 1027
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 180230,
+      "max_signature": "4oMsJcd1Mq1Q3x3VS5KHbD53HLmrQgTFJ1UDCPWQXNPGzgBhuu4W8xy9egXVz1J7w6F5Qf8qxLgFzCzC9sj4WA2N",
+      "params": {
+        "closes": 4,
+        "events": 6,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 2,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        180230,
+        180230,
+        180230
+      ],
+      "shape": "static floor events=6 proofs=2 closes=4 fees=0",
+      "tx_bytes": 1121
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 179133,
+      "max_signature": "5qTHRyP4dH5xNCgdr3a2CyqrQHKpbRK7JZpLuSSg1uMSjTh9VHzwLZZgrzGUXDV4eewysWYdFsYGyRbKzBuXYtWL",
+      "params": {
+        "closes": 3,
+        "events": 6,
+        "fee_events": 1,
+        "limit": 400000,
+        "proofs": 3,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        179133,
+        179133,
+        179133
+      ],
+      "shape": "static floor events=6 proofs=3 closes=3 fees=1",
+      "tx_bytes": 1168
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 182721,
+      "max_signature": "4WGnA2yUDH9cpfo51cJCZzGE27piwrcfiz79HUc2MVcJrniynUPHyX5H951x6hQEvxXypFETFTfe2jF5BudVLqTo",
+      "params": {
+        "closes": 4,
+        "events": 6,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 3,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        182721,
+        182721,
+        182721
+      ],
+      "shape": "static floor events=6 proofs=3 closes=4 fees=0",
+      "tx_bytes": 1215
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 184234,
+      "max_signature": "2C7xiSn4RrxdBUKLmFGFRiRkQcciaCKDXa5qH9mAWi7jxTPq5dCgzzWEKUDFaR77AtXYkHHEe5JY9gaPTzkkTn95",
+      "params": {
+        "closes": 1,
+        "events": 7,
+        "fee_events": 4,
+        "limit": 400000,
+        "proofs": 1,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        184234,
+        184234,
+        184234
+      ],
+      "shape": "static floor events=7 proofs=1 closes=1 fees=4",
+      "tx_bytes": 906
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 198586,
+      "max_signature": "5V5pwdTFMTkbjsnvuQhMptt2HFNFMvyeKeS2jFFZKZFNcd4Gwt2z8AtAbnqPNXsbndPD6q9d2eCUTVYiZ1j3sF4z",
+      "params": {
+        "closes": 5,
+        "events": 7,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 1,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        198586,
+        198586,
+        198586
+      ],
+      "shape": "static floor events=7 proofs=1 closes=5 fees=0",
+      "tx_bytes": 1094
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 190313,
+      "max_signature": "2x4R1NkQdBTVe5A5eFR9q5nkhc84EHmkBAyCLn3uDXVmnmnTEPkDjUsbYpc97ktgzPNf4b2QE7PzQMpaVP4G3sVE",
+      "params": {
+        "closes": 2,
+        "events": 7,
+        "fee_events": 3,
+        "limit": 400000,
+        "proofs": 2,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        190313,
+        190313,
+        190313
+      ],
+      "shape": "static floor events=7 proofs=2 closes=2 fees=3",
+      "tx_bytes": 1047
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 201082,
+      "max_signature": "5bWtheNG7dE8nDTth9AYNd2Es6qEwpbTdZq9Z9iNAaMp8WZHNfHyQiyXYAWrRdjKjpMuHEeiYyBN6MGyn2s15Fo9",
+      "params": {
+        "closes": 5,
+        "events": 7,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 2,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        201082,
+        201082,
+        201082
+      ],
+      "shape": "static floor events=7 proofs=2 closes=5 fees=0",
+      "tx_bytes": 1188
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 196397,
+      "max_signature": "BunirtiGDa1skikGNVdSZ7a6CxDKGU2rWxyJ8XjTZWQ7ceb6e2RyjHLrETKzPeipjiHgjsKSaaWugigZkTFzH9s",
+      "params": {
+        "closes": 3,
+        "events": 7,
+        "fee_events": 2,
+        "limit": 400000,
+        "proofs": 3,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        196397,
+        196397,
+        196397
+      ],
+      "shape": "static floor events=7 proofs=3 closes=3 fees=2",
+      "tx_bytes": 1188
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 203578,
+      "max_signature": "2AufeVsyTcFdN8ip7xYhYQeFixKFPJspc1RzsmyRsPnyz51Za1zzjpnF7NF1PMU7nD5dxXDGpbVExGNnoUVZeZVo",
+      "params": {
+        "closes": 5,
+        "events": 7,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 3,
+        "reason": "static floor",
+        "tx_format": "v0_lookup"
+      },
+      "runs": [
+        203578,
+        203578,
+        203578
+      ],
+      "shape": "static floor events=7 proofs=3 closes=5 fees=0",
+      "tx_bytes": 1039
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 201498,
+      "max_signature": "229AUZmy3PktCVKUgjoCLKZF3wmQmBLbCp5zW6TbW7KmNL2n5zYLRReNPEnVUmY7dbXzMnNszaLPQnuCuuk1fL3H",
+      "params": {
+        "closes": 1,
+        "events": 8,
+        "fee_events": 5,
+        "limit": 400000,
+        "proofs": 1,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        201498,
+        201498,
+        201498
+      ],
+      "shape": "static floor events=8 proofs=1 closes=1 fees=5",
+      "tx_bytes": 926
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 219438,
+      "max_signature": "2UMPoPHL5AzZd4rnSEwQGKWg9nSgKaxM2rcw4FWm9omi3BVPowP7JX5fAyzBoStanvs2cR6ioweUH3XSA6x9Sib1",
+      "params": {
+        "closes": 6,
+        "events": 8,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 1,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        219438,
+        219438,
+        219438
+      ],
+      "shape": "static floor events=8 proofs=1 closes=6 fees=0",
+      "tx_bytes": 1161
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 207577,
+      "max_signature": "3zohrBVWF3TNzga4ix7iL4p1uXZcH36iAmo4wmLHnSiYg4JUvNtvq8hp6xoYvFGQTZjzeU9wPhVENLVus4Ht6fP2",
+      "params": {
+        "closes": 2,
+        "events": 8,
+        "fee_events": 4,
+        "limit": 400000,
+        "proofs": 2,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        207577,
+        207577,
+        207577
+      ],
+      "shape": "static floor events=8 proofs=2 closes=2 fees=4",
+      "tx_bytes": 1067
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 221939,
+      "max_signature": "521E2WBqegEDn1aMvMm9AheFX2fLij8Z42EcteyduHW65VoDc56Ci8T8ADZhNdpdWF8Nm38ShNLh3xHBvpkqpJAe",
+      "params": {
+        "closes": 6,
+        "events": 8,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 2,
+        "reason": "static floor",
+        "tx_format": "v0_lookup"
+      },
+      "runs": [
+        221939,
+        221939,
+        221939
+      ],
+      "shape": "static floor events=8 proofs=2 closes=6 fees=0",
+      "tx_bytes": 1043
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 213661,
+      "max_signature": "4gs28YHnDc98oKABdMUreKMqsGL8PFA3UinbuunVFu1ancHEcZ2EtCoz515zJp5QFKJF5ufXpnvKocvfigPT8dQD",
+      "params": {
+        "closes": 3,
+        "events": 8,
+        "fee_events": 3,
+        "limit": 400000,
+        "proofs": 3,
+        "reason": "static floor",
+        "tx_format": "legacy"
+      },
+      "runs": [
+        213661,
+        213661,
+        213661
+      ],
+      "shape": "static floor events=8 proofs=3 closes=3 fees=3",
+      "tx_bytes": 1208
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 213811,
+      "max_signature": "3kBku4TRVkyG8x4MWt5sEfmYQw3Xqd6rcdim1h8taDn9q1SCju8PgnSDMNsvDBawZNsm53rEKLAqVWjAb7ZuVnW1",
+      "params": {
+        "closes": 3,
+        "events": 8,
+        "fee_events": 3,
+        "limit": 400000,
+        "price_instruction": true,
+        "proofs": 3,
+        "tx_format": "legacy"
+      },
+      "runs": [
+        213811,
+        213811,
+        213811
+      ],
+      "shape": "static floor events=8 proofs=3 closes=3 fees=3 WITH SetComputeUnitPrice",
+      "tx_bytes": 1220
+    },
+    {
+      "instruction": "report_fail",
+      "max_cu": 224440,
+      "max_signature": "3djpEkyFYiF45FDNaZrBVbAGLQJAbycHWojc7wqfp6gYxAd33qpDWh9BdyzwpqFFjQbT4ZxgMLXg5mv3upMKmZZ1",
+      "params": {
+        "closes": 6,
+        "events": 8,
+        "fee_events": 0,
+        "limit": 400000,
+        "proofs": 3,
+        "reason": "static floor",
+        "tx_format": "v0_lookup"
+      },
+      "runs": [
+        224440,
+        224440,
+        224440
+      ],
+      "shape": "static floor events=8 proofs=3 closes=6 fees=0",
+      "tx_bytes": 1106
+    },
+    {
+      "instruction": "request_advance",
+      "max_cu": 51317,
+      "max_signature": "4BKKDqmETGKdg6rGTqrBqRPtcsGCWMPKFEW3ZGuLn3yZhT2QJSY4Tcq3s9n6PkAvVx8sJDNFqri9vHUVGhFDkV2a",
+      "params": {
+        "phase": 1,
+        "tx_format": "legacy"
+      },
+      "runs": [
+        51317,
+        51317,
+        51317
+      ],
+      "shape": "phase 1",
+      "tx_bytes": 443
+    },
+    {
+      "instruction": "request_advance",
+      "max_cu": 51565,
+      "max_signature": "5j66gEE7AF3MHuA5LpNWGSq7cR4cdV55KE1GAJqiRBEj2hEPfE7ZCdm11obz5Y9R32Rzv4BMcpiXiX9ibaQxjjx7",
+      "params": {
+        "phase": 2,
+        "tx_format": "legacy"
+      },
+      "runs": [
+        51565,
+        51565,
+        51565
+      ],
+      "shape": "phase 2",
+      "tx_bytes": 443
+    },
+    {
+      "instruction": "reset_account",
+      "max_cu": 154289,
+      "max_signature": "kZpLeusfrYq8qS11FnsfbV4t7GPp3iMoQALLJVoRZq5RwcqiiQe3mDFqeG2oYsz8FUXEpCetjvocKTRtHjNtuy6",
+      "params": {
+        "bump_score": 27,
+        "phase": 1,
+        "seed": 20213,
+        "tier": 9,
+        "tx_format": "legacy"
+      },
+      "runs": [
+        154289,
+        113789,
+        115289
+      ],
+      "shape": "worst key, tier 9, failed in phase 1",
+      "tx_bytes": 855
+    },
+    {
+      "instruction": "set_evaluator",
+      "max_cu": 31434,
+      "max_signature": "2rTCpVexeb52q5PJytr4YKePSPW2evNuuy2QXzVtGU5c9x6aq37fSmece86BR1UDmT1Tafu8YxkB19AtouiouLWr",
+      "params": {
+        "tx_format": "legacy"
+      },
+      "runs": [
+        31434,
+        31434,
+        31434
+      ],
+      "shape": "both admins",
+      "tx_bytes": 510
+    },
+    {
+      "instruction": "set_limits",
+      "max_cu": 30946,
+      "max_signature": "pE9fLmRR6UZfedcj2eYyktDjE6ce2NbwdH9VFAiwzp9Qmi7RBeohHuSAFvBfbm4LyBBBe9VeyAuVUuccxA7Bu51",
+      "params": {
+        "tx_format": "legacy"
+      },
+      "runs": [
+        30946,
+        30946,
+        30946
+      ],
+      "shape": "both admins",
+      "tx_bytes": 494
+    },
+    {
+      "instruction": "set_paused",
+      "max_cu": 30810,
+      "max_signature": "34MXWgnA6YPe9bt9yRfVMEwuxRpSgFcsSc4m9nZyadXMwLoieoFmt59cGBy4VXL9KC9gCwSxYR9Y5ZrA87PTMjH3",
+      "params": {
+        "paused": true,
+        "tx_format": "legacy"
+      },
+      "runs": [
+        30810,
+        30810,
+        30810
+      ],
+      "shape": "pause",
+      "tx_bytes": 479
+    },
+    {
+      "instruction": "set_paused",
+      "max_cu": 30825,
+      "max_signature": "63U9xt6ZE3V3hh8DLLs7urL3BrgMmbUU9ef3MfQ5RSjjwjCtCW2PDXpxqrbJP94f5HXTaj8iZskBnTqoMxF3oXEL",
+      "params": {
+        "paused": false,
+        "tx_format": "legacy"
+      },
+      "runs": [
+        30825,
+        30825,
+        30825
+      ],
+      "shape": "unpause",
+      "tx_bytes": 479
+    },
+    {
+      "instruction": "touch_activity",
+      "max_cu": 38590,
+      "max_signature": "4LASpuLNEkPX7eRDJ1CiBVyHAiBDE5hmcBVrXwRQFZU1pNJP692piHMV5EE5bEM77ruqWgD3e6JYFH9XAYshnmu6",
+      "params": {
+        "throttled": true,
+        "tx_format": "legacy"
+      },
+      "runs": [
+        37090,
+        37090,
+        38590
+      ],
+      "shape": "throttled (no vault call)",
+      "tx_bytes": 443
+    },
+    {
+      "instruction": "touch_activity",
+      "max_cu": 38590,
+      "max_signature": "3yFya1FmvaDNpVcknd8TK8vCrsUjDLts2bALWs7fDirdqwYPxrFjuFkg1Mr7gmtQ1rVfi474c7fkWaG2BNiYcBi7",
+      "params": {
+        "throttled": false,
+        "tx_format": "legacy"
+      },
+      "runs": [
+        37090,
+        37090,
+        38590
+      ],
+      "shape": "with the vault call (throttle ran out)",
+      "tx_bytes": 443
+    },
+    {
+      "instruction": "unban_wallet",
+      "max_cu": 32687,
+      "max_signature": "22GapQkUMoc2HErozryvbA74BZYLoU8SN252inUjsm86ghEFtmCNUpEgnC7s9zjXWQHEU7pwQEwrvmZ3nsAMywHm",
+      "params": {
+        "tx_format": "legacy"
+      },
+      "runs": [
+        32687,
+        32687,
+        32687
+      ],
+      "shape": "existing profile",
+      "tx_bytes": 543
+    },
+    {
+      "instruction": "update_market",
+      "max_cu": 34111,
+      "max_signature": "5z8CC8M1RULAAQupq2LWmCwHoq4XE95JMwWsJT7rC4GeddFih9MeMFvbbCHqZEw6bWencjomFv69oKWnsmAzduNf",
+      "params": {
+        "sessions": 6,
+        "tx_format": "legacy"
+      },
+      "runs": [
+        34111,
+        34111,
+        34111
+      ],
+      "shape": "feed remap, six sessions",
+      "tx_bytes": 599
+    },
+    {
+      "instruction": "veto_pass",
+      "max_cu": 34589,
+      "max_signature": "2CGdnZmhE7V5nQL5QGPMtqCUFUU5TTqLPuPnw5obfXTzDCCh6hiypAVBaxFvFYyuxG4VUQnZgwKvXY55DkaQ69i7",
+      "params": {
+        "tx_format": "legacy"
+      },
+      "runs": [
+        34589,
+        34589,
+        34589
+      ],
+      "shape": "confirmed pass",
+      "tx_bytes": 471
+    }
+  ],
+  "unsendable": [],
+  "validator": {
+    "features_active": 273,
+    "features_inactive": 1,
+    "inactive_features": [
+      "mustRekeyVm2QHYB3JPefBiU4BY3Z6JkW2k3Scw5GWP  | inactive                | NA              | SIMD-0326: Alpenglow: new consensus algorithm"
+    ],
+    "version": "solana-test-validator 4.0.2 (src:549805f3; feat:6ff76655, client:Agave)"
+  },
+  "version": 1
+}

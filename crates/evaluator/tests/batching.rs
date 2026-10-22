@@ -2,7 +2,8 @@
 //! `report_fail` batches, determinism.
 mod common;
 use common::*;
-use evaluator::batch::{cu_estimate, tx_size};
+use evaluator::batch::tx_size;
+use evaluator::compute::recommended_cu_limit;
 use evaluator::codec::IntentKind;
 use evaluator::*;
 use journal_types::{FeeKind, JournalEvent};
@@ -118,7 +119,7 @@ fn split_at_exactly_the_size_limit_and_one_byte_over() {
     let whole = w.ev.drain_batches(&BatchPolicy::MAX);
     let fee_batch = whole.iter().find(|b| kinds(b).contains(&"Holding")).unwrap();
     let size = fee_batch.tx_bytes;
-    assert_eq!(size, tx_size(fee_batch.kind, fee_batch.markets.len(), fee_batch.batch.to_bytes().unwrap().len(), false));
+    assert_eq!(size, tx_size(fee_batch.kind, fee_batch.markets.len(), fee_batch.batch.to_bytes().unwrap().len(), true));
     // exactly at the limit: same single batch
     let mut w2 = build();
     let at = w2.ev.drain_batches(&BatchPolicy { max_tx_bytes: size, ..BatchPolicy::MAX });
@@ -131,11 +132,11 @@ fn split_at_exactly_the_size_limit_and_one_byte_over() {
     for b in &under {
         assert!(b.tx_bytes < size || b.batch.events.len() <= 2, "a batch above the limit must be a unit that cannot be split");
     }
-    // the budget instruction adds its key and its 8 bytes to every transaction
+    // the budget instruction adds its key and its 8 bytes to every transaction (the default policy counts it, P27)
     let mut w4 = build();
-    let with_budget = w4.ev.drain_batches(&BatchPolicy { compute_budget_ix: true, ..BatchPolicy::MAX });
-    let b4 = with_budget.iter().find(|b| kinds(b).contains(&"Holding")).unwrap();
-    assert_eq!(b4.tx_bytes, size + 32 + 8);
+    let without = w4.ev.drain_batches(&BatchPolicy { compute_budget_ix: false, ..BatchPolicy::MAX });
+    let b4 = without.iter().find(|b| kinds(b).contains(&"Holding")).unwrap();
+    assert_eq!(b4.tx_bytes + 32 + 8, size);
     // and the real chain limit
     assert!(whole.iter().all(|b| b.tx_bytes <= 1_232));
     assert_eq!(BatchPolicy::MAX.max_tx_bytes, 1_232);
@@ -144,12 +145,12 @@ fn split_at_exactly_the_size_limit_and_one_byte_over() {
 #[test]
 fn compute_limit_splits_too() {
     let mut w = night_world(7);
-    let bs = w.ev.drain_batches(&BatchPolicy { max_cu: cu_estimate(BatchKind::PostJournal, 4, 0), ..BatchPolicy::MAX });
+    let bs = w.ev.drain_batches(&BatchPolicy { max_cu: recommended_cu_limit(BatchKind::PostJournal, 4, 0), ..BatchPolicy::MAX });
     let fee_events: usize = bs.iter().map(|b| kinds(b).iter().filter(|k| **k == "Holding").count()).sum();
     assert_eq!(fee_events, 7);
     // 7 fees are one unit: it cannot be split, so it is emitted alone even above the limit
     let big = bs.iter().find(|b| kinds(b).contains(&"Holding")).unwrap();
-    assert!(big.cu > cu_estimate(BatchKind::PostJournal, 4, 0));
+    assert!(big.cu_limit > recommended_cu_limit(BatchKind::PostJournal, 4, 0));
 }
 
 #[test]
@@ -216,7 +217,7 @@ fn a_report_fail_batch_ends_fail_then_meta_and_flat() {
     assert!(last.account_after.failed && last.account_after.flat);
     assert!(bs[..bs.len() - 1].iter().all(|b| b.kind == BatchKind::PostJournal));
     // the transaction for a report_fail carries more accounts
-    assert_eq!(last.tx_bytes, tx_size(last.kind, last.markets.len(), last.batch.to_bytes().unwrap().len(), false));
+    assert_eq!(last.tx_bytes, tx_size(last.kind, last.markets.len(), last.batch.to_bytes().unwrap().len(), true));
     assert_valid(&w, &bs);
 }
 

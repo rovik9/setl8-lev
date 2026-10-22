@@ -609,6 +609,7 @@ dependencies = [
  "setl8-lev-verifier",
  "setl8-shared-interfaces",
  "sha2 0.10.9",
+ "solana-address-lookup-table-interface",
  "solana-hash",
  "solana-keypair",
  "solana-message",

@@ -30,5 +30,6 @@ solana-signer = "2"
 solana-transaction = { version = "2", features = ["bincode", "serde"] }
 solana-hash = "2"
 solana-message = "2"
+solana-address-lookup-table-interface = { version = "2", features = ["bincode"] }
 solana-pubkey = "2"
 serde = { version = "1", features = ["derive"] }

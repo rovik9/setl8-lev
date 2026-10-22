@@ -562,7 +562,7 @@ impl Sc {
                 "batch_bytes": hexv(&b.batch.to_bytes().unwrap()),
                 "markets": b.markets.iter().map(n).collect::<Vec<_>>(),
                 "meta_time": n(b.meta_time), "samples_committed": n(b.samples_committed), "intents_committed_bytes": n(b.intents_committed_bytes),
-                "tx_bytes": n(b.tx_bytes), "cu": n(b.cu),
+                "tx_bytes": n(b.tx_bytes), "tx_format": match b.tx_format { TxFormat::Legacy => "legacy", TxFormat::V0Lookup => "v0_lookup" }, "cu": n(b.cu), "cu_limit": n(b.cu_limit),
                 "account_after": {"b": n(b.account_after.b), "q_tally": n(b.account_after.q_tally), "lock_until": n(b.account_after.lock_until), "last_batch_time": n(b.account_after.last_batch_time), "seq": n(b.account_after.seq), "journal_hash": hexv(&b.account_after.journal_hash), "trades_closed": n(b.account_after.trades_closed), "latch": b.account_after.latch, "flat": b.account_after.flat, "tight_on": b.account_after.tight_on, "r": n(b.account_after.r), "g_peak": n(b.account_after.g_peak), "l_level": n(b.account_after.l_level), "failed": b.account_after.failed}
             })).collect::<Vec<_>>(),
             "archive": hexv(w.ev.archive_bytes()),

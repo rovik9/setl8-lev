@@ -20,6 +20,7 @@
 
 pub mod batch;
 pub mod codec;
+pub mod compute;
 pub mod config;
 mod decide;
 mod drain;

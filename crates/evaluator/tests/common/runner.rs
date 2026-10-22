@@ -551,6 +551,9 @@ pub struct M9cCover {
     /// P26 (decision 69, audit F-16): paths in which the account failed at a quick-limit overshoot with at least one more position
     /// closed after the crossing close (a `Close{Fail}` the program takes after the overshoot). Floor 100 per 10,000 paths.
     pub forced_after_overshoot: u64,
+    /// P27 (decision 71): `report_fail` batches of exactly 8 events with at least one Fee event (the commission case: three closes,
+    /// three fees, Fail, Meta), SUMMED over the paths; the compute model's heaviest legal shape. Floor 100 per 10,000 paths if producible.
+    pub fail8_commission: u64,
     /// P25b (audit F-17): price samples the evaluator refused, summed over the paths (the campaign's generator feeds honest samples,
     /// so these stay 0 here; `crates/evaluator/tests/p25b_inputs.rs` feeds the hostile ones).
     pub samples_future: u64,
@@ -568,6 +571,7 @@ impl M9cCover {
         self.unpriced_attempt_refused += o.unpriced_attempt_refused;
         self.unpostable += o.unpostable;
         self.forced_after_overshoot += o.forced_after_overshoot;
+        self.fail8_commission += o.fail8_commission;
         self.samples_future += o.samples_future;
         self.samples_stale += o.samples_stale;
         self.samples_out_of_order += o.samples_out_of_order;
@@ -584,6 +588,7 @@ impl M9cCover {
             ("pending_held_refused", scale(100)),
             ("unpriced_attempt_refused", scale(100)),
             ("forced_after_overshoot", scale(100)),
+            ("fail8_commission", scale(100)),
         ]
     }
 
@@ -596,6 +601,7 @@ impl M9cCover {
             "pending_held_refused" => self.pending_held_refused,
             "unpriced_attempt_refused" => self.unpriced_attempt_refused,
             "forced_after_overshoot" => self.forced_after_overshoot,
+            "fail8_commission" => self.fail8_commission,
             _ => 0,
         }
     }
@@ -617,6 +623,17 @@ fn pending_nonces(w: &World) -> std::collections::HashSet<u32> {
 }
 
 /// The M9c counters of one finished path, from what the evaluator refused and accepted.
+/// P27: the `report_fail` batches of exactly 8 events with at least one `Fee` (the commission case) among the items of a path.
+pub fn fail8_commission_of(items: &[Item]) -> u64 {
+    items
+        .iter()
+        .filter(|it| match it {
+            Item::Batch(b) => matches!(b.kind, BatchKind::ReportFail(_)) && b.batch.events.len() == 8 && b.batch.events.iter().any(|e| matches!(e, journal_types::JournalEvent::Fee { .. })),
+            Item::Line(_) => false,
+        })
+        .count() as u64
+}
+
 pub fn m9c_cover(w: &World) -> M9cCover {
     let pending = pending_nonces(w);
     let refusals = w.ev.refusals();
@@ -630,6 +647,7 @@ pub fn m9c_cover(w: &World) -> M9cCover {
         unpriced_attempt_refused: u64::from(w.ev.stats().unpriced_rejects > 0),
         unpostable: u64::from(w.ev.stats().unpostable),
         forced_after_overshoot: u64::from(w.ev.stats().forced_after_overshoot > 0),
+        fail8_commission: 0,
         samples_future: u64::from(w.ev.stats().samples_future),
         samples_stale: u64::from(w.ev.stats().samples_stale),
         samples_out_of_order: u64::from(w.ev.stats().samples_out_of_order),

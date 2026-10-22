@@ -28,7 +28,8 @@
         "trades_closed": "0"
       },
       "batch_bytes": "01000000000000004c63ba5f287e151dd65bb3be53b5e6afb5ce8e84dc1005c808d2539e77c4d2c60300000000000000000010a5d4e80000004052b4d4e8000000e0e7cc6a000000004052b4d4e8000000201618a804000000000000000000000000000000000000000100000000031ce8cc6a00000000d00268470000000000e876481700000000c00b5a16000000d002684700000000d0f8d8651600000001083ae8cc6a0000000000b272dcb2a67f345550a5cd99a518dcdcc04cc29b4633cb4736f0552fe9551468ab8cd668ebcaa30c9e5912e4b98578d0c93af58b28570a4b0910b11db0f2e35501000200000002c6d06ac28a478e9f1f8763e972081243d937c270314c531f9f290451066650ea00c0b6cbf9ccdd18000064a7b3b6e00d00000000000000000000000002c6d06ac28a478e9f1f8763e972081243d937c270314c531f9f290451066650ea0018fec307cddd1800001f6d18fae40d000000000000000000000000",
-      "cu": "83500",
+      "cu": "87537",
+      "cu_limit": "106000",
       "intents_committed_bytes": "299",
       "kind": "post_journal",
       "markets": [
@@ -36,7 +37,8 @@
       ],
       "meta_time": "1791813690",
       "samples_committed": "4",
-      "tx_bytes": "711"
+      "tx_bytes": "751",
+      "tx_format": "legacy"
     },
     {
       "account_after": {
@@ -56,7 +58,8 @@
         "trades_closed": "0"
       },
       "batch_bytes": "040000000000000006f819136ba4d3cffba62a88d37c05dd79b92cee3e21aa6a80597844145a7f3202000000043ae8cc6a00000000c8cdb1b200000000c8c322d116000000000876e8cc6a0000000000611113f0960b0f69af43eb74b521edbeafb4c9908bf624c0b2656047ceb0fed1ab8cd668ebcaa30c9e5912e4b98578d0c93af58b28570a4b0910b11db0f2e35501000100000002c6d06ac28a478e9f1f8763e972081243d937c270314c531f9f290451066650ea00c421c00ecddd180080b7952f5feb0d000000000000000000000000",
-      "cu": "63000",
+      "cu": "64798",
+      "cu_limit": "78000",
       "intents_committed_bytes": "299",
       "kind": "post_journal",
       "markets": [
@@ -64,7 +67,8 @@
       ],
       "meta_time": "1791813750",
       "samples_committed": "6",
-      "tx_bytes": "560"
+      "tx_bytes": "600",
+      "tx_format": "legacy"
     },
     {
       "account_after": {
@@ -84,7 +88,8 @@
         "trades_closed": "1"
       },
       "batch_bytes": "0600000000000000fa7d962934d6a1f51cf6a27440aaf29267310e7fd01d510f8fe9b3299bb1300b03000000010000000010a5d4e80000004052b4d4e8000000082e605de800000076e8cc6a00000000e0e7cc6a00000000c8dbab88ffffffff00c8dbab88ffffffff0400000000000676e8cc6a00000000c8c322d116000000c8c322d116000000000876e8cc6a0000000001611113f0960b0f69af43eb74b521edbeafb4c9908bf624c0b2656047ceb0fed1ab8cd668ebcaa30c9e5912e4b98578d0c93af58b28570a4b0910b11db0f2e35501000100000002c6d06ac28a478e9f1f8763e972081243d937c270314c531f9f290451066650ea001c69b81ccddd18000ed133b59bd90d000000000000000000000000",
-      "cu": "75500",
+      "cu": "85046",
+      "cu_limit": "103000",
       "intents_committed_bytes": "299",
       "kind": "post_journal",
       "markets": [
@@ -92,7 +97,8 @@
       ],
       "meta_time": "1791813750",
       "samples_committed": "6",
-      "tx_bytes": "627"
+      "tx_bytes": "667",
+      "tx_format": "legacy"
     }
   ],
   "description": "DESIGN 2.6 R1 on the smallest priced market: half-spread 1e-6 (the ask is 1.000001 at mid 1.0, the bid 0.999999).",

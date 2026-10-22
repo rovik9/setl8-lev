@@ -92,6 +92,16 @@ pub struct AccountSnapshot {
     pub failed: bool,
 }
 
+/// The format of the transaction that carries a batch (P27, decision 71): a legacy transaction, or a version-0 transaction that loads the
+/// shared accounts of the instruction (config, rule set, event authority; and for `report_fail` the sector authority, the vault program and
+/// the product registry; and the markets) from an address lookup table. The second is chosen ONLY for a batch that cannot be split and does
+/// not fit a legacy transaction once the `SetComputeUnitLimit` instruction is in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxFormat {
+    Legacy,
+    V0Lookup,
+}
+
 /// One transaction's worth of journal: the exact `JournalBatch`, what the transaction needs around it, and what the
 /// account must look like afterwards.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,9 +116,14 @@ pub struct Batch {
     pub samples_committed: usize,
     pub intents_committed_bytes: usize,
     pub account_after: AccountSnapshot,
-    /// Modelled size of the signed transaction and its compute units (see `batch.rs`).
+    /// Size of the signed transaction (see `batch.rs`), with the compute-budget instruction when the policy asks for it (the default does).
     pub tx_bytes: usize,
+    /// The worst compute units a batch of this shape was MEASURED to use on a real runtime (`compute.rs`, `handover/cu-runtime.json`).
     pub cu: u64,
+    /// The `SetComputeUnitLimit` the transaction must carry: `cu` plus 20 %, rounded up to 1,000, at most 1,400,000.
+    pub cu_limit: u64,
+    /// The format `tx_bytes` was computed for.
+    pub tx_format: TxFormat,
 }
 
 /// Limits and options of `drain_batches`.
@@ -118,20 +133,23 @@ pub struct BatchPolicy {
     pub max_events: usize,
     /// Distinct proofs per batch (at most 3).
     pub max_proofs: usize,
-    /// Signed transaction size (at most 1,232).
+    /// Signed transaction size (at most 1,232), the compute-budget instruction included.
     pub max_tx_bytes: usize,
-    /// Compute units (default limit 200,000).
+    /// The largest `SetComputeUnitLimit` a batch may request (at most 1,400,000).
     pub max_cu: u64,
-    /// Count a `ComputeBudget` instruction in the transaction size.
+    /// Count a `ComputeBudget` instruction in the transaction size (the contract: every batch transaction carries one).
     pub compute_budget_ix: bool,
     /// Emit a `Meta`-only batch when nothing is queued but time has moved on since the last `Meta`.
     pub heartbeat: bool,
+    /// A batch that cannot be split and does not fit a legacy transaction may use a version-0 transaction with an address lookup table.
+    pub allow_lookup_table: bool,
 }
 
 impl BatchPolicy {
-    /// The chain's limits: 8 events, 3 proofs, 1,232 bytes, 200,000 CU, no budget instruction, no heartbeat.
+    /// The chain's limits: 8 events, 3 proofs, 1,232 bytes WITH the `SetComputeUnitLimit` instruction, a requested limit of at most
+    /// 1,400,000, no heartbeat.
     pub const MAX: BatchPolicy =
-        BatchPolicy { max_events: 8, max_proofs: 3, max_tx_bytes: 1_232, max_cu: 200_000, compute_budget_ix: false, heartbeat: false };
+        BatchPolicy { max_events: 8, max_proofs: 3, max_tx_bytes: 1_232, max_cu: crate::compute::MAX_CU_LIMIT, compute_budget_ix: true, heartbeat: false, allow_lookup_table: true };
 
     pub fn with_max_events(self, n: usize) -> BatchPolicy {
         BatchPolicy { max_events: n, ..self }

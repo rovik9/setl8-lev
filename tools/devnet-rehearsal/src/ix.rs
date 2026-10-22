@@ -238,6 +238,48 @@ fn admin_metas(ids: &Ids, a: &Pubkey, b: &Pubkey) -> Vec<AccountMeta> {
     ]
 }
 
+pub fn set_paused(ids: &Ids, a: &Pubkey, b: &Pubkey, paused: bool) -> Instruction {
+    with_signers(Instruction { program_id: ids.lev, accounts: admin_metas(ids, a, b), data: instruction::SetPaused { paused }.data() }, &[a, b])
+}
+
+pub fn set_evaluator(ids: &Ids, a: &Pubkey, b: &Pubkey, new_key: &Pubkey) -> Instruction {
+    with_signers(Instruction { program_id: ids.lev, accounts: admin_metas(ids, a, b), data: instruction::SetEvaluator { new_key: *new_key }.data() }, &[a, b])
+}
+
+pub fn update_market(ids: &Ids, a: &Pubkey, b: &Pubkey, args: &setl8_lev_trading::instructions::UpdateMarketArgs) -> Instruction {
+    with_signers(
+        Instruction {
+            program_id: ids.lev,
+            accounts: accounts::UpdateMarket { config: ids.config(), admin_a: *a, admin_b: *b, market: ids.market(args.market_id), event_authority: ids.event_authority(), program: ids.lev }.to_account_metas(None),
+            data: instruction::UpdateMarket { args: args.clone() }.data(),
+        },
+        &[a, b],
+    )
+}
+
+pub fn ban_wallet(ids: &Ids, payer: &Pubkey, a: &Pubkey, b: &Pubkey, trader: &Pubkey, evidence_hash: [u8; 32]) -> Instruction {
+    with_signers(
+        Instruction {
+            program_id: ids.lev,
+            accounts: accounts::BanWallet { payer: *payer, config: ids.config(), admin_a: *a, admin_b: *b, wallet: ids.wallet(trader), system_program: system_program::ID, event_authority: ids.event_authority(), program: ids.lev }.to_account_metas(None),
+            data: instruction::BanWallet { trader: *trader, evidence_hash }.data(),
+        },
+        &[payer, a, b],
+    )
+}
+
+pub fn close_account(ids: &Ids, trader: &Pubkey, challenge_id: u64) -> Instruction {
+    with_signers(
+        Instruction { program_id: ids.lev, accounts: accounts::CloseAccount { trader: *trader, trading_account: ids.acct(trader, challenge_id) }.to_account_metas(None), data: instruction::CloseAccount {}.data() },
+        &[trader],
+    )
+}
+
+/// `SetComputeUnitPrice` (micro-lamports per unit).
+pub fn compute_budget_price(micro_lamports: u64) -> Instruction {
+    Instruction { program_id: COMPUTE_BUDGET, accounts: vec![], data: [vec![3u8], micro_lamports.to_le_bytes().to_vec()].concat() }
+}
+
 pub fn set_limits(ids: &Ids, a: &Pubkey, b: &Pubkey, pass_delay_secs: u32, max_payout_per_window: u64, window_secs: u32) -> Instruction {
     with_signers(Instruction { program_id: ids.lev, accounts: admin_metas(ids, a, b), data: instruction::SetLimits { pass_delay_secs, max_payout_per_window, window_secs }.data() }, &[a, b])
 }

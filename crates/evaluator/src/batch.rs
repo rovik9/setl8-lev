@@ -6,7 +6,7 @@ use crate::types::BatchKind;
 
 /// Maximum size of a serialized Solana transaction.
 pub const TX_LIMIT: usize = 1_232;
-/// Default compute limit per instruction.
+/// The compute limit a transaction gets WITHOUT a `SetComputeUnitLimit`. The batches of this crate never rely on it (P27).
 pub const CU_LIMIT: u64 = 200_000;
 
 /// Unique accounts of a `post_journal` transaction without markets: evaluator, trading account, config, rule set,
@@ -49,18 +49,35 @@ pub fn tx_size(kind: BatchKind, n_markets: usize, batch_len: usize, compute_budg
         + 1 /* instruction count: one or two, always one byte */ + ix + budget
 }
 
-/// Conservative compute-unit bound of a batch with `n_events` events (the `Meta` included) and `n_proofs` proofs.
-/// Fitted to: 1 event 30,760; 4 events 65,056; 8 events 107,685; 8 events with 3 proofs 124,445; `report_fail` with
-/// 8 events and 3 proofs 158,394 (handover/module-5b.md, module-7.md).
-pub fn cu_estimate(kind: BatchKind, n_events: usize, n_proofs: usize) -> u64 {
-    let base = 30_000u64;
-    let per_event = 12_500u64;
-    let per_proof = 8_000u64;
-    let fail_extra = match kind {
-        BatchKind::PostJournal => 0,
-        BatchKind::ReportFail(_) => 40_000,
+/// Accounts of a `post_journal` transaction that an address lookup table can supply: config, rule set, event authority (and the markets).
+pub const POST_LOOKUP_ACCOUNTS: usize = 3;
+/// ... of a `report_fail` transaction: config, rule set, sector authority, vault program, product registry, event authority (and the markets).
+/// The trading account, the wallet and the vault's trader state belong to one trader and stay in the transaction; so do the fee payer,
+/// the program that is called and the compute-budget program (a program id of an instruction must be a static key).
+pub const FAIL_LOOKUP_ACCOUNTS: usize = 6;
+
+/// Size in bytes of the same transaction as a VERSION-0 message with one address lookup table that supplies the accounts above and the
+/// markets: the version byte, the shorter list of static keys, and the lookup (table key 32, two index lists of one length byte each,
+/// one byte per account loaded).
+pub fn tx_size_v0(kind: BatchKind, n_markets: usize, batch_len: usize, compute_budget_ix: bool) -> usize {
+    let (fixed, lookup_fixed) = match kind {
+        BatchKind::PostJournal => (POST_FIXED_ACCOUNTS, POST_LOOKUP_ACCOUNTS),
+        BatchKind::ReportFail(_) => (FAIL_FIXED_ACCOUNTS, FAIL_LOOKUP_ACCOUNTS),
     };
-    base + per_event * n_events as u64 + per_proof * n_proofs as u64 + fail_extra
+    let n_keys = fixed + n_markets + usize::from(compute_budget_ix);
+    let loaded = lookup_fixed + n_markets;
+    let static_keys = n_keys - loaded;
+    tx_size(kind, n_markets, batch_len, compute_budget_ix) - (shortvec_len(n_keys) + 32 * n_keys)
+        + (shortvec_len(static_keys) + 32 * static_keys)
+        + 1 // the version byte 0x80
+        + 1 // the number of lookups (one)
+        + 32 + 1 + 1 + loaded // table key, writable index list, read-only index list, one byte per loaded account
+}
+
+/// The worst compute units measured on a real runtime for a batch of this shape (`compute::measured_cu`). Kept under its old name: the
+/// 200,000-unit default is NOT enough for the largest batches, so a transaction must request `compute::recommended_cu_limit`.
+pub fn cu_estimate(kind: BatchKind, n_events: usize, n_proofs: usize) -> u64 {
+    crate::compute::measured_cu(kind, n_events, n_proofs)
 }
 
 #[cfg(test)]
@@ -86,20 +103,12 @@ mod tests {
     }
 
     #[test]
-    fn cu_bound_covers_the_measurements() {
+    fn the_cu_model_is_the_runtime_measurement_and_exceeds_the_default_limit_for_the_largest_batches() {
         let p = BatchKind::PostJournal;
-        assert!(cu_estimate(p, 1, 0) >= 30_760);
-        assert!(cu_estimate(p, 4, 0) >= 65_056);
-        assert!(cu_estimate(p, 8, 0) >= 107_685);
-        assert!(cu_estimate(p, 8, 3) >= 124_445);
-        assert!(cu_estimate(BatchKind::ReportFail(FailReason::PhaseQuick), 8, 3) >= 158_394);
-        assert!(cu_estimate(BatchKind::ReportFail(FailReason::PhaseQuick), 8, 3) <= CU_LIMIT);
-        // the bound is exactly its three constants
-        assert_eq!(cu_estimate(p, 0, 0), 30_000);
-        assert_eq!(cu_estimate(p, 1, 0) - cu_estimate(p, 0, 0), 12_500);
-        assert_eq!(cu_estimate(p, 0, 1) - cu_estimate(p, 0, 0), 8_000);
-        assert_eq!(cu_estimate(BatchKind::ReportFail(FailReason::StaticFloor), 0, 0) - 30_000, 40_000);
-        // the largest batch the chain allows fits the default limit, so the limit never binds before 8 events and 3 proofs
-        assert!(cu_estimate(BatchKind::ReportFail(FailReason::StaticFloor), 8, 3) <= CU_LIMIT);
+        let f = BatchKind::ReportFail(FailReason::PhaseQuick);
+        assert_eq!(cu_estimate(p, 4, 2), crate::compute::measured_cu(p, 4, 2));
+        // measured on Agave 4.0.2: a report_fail of 7 events and 3 proofs used 196,812 units, 8 events more than the 200,000 default
+        assert!(cu_estimate(f, 7, 3) >= 196_812);
+        assert!(cu_estimate(f, 8, 3) > CU_LIMIT);
     }
 }

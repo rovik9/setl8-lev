@@ -13,6 +13,7 @@ pub mod live;
 pub mod measure;
 pub mod rehearsal;
 pub mod report;
+pub mod runtime;
 pub mod scenarios;
 pub mod state;
 pub mod stories;
@@ -40,6 +41,8 @@ struct Args {
     launch: PathBuf,
     only: Vec<String>,
     pass_delay: u32,
+    out_dir: PathBuf,
+    validator_info: Option<PathBuf>,
     command: String,
     resume: bool,
 }
@@ -60,6 +63,8 @@ fn parse_args() -> Result<Args, String> {
         launch: PathBuf::from("config/launch.json"),
         only: Vec::new(),
         pass_delay: scenarios::PASS_DELAY_SECS,
+        out_dir: PathBuf::from("handover"),
+        validator_info: None,
         command: String::new(),
         resume: false,
     };
@@ -81,6 +86,8 @@ fn parse_args() -> Result<Args, String> {
             "--launch" => a.launch = PathBuf::from(val("--launch")?),
             "--only" => a.only = val("--only")?.split(',').map(str::to_string).collect(),
             "--pass-delay-secs" => a.pass_delay = val("--pass-delay-secs")?.parse().map_err(|e| format!("--pass-delay-secs: {e}"))?,
+            "--out-dir" => a.out_dir = PathBuf::from(val("--out-dir")?),
+            "--validator-info" => a.validator_info = Some(PathBuf::from(val("--validator-info")?)),
             "--resume" => a.resume = true,
             c if !c.starts_with("--") && a.command.is_empty() => a.command = c.to_string(),
             other => return Err(format!("unknown argument {other}")),
@@ -138,6 +145,14 @@ fn run() -> Result<i32, String> {
     if a.command == "keys" {
         return keys_command(&a);
     }
+    if a.command == "render-runtime" {
+        // regenerates handover/cu-runtime.md from handover/cu-runtime.json (no validator)
+        let text = std::fs::read_to_string(a.out_dir.join("cu-runtime.json")).map_err(|e| e.to_string())?;
+        let j: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        std::fs::write(a.out_dir.join("cu-runtime.md"), runtime::to_markdown(&j)).map_err(|e| e.to_string())?;
+        println!("render-runtime: {} written", a.out_dir.join("cu-runtime.md").display());
+        return Ok(0);
+    }
     let c = Cluster::new(&a.rpc_url);
     let got = c.genesis_hash().map_err(|e| e.to_string())?;
     check_genesis(kind, &got, &a.expect_genesis)?;
@@ -160,7 +175,7 @@ fn run() -> Result<i32, String> {
     rehearsal::started_now(&mut st);
     let launch_text = std::fs::read_to_string(&a.launch).map_err(|e| format!("{}: {e}", a.launch.display()))?;
     let launch = launch::parse(&launch_text)?;
-    let mut r = Rehearsal { c, kind, ids, keys, st, st_path, work: a.work_dir.clone(), launch, quiet: false, cur: None, vault_so: a.vault_so.clone(), lev_so: a.lev_so.clone(), verify_bin: a.verify_bin.clone(), pass_delay: a.pass_delay };
+    let mut r = Rehearsal { c, kind, ids, keys, st, st_path, work: a.work_dir.clone(), launch, quiet: false, cur: None, vault_so: a.vault_so.clone(), lev_so: a.lev_so.clone(), verify_bin: a.verify_bin.clone(), pass_delay: a.pass_delay, alt: None };
 
     match a.command.as_str() {
         "needs" => needs_command(&r, &a),
@@ -170,6 +185,7 @@ fn run() -> Result<i32, String> {
             Ok(0)
         }
         "run" => run_command(&mut r, &a),
+        "measure" => measure_command(&mut r, &a),
         other => Err(format!("unknown command {other}")),
     }
 }
@@ -275,6 +291,40 @@ fn run_command(r: &mut Rehearsal, a: &Args) -> Result<i32, String> {
     }
     let failed = r.st.scenarios.values().any(|s| s.result == "FAIL");
     Ok(if failed { 1 } else { 0 })
+}
+
+/// Parses the validator information file the script writes: the version line, then `solana feature status`.
+pub fn parse_validator_info(text: &str) -> serde_json::Value {
+    let version = text.lines().next().unwrap_or("").trim().to_string();
+    let mut active = 0u32;
+    let mut inactive = Vec::new();
+    for l in text.lines().skip(1) {
+        let t = l.trim();
+        if t.contains("| active") || t.contains("active since") && !t.contains("inactive") {
+            active += 1;
+        } else if t.contains("inactive") || t.contains("pending") {
+            inactive.push(t.to_string());
+        }
+    }
+    serde_json::json!({ "version": version, "features_active": active, "features_inactive": inactive.len(), "inactive_features": inactive })
+}
+
+fn measure_command(r: &mut Rehearsal, a: &Args) -> Result<i32, String> {
+    let info = a.validator_info.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    let validator = parse_validator_info(&info);
+    let lev_sha = r.lev_so.as_ref().and_then(|p| std::fs::read(p).ok()).map(|b| rehearsal::sha256_hex(&b)).unwrap_or_default();
+    let program = serde_json::json!({ "id": r.ids.lev.to_string(), "sha256": lev_sha, "vault_commit": r.st.vault_commit });
+    let meas = r.measure_all(&validator, &program)?;
+    let j = meas.to_json(&validator, &program);
+    std::fs::create_dir_all(&a.out_dir).map_err(|e| e.to_string())?;
+    std::fs::write(a.out_dir.join("cu-runtime.json"), serde_json::to_string_pretty(&j).map_err(|e| e.to_string())? + "\n").map_err(|e| e.to_string())?;
+    std::fs::write(a.out_dir.join("cu-runtime.md"), runtime::to_markdown(&j)).map_err(|e| e.to_string())?;
+    println!("measure: {} shapes written to {}", meas.shapes.len(), a.out_dir.display());
+    if !meas.errors.is_empty() {
+        println!("measure: INCOMPLETE, {} section(s) failed", meas.errors.len());
+        return Ok(2);
+    }
+    Ok(0)
 }
 
 fn keys_command(a: &Args) -> Result<i32, String> {

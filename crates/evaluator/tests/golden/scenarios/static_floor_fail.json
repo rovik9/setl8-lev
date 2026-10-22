@@ -28,7 +28,8 @@
         "trades_closed": "0"
       },
       "batch_bytes": "01000000000000004c63ba5f287e151dd65bb3be53b5e6afb5ce8e84dc1005c808d2539e77c4d2c602000000000000000000c8e6bc170400004052b4d4e8000000e0e7cc6a000000004052b4d4e800000090636cf41400000000000000000000000000000000000000010000000008e9e7cc6a0000000000ea19434d591d901aeed3382dabba6566afcefdc37af191c597cd6b82380666b447d23b7ad030882b1de3f208d2d032af5a21ca63f160ce6b2d9097ac785a1ab801000100000002c6d06ac28a478e9f1f8763e972081243d937c270314c531f9f290451066650ea00c0b6cbf9ccdd18000064a7b3b6e00d000000000000000000000000",
-      "cu": "63000",
+      "cu": "64798",
+      "cu_limit": "78000",
       "intents_committed_bytes": "299",
       "kind": "post_journal",
       "markets": [
@@ -36,7 +37,8 @@
       ],
       "meta_time": "1791813609",
       "samples_committed": "1",
-      "tx_bytes": "600"
+      "tx_bytes": "640",
+      "tx_format": "legacy"
     },
     {
       "account_after": {
@@ -56,7 +58,8 @@
         "trades_closed": "1"
       },
       "batch_bytes": "03000000000000006cedb37d7f9f9779474a101f17636c28730b4eac31efb0e62361540caf897e85030000000100000000c8e6bc170400004052b4d4e8000000606c208cd1000000f4e7cc6a00000000e0e7cc6a000000009075663997ffffff019075663997ffffff05000000000007f4e7cc6a0000000000905ddd81aeffffff0008f8e7cc6a0000000001c041bcc332fb7e1aa83113f389d167353b0686486533520dc59d829cddbada1347d23b7ad030882b1de3f208d2d032af5a21ca63f160ce6b2d9097ac785a1ab801000100000002c6d06ac28a478e9f1f8763e972081243d937c270314c531f9f290451066650ea0088ce73feccdd180000da493b717d0c000000000000000000000000",
-      "cu": "115500",
+      "cu": "114868",
+      "cu_limit": "138000",
       "intents_committed_bytes": "299",
       "kind": "report_fail:StaticFloor",
       "markets": [
@@ -64,7 +67,8 @@
       ],
       "meta_time": "1791813624",
       "samples_committed": "3",
-      "tx_bytes": "786"
+      "tx_bytes": "826",
+      "tx_format": "legacy"
     }
   ],
   "description": "A 10% gap: the account fails at the sample, report_fail batch.",

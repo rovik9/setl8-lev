@@ -2,7 +2,7 @@
 # DEVNET REHEARSAL of setl8-lev-trading with the real core vault. Devnet ONLY (plus a local validator for the selftest).
 #
 #   scripts/devnet-rehearsal.sh --cluster devnet <command> [args]
-#   scripts/devnet-rehearsal.sh selftest [start|run|stop|all]      # a LOCAL solana-test-validator, no SOL needed
+#   scripts/devnet-rehearsal.sh selftest [start|run|stop|all|measure]      # a LOCAL solana-test-validator, no SOL needed
 #
 # commands (devnet):
 #   keys    generate the throwaway keys into ~/.setl8-devnet-lev (chmod 700), print their PUBLIC keys
@@ -46,7 +46,7 @@ if [ "${1:-}" = "selftest" ]; then
   SUB="${2:-all}"
   shift 2 || true
 else
-  [ "${1:-}" = "--cluster" ] && [ "${2:-}" = "devnet" ] || die "usage: $0 --cluster devnet <keys|build|needs|fund|deploy|run|status|all>   (devnet is the only cluster this script accepts)   |   $0 selftest [start|run|stop|all]"
+  [ "${1:-}" = "--cluster" ] && [ "${2:-}" = "devnet" ] || die "usage: $0 --cluster devnet <keys|build|needs|fund|deploy|run|status|all>   (devnet is the only cluster this script accepts)   |   $0 selftest [start|run|stop|all|measure]"
   CMD="${3:-}"
   shift 3 || true
 fi
@@ -204,6 +204,10 @@ build_selftest_so() {
   rsync -a --exclude target --exclude out --exclude out-plain "$BL/" "$BLS/"
   sed -i.bak 's/pub const MIN_PASS_DELAY_SECS: u32 = 86_400;/pub const MIN_PASS_DELAY_SECS: u32 = 60;/' "$BLS/programs/setl8-lev-trading/src/constants/mod.rs" && rm -f "$BLS/programs/setl8-lev-trading/src/constants/mod.rs.bak"
   grep -q 'MIN_PASS_DELAY_SECS: u32 = 60;' "$BLS/programs/setl8-lev-trading/src/constants/mod.rs" || die "cannot set the selftest minimum delay"
+  # the compute measurement (P27) also needs the activity throttle, the cancel delay and the terminal retention short; they change no code path
+  local cm="$BLS/programs/setl8-lev-trading/src/constants/mod.rs"
+  sed -i.bak 's/pub const ACTIVITY_THROTTLE_SECS: i64 = 86_000;/pub const ACTIVITY_THROTTLE_SECS: i64 = 5;/; s/pub const CANCEL_PASS_AFTER_SECS: i64 = 3_600;/pub const CANCEL_PASS_AFTER_SECS: i64 = 5;/; s/pub const TERMINAL_RETENTION_SECS: i64 = 604_800;/pub const TERMINAL_RETENTION_SECS: i64 = 5;/' "$cm" && rm -f "$cm.bak"
+  grep -q 'ACTIVITY_THROTTLE_SECS: i64 = 5;' "$cm" && grep -q 'CANCEL_PASS_AFTER_SECS: i64 = 5;' "$cm" && grep -q 'TERMINAL_RETENTION_SECS: i64 = 5;' "$cm" || die "cannot shorten the selftest constants"
   (cd "$BLS/programs/setl8-lev-trading" && cargo build-sbf --offline --features localnet --sbf-out-dir "$BLS/out" -- --locked) >"$BLS/build.log" 2>&1
   rm -f "$BLS/out/setl8_lev_trading-keypair.json"
   echo "selftest-only program build (minimum pass delay 60 s) sha256: $(shasum -a 256 "$LEV_SO" | cut -d' ' -f1)"
@@ -237,5 +241,12 @@ case "$SUB" in
   run) need_keys; tool run "$@" ;;
   stop) st_stop ;;
   all) trap st_stop EXIT; st_start; tool run "$@" ;;
+  measure)
+    # P27: the worst-case shape of every instruction on the local validator -> handover/cu-runtime.json and .md
+    trap st_stop EXIT
+    st_start
+    { solana-test-validator --version | head -1; solana feature status --url "$URL" --keypair "$D/keeper.json" 2>&1; } >"$D/validator-info.txt"
+    tool measure --out-dir "$REPO/handover" --validator-info "$D/validator-info.txt" "$@"
+    ;;
   *) die "unknown selftest command '$SUB'" ;;
 esac

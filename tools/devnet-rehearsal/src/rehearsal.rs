@@ -99,6 +99,8 @@ pub struct Rehearsal {
     /// `pass_delay_secs` given to `init_config` (the rehearsal uses the minimum, 1 day; only the LOCAL selftest of a scratch build with a shorter
     /// minimum uses less, to reach the day-2 part).
     pub pass_delay: u32,
+    /// The address lookup table of the measurement (created on first use): the shared accounts of the batch instructions.
+    pub alt: Option<solana_message::AddressLookupTableAccount>,
 }
 
 /// One scenario's running tally.
@@ -108,6 +110,11 @@ pub struct Cur {
     pub checks: u32,
     pub fails: Vec<String>,
     pub sigs_before: usize,
+}
+
+/// An in-memory copy of a key (the keys directory is read once; nothing is written or printed).
+pub fn clone_key(k: &Keypair) -> Keypair {
+    Keypair::try_from(k.to_bytes().as_slice()).unwrap_or_else(|_| Keypair::new())
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -180,9 +187,20 @@ impl Rehearsal {
     /// Sends one transaction and records it. `Err` carries the program error code when the runtime refused it. With `skip_preflight`
     /// a transaction the simulation would refuse lands on chain and fails there (its signature, CU and error are recorded).
     pub fn send(&mut self, label: &str, ixs: &[Instruction], payer: &str, signers: &[&str], skip_preflight: bool) -> Result<Sent, SendErr> {
-        let payer_kp = self.keys.get(payer);
-        let sg: Vec<&Keypair> = signers.iter().map(|n| self.keys.get(n)).collect();
-        let r = self.c.send(ixs, payer_kp, &sg, skip_preflight);
+        let payer_kp = clone_key(self.keys.get(payer));
+        let sg: Vec<Keypair> = signers.iter().map(|n| clone_key(self.keys.get(n))).collect();
+        let sg_refs: Vec<&Keypair> = sg.iter().collect();
+        self.send_kp(label, ixs, &payer_kp, &sg_refs, skip_preflight)
+    }
+
+    /// `send` with keypairs the caller holds (ephemeral measurement keys that are not in the keys directory).
+    pub fn send_kp(&mut self, label: &str, ixs: &[Instruction], payer_kp: &Keypair, sg: &[&Keypair], skip_preflight: bool) -> Result<Sent, SendErr> {
+        self.send_kp_tables(label, ixs, payer_kp, sg, skip_preflight, &[])
+    }
+
+    /// `send_kp` as a version-0 transaction with the given address lookup tables (none: a legacy transaction).
+    pub fn send_kp_tables(&mut self, label: &str, ixs: &[Instruction], payer_kp: &Keypair, sg: &[&Keypair], skip_preflight: bool, tables: &[solana_message::AddressLookupTableAccount]) -> Result<Sent, SendErr> {
+        let r = self.c.send_with(ixs, payer_kp, sg, skip_preflight, tables);
         match r {
             Ok(sent) => {
                 let ok = sent.info.ok();
@@ -208,7 +226,8 @@ impl Rehearsal {
             Err(e) => {
                 let code = preflight_code(&e).map(|c| c.1);
                 let err_text = e.data.as_ref().and_then(|d| d.get("err")).map(|x| x.to_string()).unwrap_or_default();
-                Err(SendErr { code, text: format!("{label}: {} {err_text}", e), sent: None })
+                let logs = e.data.as_ref().and_then(|d| d.get("logs")).and_then(|l| l.as_array()).map(|l| l.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" | ")).unwrap_or_default();
+                Err(SendErr { code, text: format!("{label}: {} {err_text} {logs}", e), sent: None })
             }
         }
     }

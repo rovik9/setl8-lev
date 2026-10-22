@@ -46,8 +46,10 @@ Each scenario file holds the `rules` (leverage, holding and commission rates, ma
   48 order bytes, the ed25519 signature of `SL8LEV|account|nonce|order` by `account.trader`), `tick` (backend second), and
   `drain` (the batching policy `max_events`, `heartbeat`: the point where batches are cut). Replay them in order.
 * `batches`: for every batch the evaluator seals, in order: `kind`, the exact `JournalBatch` bytes (`batch_bytes`), the
-  market accounts the transaction names, `meta_time`, the committed archive records and intents bytes, the modelled
-  transaction size and compute units, and the account as it must read afterwards (`account_after`: all fields the journal decides).
+  market accounts the transaction names, `meta_time`, the committed archive records and intents bytes, the transaction size
+  (`tx_bytes`, with the `SetComputeUnitLimit` instruction; `tx_format` says `legacy` or `v0_lookup`, a version-0 transaction with an address
+  lookup table, chosen only for a batch that cannot be split and does not fit a legacy transaction), the compute units MEASURED on a real
+  runtime for the batch's shape (`cu`) and the limit the transaction must request (`cu_limit`, P27 / decision 71), and the account as it must read afterwards (`account_after`: all fields the journal decides).
 * `archive`: the full sample archive file (16-byte segment headers and 68-byte records) and `intents`: the intents file text.
 
 The scenarios include DESIGN 4.9, DESIGN 2.6 R1, a quick round trip with commission, a weekend of holding fees, a quick flip,

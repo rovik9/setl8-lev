@@ -8,9 +8,9 @@ use anchor_lang::solana_program::{instruction::Instruction, pubkey::Pubkey};
 use base64::Engine as _;
 use serde_json::{json, Value};
 use solana_keypair::Keypair;
-use solana_message::Message;
+use solana_message::{v0, AddressLookupTableAccount, Message, VersionedMessage};
 use solana_signer::Signer;
-use solana_transaction::Transaction;
+use solana_transaction::{versioned::VersionedTransaction, Transaction};
 
 pub const DEVNET_GENESIS: &str = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 
@@ -231,6 +231,8 @@ pub struct Sent {
     pub info: TxInfo,
     /// Serialized size of the signed transaction in bytes.
     pub size: usize,
+    /// It was a version-0 transaction with address lookup tables.
+    pub v0: bool,
 }
 
 pub struct Cluster {
@@ -367,21 +369,39 @@ impl Cluster {
     /// Signs, sends and waits for `confirmed`. `skip_preflight` lands a transaction the simulation would refuse (the attacks of S3 are
     /// executed by the real runtime, not by a simulation). A transaction that fails on chain returns `Ok` with `info.err` set.
     pub fn send(&self, ixs: &[Instruction], payer: &Keypair, signers: &[&Keypair], skip_preflight: bool) -> Result<Sent, RpcError> {
+        self.send_with(ixs, payer, signers, skip_preflight, &[])
+    }
+
+    /// `send`, as a version-0 transaction that loads accounts from the given address lookup tables when there are any.
+    pub fn send_with(&self, ixs: &[Instruction], payer: &Keypair, signers: &[&Keypair], skip_preflight: bool, tables: &[AddressLookupTableAccount]) -> Result<Sent, RpcError> {
         let bh = self.latest_blockhash()?;
-        let msg = Message::new_with_blockhash(ixs, Some(&payer.pubkey()), &bh);
-        let mut tx = Transaction::new_unsigned(msg);
-        let mut all: Vec<&Keypair> = vec![payer];
-        for s in signers {
-            if s.pubkey() != payer.pubkey() {
-                all.push(s);
+        let sign_err = |e: String| RpcError { method: "sign".into(), message: e, data: None };
+        let bytes = if tables.is_empty() {
+            let msg = Message::new_with_blockhash(ixs, Some(&payer.pubkey()), &bh);
+            let mut tx = Transaction::new_unsigned(msg);
+            let mut all: Vec<&Keypair> = vec![payer];
+            for s in signers {
+                if s.pubkey() != payer.pubkey() {
+                    all.push(s);
+                }
             }
-        }
-        // sign only with the keys the message asks for
-        let n = usize::from(tx.message.header.num_required_signatures);
-        let required: Vec<Pubkey> = tx.message.account_keys[..n].to_vec();
-        let sigs: Vec<&Keypair> = all.into_iter().filter(|k| required.contains(&k.pubkey())).collect();
-        tx.try_partial_sign(&sigs, bh).map_err(|e| RpcError { method: "sign".into(), message: e.to_string(), data: None })?;
-        let bytes = bincode::serialize(&tx).map_err(|e| RpcError { method: "sign".into(), message: e.to_string(), data: None })?;
+            // sign only with the keys the message asks for
+            let n = usize::from(tx.message.header.num_required_signatures);
+            let required: Vec<Pubkey> = tx.message.account_keys[..n].to_vec();
+            let sigs: Vec<&Keypair> = all.into_iter().filter(|k| required.contains(&k.pubkey())).collect();
+            tx.try_partial_sign(&sigs, bh).map_err(|e| sign_err(e.to_string()))?;
+            bincode::serialize(&tx).map_err(|e| sign_err(e.to_string()))?
+        } else {
+            let msg = v0::Message::try_compile(&payer.pubkey(), ixs, tables, bh).map_err(|e| sign_err(format!("compile v0: {e}")))?;
+            let n = usize::from(msg.header.num_required_signatures);
+            let required: Vec<Pubkey> = msg.account_keys[..n].to_vec();
+            let mut all: Vec<&Keypair> = vec![payer];
+            all.extend(signers.iter().filter(|s| s.pubkey() != payer.pubkey()));
+            // the signatures in the order of the message's signer keys
+            let ordered: Vec<&Keypair> = required.iter().filter_map(|k| all.iter().find(|s| s.pubkey() == *k).copied()).collect();
+            let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &ordered).map_err(|e| sign_err(e.to_string()))?;
+            bincode::serialize(&tx).map_err(|e| sign_err(e.to_string()))?
+        };
         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
         let sig = self
             .rpc
@@ -390,7 +410,16 @@ impl Cluster {
             .unwrap_or_default()
             .to_string();
         let info = self.confirm(&sig, Duration::from_secs(90), &bytes)?;
-        Ok(Sent { info, size: bytes.len() })
+        Ok(Sent { info, size: bytes.len(), v0: !tables.is_empty() })
+    }
+
+    /// The finalized slot (a slot the `SlotHashes` sysvar certainly holds).
+    pub fn finalized_slot(&self) -> Result<u64, RpcError> {
+        Ok(self.rpc.call("getSlot", json!([{"commitment": "finalized"}]))?.as_u64().unwrap_or(0))
+    }
+
+    pub fn confirmed_slot(&self) -> Result<u64, RpcError> {
+        Ok(self.rpc.call("getSlot", json!([{"commitment": "confirmed"}]))?.as_u64().unwrap_or(0))
     }
 
     fn confirm(&self, sig: &str, timeout: Duration, raw: &[u8]) -> Result<TxInfo, RpcError> {

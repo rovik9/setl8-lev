@@ -89,7 +89,7 @@ proptest! {
         let mut last_event = i64::MIN;
         for it in &r.items {
             if let Item::Batch(b) = it {
-                prop_assert!(b.batch.events.len() <= 8 && b.batch.proofs.len() <= 3 && b.tx_bytes <= 1_232 && b.cu <= 200_000);
+                prop_assert!(b.batch.events.len() <= 8 && b.batch.proofs.len() <= 3 && b.tx_bytes <= 1_232 && b.cu <= b.cu_limit && b.cu_limit <= 1_400_000);
                 let ends_with_meta = matches!(b.batch.events.last(), Some(JournalEvent::Meta { .. }));
                 prop_assert!(ends_with_meta);
                 for ev in &b.batch.events {

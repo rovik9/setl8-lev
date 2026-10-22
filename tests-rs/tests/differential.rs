@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use common::evaluator::shared::runner::{completed_a_pass, m9b_cover, m9c_cover, run_path, spec_rules, M9bCover, M9cCover, ResetCover, RunResult};
+use common::evaluator::shared::runner::{completed_a_pass, fail8_commission_of, m9b_cover, m9c_cover, run_path, spec_rules, M9bCover, M9cCover, ResetCover, RunResult};
 use common::evaluator::shared::World;
 use common::evaluator::*;
 use common::launch_ruleset_args;
@@ -96,6 +96,7 @@ fn cover_of(spec: &PathSpec, chain: &LiteChain, r: &RunResult) -> Cover {
     c.graduated = u64::from(r.pass.graduated);
     c.m9b = m9b_cover(spec, w, &r.items, &chain.lines);
     c.m9c = m9c_cover(w);
+    c.m9c.fail8_commission = fail8_commission_of(&r.items);
     c
 }
 
