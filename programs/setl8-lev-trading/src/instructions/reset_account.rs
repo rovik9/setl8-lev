@@ -97,7 +97,7 @@ pub struct ResetAccount<'info> {
 }
 
 /// Checks run in this order: sector not paused; payer is the trader; rule set is the current one; wallet not banned; the
-/// previous account is the one named, locally `Failed`, not failed for a violation (`ViolationNoReset`, decision 60) and not reset yet; 5-account cap (the failed account is not
+/// previous account is the one named, locally `Failed`, not failed for a violation (`ViolationNoReset`, decision 60), not still held (`ReviewPending`, decision 67 amendment) and not reset yet; 5-account cap (the failed account is not
 /// counted, the new one will be); the registry is the vault-owned PDA of THIS product; the price
 /// (`ResetTierInvalid`, `ResetPhaseOutOfRange`, `ResetPriceOverflow`); the fee. Then the vault `deposit_reset` CPI (signed
 /// by `sector_authority`, never with `payout_count` or `account_size`), the read-back of the vault's `payout_count`, the 0.4%
@@ -125,6 +125,8 @@ pub fn handle_reset_account(ctx: Context<ResetAccount>, prev_challenge_id: u64) 
     require!(prev.status == STATUS_FAILED, Setl8Error::ResetNotAllowed);
     // DESIGN 2.9: no reset after a violation, whatever the wallet's ban says now (decision 60); before any CPI
     require!(!prev.violation_failed(), Setl8Error::ViolationNoReset);
+    // P25c (decision 67 amendment): an account failed while held waits for the two admins; before any CPI
+    require!(prev.held == 0, Setl8Error::ReviewPending);
     require!(prev.reset_at() == 0, Setl8Error::AccountAlreadyReset);
     let (prev_phase, size_s) = (prev.phase, prev.size_s);
     require!(wallet.active_count < MAX_ACTIVE_ACCOUNTS, Setl8Error::WalletCapReached);

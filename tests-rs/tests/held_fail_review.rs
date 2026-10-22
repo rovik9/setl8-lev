@@ -87,6 +87,10 @@ fn report_fail_on_a_held_account_fails_it_and_keeps_the_hold() {
     let mut want = twin.account();
     assert_eq!(want.held, 0);
     want.held = 1;
+    // the twin lives under another random trader key: its address-derived fields (trader, bump, genesis-derived journal hash) differ
+    want.trader = a.trader;
+    want.bump = a.bump;
+    want.journal_hash = a.journal_hash;
     assert_eq!(bytes_of(&a), bytes_of(&want));
 }
 

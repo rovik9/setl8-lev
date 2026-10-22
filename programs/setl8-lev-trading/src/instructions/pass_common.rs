@@ -73,11 +73,22 @@ pub fn free_wallet_slot(wallet: &mut WalletProfile) -> Result<()> {
 /// `terminal_at` (stored in `pass_proposed_at`, which is meaningless once nothing can be pending) set to `now`. A hold on
 /// the account is cleared with the wallet's `held_count` (checked), and the wallet slot is freed (checked).
 pub fn end_account(acct: &mut TradingAccount, wallet: &mut WalletProfile, status: u8, now: i64) -> Result<()> {
+    end_account_with(acct, wallet, status, now, false)
+}
+
+/// Like `end_account` for a floor or quick-limit fail (`report_fail`), but a HOLD STAYS (P25c, decision 67 amendment, audit
+/// F-32): an account failed while held is Failed + held until both admins `release_hold` it (an ordinary resettable failure)
+/// or `fail_for_violation` it (the marker). The wallet's `held_count` therefore does not move here.
+pub fn end_account_keep_hold(acct: &mut TradingAccount, wallet: &mut WalletProfile, status: u8, now: i64) -> Result<()> {
+    end_account_with(acct, wallet, status, now, true)
+}
+
+fn end_account_with(acct: &mut TradingAccount, wallet: &mut WalletProfile, status: u8, now: i64, keep_hold: bool) -> Result<()> {
     acct.status = status;
     acct.pass_pending = PASS_NONE;
     acct.pass_requested_at = 0;
     acct.pass_proposed_at = now;
-    if flag(acct.held)? {
+    if !keep_hold && flag(acct.held)? {
         acct.held = 0;
         wallet.held_count = wallet.held_count.checked_sub(1).ok_or(Setl8Error::MathOverflow)?;
     }

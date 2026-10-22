@@ -19,11 +19,14 @@ pub struct CloseAccount<'info> {
     pub trading_account: Box<Account<'info, TradingAccount>>,
 }
 
-/// Only a terminal status (Failed, Abandoned, Graduated) and `now >= terminal_at + 7 days` (inclusive).
+/// Only a terminal status (Failed, Abandoned, Graduated) and `now >= terminal_at + 7 days` (inclusive). Not a Failed account that
+/// is still held (`ReviewPending`, P25c): closing it would delete the review's evidence and leave the wallet's `held_count` above
+/// zero for ever, which would refuse `ban_wallet` for good.
 pub fn handle_close_account(ctx: Context<CloseAccount>) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     let acct = &ctx.accounts.trading_account;
     require!(matches!(acct.status, STATUS_FAILED | STATUS_ABANDONED | STATUS_GRADUATED), Setl8Error::AccountNotTerminal);
+    require!(acct.held == 0, Setl8Error::ReviewPending);
     let ready = acct.terminal_at().checked_add(TERMINAL_RETENTION_SECS).ok_or(Setl8Error::MathOverflow)?;
     require!(now >= ready, Setl8Error::CloseTooEarly);
     Ok(())

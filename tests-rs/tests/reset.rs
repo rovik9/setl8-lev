@@ -974,14 +974,18 @@ fn a_violation_fail_bans_the_wallet_so_the_reset_is_refused() {
 }
 
 #[test]
-fn a_failed_account_with_the_hold_cleared_is_resettable_and_the_hold_count_stays_zero() {
+fn a_failed_account_with_the_hold_released_is_resettable_and_the_hold_count_returns_to_zero() {
+    // P25c (decision 67 amendment): report_fail keeps the hold; the reset waits for the two admins (held_fail_review.rs has the rest)
     let mut w = JEnv::new();
     let t = w.t0 + 1_000;
     assert_ok(w.hold(t, hash(3)));
     assert_eq!(w.wallet_profile().held_count, 1);
     w.fail_in(2, t + 10);
+    assert_eq!((w.wallet_profile().held_count, w.account().held), (1, 1));
+    w.fails(E::ReviewPending, |w| w.reset(t + 200));
+    assert_ok(w.release_hold(t + 300));
     assert_eq!(w.wallet_profile().held_count, 0);
-    w.reset_ok(t + 200);
+    w.reset_ok(t + 400);
     assert_eq!((w.wallet_profile().held_count, w.account().held), (0, 0));
 }
 

@@ -163,16 +163,19 @@ fn a_floor_fail_of_a_wallet_that_was_banned_and_unbanned_is_resettable() {
 
 #[test]
 fn a_report_fail_of_a_held_account_keeps_the_marker_unset() {
-    // held, then the evaluator's own floor fail (report_fail works on a held account): not a violation
+    // held, then the evaluator's own floor fail (report_fail works on a held account): not a violation. P25c: the hold stays, the
+    // reset waits for the two admins; after release_hold it is an ordinary reset
     let (mut w, t) = base();
     w.ok(|w| w.hold(t, hash(1)));
     w.edit_account(|a| a.b = SIZE_100K / 100 * 92);
     let b = w.fail_batch(t + 1, vec![], FailReason::StaticFloor, SIZE_100K / 100 * 92, true);
     assert_ok(w.report_fail(t + 2, &b, 0, &[MARKET_EUR]));
     let a = w.account();
-    assert_eq!((a.status, a.pass_pending, a.held), (c::STATUS_FAILED, 0, 0));
+    assert_eq!((a.status, a.pass_pending, a.held), (c::STATUS_FAILED, 0, 1));
     assert!(!a.violation_failed());
-    w.reset_ok(t + 100);
+    w.fails(E::ReviewPending, |w| w.reset(t + 100));
+    w.ok(|w| w.release_hold(t + 101));
+    w.reset_ok(t + 102);
 }
 
 #[test]

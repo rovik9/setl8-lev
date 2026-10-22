@@ -296,15 +296,16 @@ fn rf_works_while_the_sector_and_the_vault_product_are_paused() {
 }
 
 #[test]
-fn rf_on_a_held_account_clears_the_hold_and_the_wallet_count() {
+fn rf_on_a_held_account_keeps_the_hold_and_the_wallet_count() {
     let (mut w, t) = base();
     w.ok(|w| w.hold(t, hash(1)));
     assert_eq!(w.wallet_profile().held_count, 1);
     at_floor(&mut w);
     w.ok(|w| rf_floor(w, t));
     let a = w.account();
-    assert_eq!((a.held, a.status), (0, c::STATUS_FAILED));
-    assert_eq!(w.wallet_profile().held_count, 0);
+    // P25c (decision 67 amendment): the hold STAYS on a Failed account, for the two admins' review
+    assert_eq!((a.held, a.status), (1, c::STATUS_FAILED));
+    assert_eq!(w.wallet_profile().held_count, 1);
 }
 
 // ================================================================ post_journal hardening (RESOLVE d)
@@ -492,8 +493,9 @@ fn fail_for_violation_needs_a_held_account_and_works_while_paused() {
     w.pause_vault_product();
     w.ok(|w| w.violation(t + 1, hash(2)));
     assert_eq!(w.account().status, c::STATUS_FAILED);
-    // a failed account is no longer Active
-    w.fails(E::AccountNotActive, |w| w.violation(t + 2, hash(2)));
+    // a violation-failed account is Failed and no longer held: a second call is refused as NotHeld (P25c: a Failed account is a
+    // valid target when it is still held, so the hold is what is missing; an Abandoned or Graduated one is AccountNotActive)
+    w.fails(E::NotHeld, |w| w.violation(t + 2, hash(2)));
 }
 
 #[test]

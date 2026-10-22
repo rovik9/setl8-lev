@@ -398,7 +398,8 @@ fn check_static(s: &Snap, tainted: &BTreeSet<Pubkey>) -> Vec<Viol> {
         chk!("T-2", a.status <= 3 && (1..=5).contains(&a.phase) && a.pass_pending <= 3, "status/phase/pass_pending out of range {ctx}");
         chk!("T-3a", a.pass_pending <= 2 || (a.pass_pending == 3 && a.status == c::STATUS_FAILED), "pass_pending 3 on a non-Failed account {ctx}");
         chk!("T-3b", !(matches!(a.pass_pending, 1 | 2) && a.status != c::STATUS_ACTIVE), "pending pass on a terminal account {ctx}");
-        chk!("T-3c", !(a.held == 1 && a.status != c::STATUS_ACTIVE), "held on a terminal account {ctx}");
+        // P25c: a hold survives only on Active and on a Failed account that report_fail failed while held (pending 0, never the marker)
+        chk!("T-3c", !(a.held == 1 && !(a.status == c::STATUS_ACTIVE || (a.status == c::STATUS_FAILED && a.pass_pending == 0))), "held on a terminal account other than Failed + held {ctx}");
         let tier_ok = s.rulesets.get(&a.ruleset_version).is_some_and(|rs| rs.tier_size.iter().take(usize::from(rs.tier_count)).any(|t| *t == a.size_s));
         chk!("T-4", a.size_s > 0 && a.size_s <= i64::MAX as u64 && tier_ok, "size_s is not a tier of rule set {} {ctx}", a.ruleset_version);
         chk!("T-4b", a.ruleset_version >= 1 && a.ruleset_version <= s.cfg.current_ruleset, "ruleset_version {} outside 1..=current {ctx}", a.ruleset_version);
@@ -790,9 +791,9 @@ fn check_pre(op: Op, ix: &Instruction, pre: &Snap, post: &Snap, tainted: &BTreeS
             }
             HoldAccount => need(pa.status == 0 && pa.held == 0, format!("hold_account succeeded on a terminal or already held account: {who}")),
             ReleaseHold => need(pa.held == 1, format!("release_hold succeeded on an account that was not held: {who}")),
-            FailForViolation => need(pa.status == 0 && pa.held == 1, format!("fail_for_violation succeeded on an account that was not held and Active: {who}")),
+            FailForViolation => need((pa.status == 0 || pa.status == 1) && pa.held == 1, format!("fail_for_violation succeeded on an account that was not held and Active or Failed: {who}")),
             TouchActivity | ReleaseAccount => need(pa.status == 0, format!("{} succeeded on a terminal account: {who}", op.name())),
-            ResetAccount => need(cfg.paused == 0 && pa.status == 1 && pa.pass_pending != 3 && pa.pass_requested_at == 0, format!("reset_account succeeded on an account that was not a resettable Failed one (paused {}): {who}", cfg.paused)),
+            ResetAccount => need(cfg.paused == 0 && pa.status == 1 && pa.pass_pending != 3 && pa.held == 0 && pa.pass_requested_at == 0, format!("reset_account succeeded on an account that was not a resettable Failed one (paused {}): {who}", cfg.paused)),
             PostJournal | ReportFail => need(pa.status == 0 && pa.pass_pending != 2, format!("{} succeeded on a terminal account or while a pass is confirmed: {who}", op.name())),
             _ => {}
         }
@@ -2110,7 +2111,7 @@ impl World {
                 self.ix_release_hold(&t)
             }
             FailForViolation => {
-                let t = self.pick_any(rng, |t| t.a.as_ref().is_some_and(|a| a.held == 1 && a.status == 0));
+                let t = self.pick_any(rng, |t| t.a.as_ref().is_some_and(|a| a.held == 1 && a.status <= 1));
                 let hash = if noise(rng) { [0u8; 32] } else { rng.hash32() };
                 self.ix_violation(&t, hash)
             }
@@ -3137,8 +3138,15 @@ fn control_every_static_invariant_fires_on_its_corruption() {
         })),
         ("T-3c", Box::new(move |s| {
             let a = s.accts.get_mut(&k).unwrap();
+            a.status = 2;
+            a.held = 1;
+        })),
+        // P25c: Failed + held is allowed, but not together with the violation marker
+        ("T-3c", Box::new(move |s| {
+            let a = s.accts.get_mut(&k).unwrap();
             a.status = 1;
             a.held = 1;
+            a.pass_pending = 3;
         })),
         ("T-4", Box::new(move |s| s.accts.get_mut(&k).unwrap().size_s = 123_000_000)),
         ("T-4b", Box::new(move |s| s.accts.get_mut(&k).unwrap().ruleset_version = 9)),
@@ -3220,7 +3228,7 @@ fn control_every_static_invariant_fires_on_its_corruption() {
             assert!(!has(&check_static(&bad, &tainted), id), "{id} must be skipped for a tainted trader");
         }
     }
-    assert_eq!(cases.len(), 41, "the table of static invariants changed: update the fragment");
+    assert_eq!(cases.len(), 42, "the table of static invariants changed: update the fragment");
 }
 
 #[test]
@@ -3526,8 +3534,15 @@ fn control_every_success_precondition_fires_when_the_pre_state_does_not_meet_it(
             let a = n.accts.get_mut(&k).unwrap();
             (a.status, a.pass_pending) = (1, 3);
         })),
+        // P25c: a Failed account that is NOT held is not a valid target either
+        ("P-violation", FailForViolation, Box::new(move |p| p.accts.get_mut(&k).unwrap().status = 1), Box::new(move |n| n.accts.get_mut(&k).unwrap().pass_pending = 3)),
         ("P-touch", TouchActivity, Box::new(move |p| p.accts.get_mut(&k).unwrap().status = 2), Box::new(move |n| n.accts.get_mut(&k).unwrap().last_activity_pushed += 5)),
         ("P-reset", ResetAccount, Box::new(|_| {}), Box::new(move |n| n.accts.get_mut(&k).unwrap().pass_requested_at = 5)),
+        // P25c: a Failed account that is still held is not resettable
+        ("P-reset", ResetAccount, Box::new(move |p| {
+            let a = p.accts.get_mut(&k).unwrap();
+            (a.status, a.held) = (1, 1);
+        }), Box::new(move |n| n.accts.get_mut(&k).unwrap().pass_requested_at = 5)),
         ("P-post", PostJournal, Box::new(move |p| p.accts.get_mut(&k).unwrap().status = 1), Box::new(move |n| n.accts.get_mut(&k).unwrap().seq += 1)),
         ("P-post", PostJournal, Box::new(move |p| p.accts.get_mut(&k).unwrap().pass_pending = 2), Box::new(move |n| n.accts.get_mut(&k).unwrap().seq += 1)),
         ("P-open", OpenAccount, Box::new(move |p| p.wallets.get_mut(&t0).unwrap().banned = 1), Box::new(|_| {})),
@@ -3553,7 +3568,7 @@ fn control_every_success_precondition_fires_when_the_pre_state_does_not_meet_it(
     let mut post = pre.clone();
     post.accts.get_mut(&k).unwrap().pass_pending = 1;
     assert!(check_pre(RequestAdvance, &ix_of(RequestAdvance, t0), &pre, &post, &none).is_empty());
-    assert_eq!(cases.len(), 19, "the table of success preconditions changed: update the fragment");
+    assert_eq!(cases.len(), 21, "the table of success preconditions changed: update the fragment");
 }
 
 // ====================================================================================================== LIMITED: vault max_payout_count drift

@@ -49,7 +49,10 @@ pub struct ReportFail<'info> {
 /// Evaluator only. Applies the batch under the invariants of `post_journal`, with the batch shape `events..., Fail, Meta`
 /// (`Meta.flat == 1`), the reason justified by the engine's floors at that point (I-11), a quick overshoot allowing
 /// nothing but the Fail after it (I-8). Rejected while `pass_pending == 2`; state 1 is cleared. Sets status Failed and
-/// `terminal_at`, calls `flag_trader_failed`, frees the wallet slot. Works while the sector or the vault product is paused.
+/// `terminal_at`, calls `flag_trader_failed`, frees the wallet slot. A HOLD STAYS (P25c, decision 67 amendment): a held account
+/// is not frozen for losses, so it can still be failed on its floor, but it remains Failed + held for the two admins
+/// (`release_hold` or `fail_for_violation`); `reset_account` and `close_account` refuse it with `ReviewPending`.
+/// Works while the sector or the vault product is paused.
 pub fn handle_report_fail<'info>(ctx: Context<'_, '_, 'info, 'info, ReportFail<'info>>, batch_bytes: Vec<u8>, reason: u8) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     require_keys_eq!(ctx.accounts.evaluator.key(), ctx.accounts.config.evaluator, Setl8Error::Unauthorized);
@@ -74,7 +77,7 @@ pub fn handle_report_fail<'info>(ctx: Context<'_, '_, 'info, 'info, ReportFail<'
     acct.seq = out.seq;
     acct.journal_hash = out.hash;
     acct.flat = 1;
-    end_account(acct, &mut ctx.accounts.wallet, STATUS_FAILED, now)?;
+    end_account_keep_hold(acct, &mut ctx.accounts.wallet, STATUS_FAILED, now)?;
     let (b, seq, journal_hash) = (acct.b, acct.seq, acct.journal_hash);
 
     flag_failed_cpi(

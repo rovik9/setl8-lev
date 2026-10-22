@@ -26,7 +26,8 @@ pub struct ReleaseHold<'info> {
     pub wallet: Box<Account<'info, WalletProfile>>,
 }
 
-/// Both admins; `held == 1` (`NotHeld`). Clears the hold and the wallet's `held_count - 1`. A pending pass is untouched and
+/// Both admins; `held == 1` (`NotHeld`), whatever the status: this is also the way out of a Failed + held account (P25c, decision 67
+/// amendment), which then is an ordinary resettable failure. Clears the hold and the wallet's `held_count - 1`. A pending pass is untouched and
 /// its delay clock kept running (`pass_proposed_at` is not written).
 pub fn handle_release_hold(ctx: Context<ReleaseHold>) -> Result<()> {
     require_both_admins(&ctx.accounts.config, &ctx.accounts.admin_a, &ctx.accounts.admin_b)?;
