@@ -1,6 +1,6 @@
 # Module M11: measured budgets (P19 part C)
 
-Every number of DESIGN section 11 that was an estimate is now measured, and a test fails the build when an instruction grows past its budget. **No instruction exceeds 200,000 compute units or 1,232 bytes, and the SBF stack check passes** (largest frame 2,944 bytes of 4,096), so nothing was stopped and nothing was optimised.
+Every number of DESIGN section 11 that was an estimate is now measured, and a test fails the build when an instruction grows past its budget. **In LiteSVM no instruction exceeds 200,000 compute units or 1,232 bytes, and the SBF stack check passes** (largest frame 2,944 bytes of 4,096), so nothing was stopped and nothing was optimised. **P27 (decision 71): LiteSVM under-counts compute on a real runtime (every journal event is 6,000 units dearer inside the `emit_cpi!` self-call on Agave 4.0.2); the ABSOLUTE numbers are the validator's, in the next section, and two instructions (`post_journal`, `report_fail`) do exceed 200,000 there.** The LiteSVM table below stays as the regression harness (relative changes, `budget.rs` ceilings unchanged).
 
 ## How it is measured
 
@@ -10,7 +10,41 @@ Every number of DESIGN section 11 that was an estimate is now measured, and a te
 * Ceilings: `CEILINGS` in `budget.rs`, each = measured worst case + 15 %, rounded up to 100 CU and 10 bytes, never above 200,000 CU or 1,232 bytes. The test fails when a measurement exceeds its ceiling, when a ceiling exceeds a limit, when an instruction has no ceiling, or when a ceiling has no measurement. After a budget changes ON PURPOSE run `BUDGET_CALIBRATE=1 cargo test --test budget -- --nocapture`, which prints the new ceilings instead of asserting them, and update this table in the same commit.
 * Stack: `scripts/build-test-so.sh` fails on any frame over 4,096 bytes (output: `OK: no stack-frame overflow (localnet build)`). The toolchain prints no sizes, so `scripts/stack-frames.py` rebuilds with `-Zemit-stack-sizes` into `target/stack-sizes/` and names the compiler-reported frame of every function.
 
-## The table
+## The runtime table (P27, decision 71): the numbers that count
+
+Measured by `tools/devnet-rehearsal measure` (`scripts/devnet-rehearsal.sh selftest measure`) on a local `solana-test-validator` 4.0.2 (273 features active), every instruction in its heaviest shape, each shape run three times, every transaction with an explicit `SetComputeUnitLimit(400000)`; `handover/cu-runtime.json` has the 102 shapes, `handover/cu-runtime.md` the per-shape table, the validator version and feature summary, and the evidence for why LiteSVM differs (6,000 units more inside every event: LiteSVM 0.7.0 embeds the Agave 2.3.13 runtime; it cannot be configured to match). One column per runtime, the contract on the right (`handover/backend-compute-contract.md`); `tests-rs/tests/budget_runtime.rs` asserts the runtime numbers (a runtime ceiling per instruction: measured + 20 %), `budget.rs` keeps the LiteSVM ceilings. 15 of the 25 instructions are above their LiteSVM ceilings on the validator (the P23 count of 8 came from a partial run).
+
+| instruction | runtime max CU | tx bytes | LiteSVM worst CU (budget.rs) | runtime / LiteSVM | LiteSVM ceiling | over the LiteSVM ceiling | explicit limit |
+|---|---:|---:|---:|---:|---:|---|---|
+| ban_wallet | 39078 | 609 | 27036 | 1.45 | 31100 | OVER | default (200,000) is enough |
+| cancel_pass | 31150 | 245 | 19205 | 1.62 | 22100 | OVER | default (200,000) is enough |
+| close_account | 3340 | 211 | 3340 | 1.00 | 3900 | no | default (200,000) is enough |
+| confirm_pass | 35652 | 278 | 23971 | 1.49 | 27600 | OVER | default (200,000) is enough |
+| create_market | 42247 | 634 | 31705 | 1.33 | 36500 | OVER | default (200,000) is enough |
+| create_ruleset | 58447 | 1058 | 46405 | 1.26 | 53400 | OVER | default (200,000) is enough |
+| fail_for_violation | 49938 | 668 | 44045 | 1.13 | 50700 | no | default (200,000) is enough |
+| finalize_pass | 87115 | 575 | 84594 | 1.03 | 97300 | no | 400000 (depends on the trader's key) |
+| hold_account | 36578 | 343 | 24633 | 1.48 | 28400 | OVER | default (200,000) is enough |
+| init_config | 14442 | 623 | 16050 | 0.90 | 18500 | no | default (200,000) is enough |
+| open_account | 103181 | 782 | 135595 | 0.76 | 156000 | no | 400000 (depends on the trader's key) |
+| post_journal | 188799 | 1227 | 125290 | 1.51 | 144100 | OVER | per shape: `recommended_cu_limit` |
+| reject_pass | 33633 | 279 | 21688 | 1.55 | 25000 | OVER | default (200,000) is enough |
+| release_account | 38596 | 443 | 52151 | 0.74 | 60000 | no | 400000 (depends on the trader's key) |
+| release_hold | 36546 | 504 | 24600 | 1.49 | 28300 | OVER | default (200,000) is enough |
+| report_fail | 224440 | 1220 | 151284 | 1.48 | 174000 | OVER | per shape: `recommended_cu_limit` |
+| request_advance | 51565 | 443 | 45937 | 1.12 | 52900 | no | default (200,000) is enough |
+| reset_account | 154289 | 855 | 158203 | 0.98 | 182000 | no | 400000 (depends on the trader's key) |
+| set_evaluator | 31434 | 510 | 19338 | 1.63 | 22300 | OVER | default (200,000) is enough |
+| set_limits | 30946 | 494 | 18850 | 1.64 | 21700 | OVER | default (200,000) is enough |
+| set_paused | 30825 | 479 | 18729 | 1.65 | 21600 | OVER | default (200,000) is enough |
+| touch_activity | 38590 | 443 | 52145 | 0.74 | 60000 | no | 400000 (depends on the trader's key) |
+| unban_wallet | 32687 | 543 | 20591 | 1.59 | 23700 | OVER | default (200,000) is enough |
+| update_market | 34111 | 599 | 30766 | 1.11 | 35400 | no | default (200,000) is enough |
+| veto_pass | 34589 | 471 | 22643 | 1.53 | 26100 | OVER | default (200,000) is enough |
+
+The tables of `post_journal` and `report_fail` by events and proofs, and the limits the evaluator asks for, are in `handover/backend-compute-contract.md`. The key-dependent instructions were measured with the worst of 30,000 keys by the bump-search score (27 failed attempts, about 6 on average), not with LiteSVM's hand-built keys, so their runtime figure can be BELOW the LiteSVM one (`open_account` 103,181 against 135,595); each failed attempt costs about 1,500 units, hence the fixed 400,000 limit.
+
+## The table (LiteSVM: the regression numbers; the runtime table is above)
 
 CU = the worst case measured; bytes = the largest signed transaction; accounts = distinct accounts in the transaction (programs included); depth = deepest invocation level (1 = the instruction itself, 2 = the `emit_cpi!` self-call or one vault call, 3 = the vault's own token or system call). The last two columns are the asserted ceilings and the compute-unit limit a client should request (the ceiling; the default of 200,000 also works for every row, see below).
 
@@ -46,11 +80,11 @@ CU = the worst case measured; bytes = the largest signed transaction; accounts =
 
 ## Compute-unit request per instruction
 
-Every row is below the default of 200,000 units per instruction, so **no `SetComputeUnitLimit` is needed anywhere** and `post_journal` and `report_fail` carry none (an extra instruction would add 40 bytes to a transaction that is already at 1,181 and 1,149). A client that prefers to ask for exactly what it needs asks for the ceiling of its row. Two rows deserve a margin: `reset_account` (ceiling 182,000) and `open_account` (156,000) depend on the trader's key, so a hand-picked key far beyond the 8,000 searched could cost another 10,000 to 20,000 units; asking for 200,000 explicitly is the safe request for both. Priority fees are out of scope.
+**Superseded by P27 (decision 71).** On the validator the default of 200,000 units per instruction is NOT enough for `post_journal` and `report_fail` at 7 to 8 events (188,799 and 224,440 at 8 events and 3 proofs), so every `post_journal`, `report_fail` and every instruction above 140,000 units carries an explicit `SetComputeUnitLimit`: for a batch the evaluator's `recommended_cu_limit` (measured worst case x 1.20, rounded up to 1,000, at most 1,400,000; 270,000 at most), for the five key-dependent trader instructions (`open_account`, `reset_account`, `finalize_pass`, `touch_activity`, `release_account`) 400,000, for the rest the default is enough. The limit instruction adds 40 bytes (a price instruction 12 more): the transaction budget below is therefore counted WITH it, and the batches that do not fit a legacy transaction use a version-0 transaction with an address lookup table (`backend-compute-contract.md`). Priority fees are out of scope.
 
 ## Close to a limit, and why
 
-1. **`post_journal` bytes: 1,181 of 1,232 (96 %).** The worst case is three proofs of source 3 (93 bytes each with the 32-byte digest) and eight market accounts (32 bytes each as account keys). The evaluator's batch policy (`BatchPolicy::MAX`: 8 events, 3 proofs, 8 markets, 1,232 bytes, 200,000 CU) keeps every batch inside it; `crates/evaluator/src/batch.rs` models the size exactly (one signature, no budget instruction) and the compute with a bound that this table stays below (30,000 + 12,500 per event + 8,000 per proof, + 40,000 for `report_fail`).
+1. **`post_journal` bytes: 1,181 of 1,232 (96 %).** The worst case is three proofs of source 3 (93 bytes each with the 32-byte digest) and eight market accounts (32 bytes each as account keys). The evaluator's batch policy (`BatchPolicy::MAX`: 8 events, 3 proofs, 8 markets, 1,232 bytes WITH the limit instruction, a requested limit of at most 1,400,000) keeps every batch inside it; `crates/evaluator/src/batch.rs` models the size exactly (one signature) and `compute.rs` the compute from the validator measurement (P27; the old bound of 30,000 + 12,500 per event + 8,000 per proof was fitted on LiteSVM and is gone). The 1,181 bytes are before the limit instruction: with it a `post_journal` of three source-3 proofs and eight markets does not fit a legacy transaction, `post_journal` then splits at event boundaries.
 2. **`report_fail`: 1,149 B (93 %) and 151,317 CU (76 %).** Eleven fixed accounts (the wallet, the sector authority, the vault program, the registry, the vault record) and the vault CPI on top of the batch.
 3. **`reset_account`: 158,200 CU (79 %).** The vault's `deposit_reset` is about 42,000 of it; the rest is the new addresses found by bump search, the token transfers and account creations, and the registry decoded by hand. Its stack frame (2,944 bytes) is also the largest of the program.
 4. `create_ruleset`: 984 bytes (80 %); the arguments are the whole 552-byte rule set (the 128 half-spreads are 256 bytes), so it needs a transaction of its own, as DESIGN 6.1 already said.
