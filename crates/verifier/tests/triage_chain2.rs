@@ -46,7 +46,7 @@ fn hold(t: i64, held: bool) -> String {
 /// `<= now + 2`). The verifier judges the Fill by event time against `[hold, release)` and says FillNotAllowed on a history the
 /// program accepted. The hold/release lines carry only the indexer's block time (no `at_seq`, DESIGN 8.1 promises one).
 #[test]
-#[ignore = "FINDING V13: verifier judges Fills by event time against hold-line block times, not by chain order; false MISMATCH on a legal history"]
+#[ignore = "FINDING V13 = F-25, DEFERRED by P25b (decision 68): needs a v2 log format with a sequence number on lifecycle events; the verifier judges Fills by event time against hold-line block times, a false MISMATCH on a legal history"]
 fn a_fill_posted_after_the_release_but_dated_before_its_block_time_is_not_a_fill_on_a_held_account() {
     let honest = buy(10 * UNITS);
     let mut b = honest.clone();
