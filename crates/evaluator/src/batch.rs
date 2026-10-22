@@ -60,18 +60,14 @@ pub const FAIL_LOOKUP_ACCOUNTS: usize = 6;
 /// markets: the version byte, the shorter list of static keys, and the lookup (table key 32, two index lists of one length byte each,
 /// one byte per account loaded).
 pub fn tx_size_v0(kind: BatchKind, n_markets: usize, batch_len: usize, compute_budget_ix: bool) -> usize {
-    let (fixed, lookup_fixed) = match kind {
-        BatchKind::PostJournal => (POST_FIXED_ACCOUNTS, POST_LOOKUP_ACCOUNTS),
-        BatchKind::ReportFail(_) => (FAIL_FIXED_ACCOUNTS, FAIL_LOOKUP_ACCOUNTS),
-    };
-    let n_keys = fixed + n_markets + usize::from(compute_budget_ix);
-    let loaded = lookup_fixed + n_markets;
-    let static_keys = n_keys - loaded;
-    tx_size(kind, n_markets, batch_len, compute_budget_ix) - (shortvec_len(n_keys) + 32 * n_keys)
-        + (shortvec_len(static_keys) + 32 * static_keys)
-        + 1 // the version byte 0x80
-        + 1 // the number of lookups (one)
-        + 32 + 1 + 1 + loaded // table key, writable index list, read-only index list, one byte per loaded account
+    let loaded = n_markets
+        + match kind {
+            BatchKind::PostJournal => POST_LOOKUP_ACCOUNTS,
+            BatchKind::ReportFail(_) => FAIL_LOOKUP_ACCOUNTS,
+        };
+    // the loaded accounts leave the static keys (32 bytes each; the key list has fewer than 128 entries, so its length stays one byte);
+    // the version byte, the number of lookups (one), the table key, the two index lists' lengths and one index byte per loaded account come in
+    tx_size(kind, n_markets, batch_len, compute_budget_ix) - 32 * loaded + 1 + 1 + 32 + 1 + 1 + loaded
 }
 
 /// The worst compute units measured on a real runtime for a batch of this shape (`compute::measured_cu`). Kept under its old name: the

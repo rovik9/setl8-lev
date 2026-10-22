@@ -278,4 +278,40 @@ mod tests {
             assert_eq!(crate::batch::tx_size(f, n, 400, true) - crate::batch::tx_size_v0(f, n, 400, true), 32 * (6 + n) - (1 + 1 + 32 + 1 + 1 + (6 + n)));
         }
     }
+
+    #[test]
+    fn the_model_answers_with_the_table_inside_the_format_and_the_maximum_outside_it() {
+        for (e, row) in POST_MEASURED.iter().enumerate() {
+            for (p, v) in row.iter().enumerate() {
+                assert_eq!(measured_cu(BatchKind::PostJournal, e, p), *v, "events {e} proofs {p}");
+                assert_eq!(recommended_cu_limit(BatchKind::PostJournal, e, p), limit_for(*v));
+            }
+        }
+        for (e, row) in FAIL_MEASURED.iter().enumerate() {
+            for (p, v) in row.iter().enumerate() {
+                assert_eq!(measured_cu(fail(), e, p), *v, "events {e} proofs {p}");
+            }
+        }
+        // the last row and column of the format are inside it, one more of either is not
+        assert_ne!(measured_cu(BatchKind::PostJournal, MAX_EVENTS, MAX_PROOFS), MAX_CU_LIMIT);
+        assert_eq!(measured_cu(BatchKind::PostJournal, MAX_EVENTS + 1, 0), MAX_CU_LIMIT);
+        assert_eq!(measured_cu(BatchKind::PostJournal, 0, MAX_PROOFS + 1), MAX_CU_LIMIT);
+    }
+
+    #[test]
+    fn fit_takes_the_maximum_below_and_fills_holes_from_the_next_larger_entries() {
+        let m = |post, events, proofs, max_cu| Measured { post, events, proofs, max_cu };
+        let (post, failt) = fit(&[m(true, 5, 2, 100), m(true, 3, 1, 40), m(true, 8, 3, 300)]);
+        // (3,1) is measured; (5,2) the larger of its own and everything below; (8,3) the largest
+        assert_eq!((post[3][1], post[5][2], post[8][3]), (40, 100, 300));
+        assert_eq!((post[4][1], post[3][3], post[4][2]), (40, 40, 40));
+        assert_eq!((post[5][1], post[5][3], post[7][3], post[8][2]), (40, 100, 100, 100));
+        // holes: nothing at or below (2,3) is measured, so the smallest non-zero neighbour above or to the right fills it
+        assert_eq!((post[0][0], post[2][3], post[2][0]), (40, 40, 40));
+        // a kind nobody measured stays zero
+        assert!(failt.iter().all(|r| r.iter().all(|x| *x == 0)));
+        // the hole at the last row and column is filled from its left and upper neighbours' larger entries
+        let (only, _) = fit(&[m(true, 8, 3, 7)]);
+        assert!(only.iter().all(|r| r.iter().all(|x| *x == 7)));
+    }
 }

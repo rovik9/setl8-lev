@@ -148,9 +148,60 @@ fn compute_limit_splits_too() {
     let bs = w.ev.drain_batches(&BatchPolicy { max_cu: recommended_cu_limit(BatchKind::PostJournal, 4, 0), ..BatchPolicy::MAX });
     let fee_events: usize = bs.iter().map(|b| kinds(b).iter().filter(|k| **k == "Holding").count()).sum();
     assert_eq!(fee_events, 7);
-    // 7 fees are one unit: it cannot be split, so it is emitted alone even above the limit
+    // 7 fees are one unit: it cannot be split, so it is emitted alone even above the limit, and it is counted (P27)
     let big = bs.iter().find(|b| kinds(b).contains(&"Holding")).unwrap();
     assert!(big.cu_limit > recommended_cu_limit(BatchKind::PostJournal, 4, 0));
+    assert_eq!(w.ev.stats().unpostable, 1);
+    // a policy that allows exactly that limit carries it without a count
+    let mut w2 = night_world(7);
+    let ok = w2.ev.drain_batches(&BatchPolicy { max_cu: big.cu_limit, ..BatchPolicy::MAX });
+    assert!(ok.iter().any(|b| b.cu_limit == big.cu_limit));
+    assert_eq!(w2.ev.stats().unpostable, 0);
+    // one unit less than the limit it asks for: counted again
+    let mut w3 = night_world(7);
+    w3.ev.drain_batches(&BatchPolicy { max_cu: big.cu_limit - 1, ..BatchPolicy::MAX });
+    assert_eq!(w3.ev.stats().unpostable, 1);
+}
+
+/// P27: a unit that does not fit a legacy transaction uses the lookup-table form when the policy allows it; one that fits no form is counted.
+#[test]
+fn a_unit_that_does_not_fit_a_legacy_transaction_uses_the_lookup_table_or_is_unpostable() {
+    let build = || {
+        let mut w = night_world(2);
+        w.ev.tick(T_1400 + 8 * HOUR + 20);
+        w
+    };
+    let one = BatchPolicy::MAX.with_max_events(2);
+    let first = build().ev.drain_batches(&one)[0].clone();
+    let size = first.tx_bytes;
+    assert_eq!(first.tx_format, TxFormat::Legacy);
+    // exactly at the limit: legacy, nothing counted
+    let mut w = build();
+    let at = w.ev.drain_batches(&BatchPolicy { max_tx_bytes: size, ..one });
+    assert_eq!((at[0].tx_format, at[0].tx_bytes), (TxFormat::Legacy, size));
+    assert_eq!(w.ev.stats().unpostable, 0);
+    // one byte less and no lookup table allowed: the unit is emitted alone and counted
+    let mut w = build();
+    let no = w.ev.drain_batches(&BatchPolicy { max_tx_bytes: size - 1, allow_lookup_table: false, ..one });
+    assert_eq!((no[0].tx_format, no[0].tx_bytes), (TxFormat::Legacy, size));
+    assert!(w.ev.stats().unpostable >= 1);
+    // one byte less with the lookup table: the smaller form, exactly the size the formula gives, nothing counted
+    let mut w = build();
+    let yes = w.ev.drain_batches(&BatchPolicy { max_tx_bytes: size - 1, ..one });
+    assert_eq!(yes[0].tx_format, TxFormat::V0Lookup);
+    assert_eq!(yes[0].tx_bytes, evaluator::batch::tx_size_v0(yes[0].kind, yes[0].markets.len(), yes[0].batch.to_bytes().unwrap().len(), true));
+    assert!(yes[0].tx_bytes < size);
+    assert_eq!(w.ev.stats().unpostable, 0);
+    // a size no form meets: every unit is counted, each is its own batch
+    let mut w = build();
+    let tiny = w.ev.drain_batches(&BatchPolicy { max_tx_bytes: 100, ..one });
+    assert!(tiny.len() >= 2);
+    assert_eq!(w.ev.stats().unpostable as usize, tiny.len());
+    // and a batch that fits the lookup-table form exactly is not counted
+    let mut w = build();
+    let exact = w.ev.drain_batches(&BatchPolicy { max_tx_bytes: yes[0].tx_bytes, ..one });
+    assert_eq!(exact[0].tx_format, TxFormat::V0Lookup);
+    assert_eq!(w.ev.stats().unpostable, 0);
 }
 
 #[test]

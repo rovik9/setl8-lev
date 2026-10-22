@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 
 use journal_types::{apply_batch, JournalBatch, JournalEvent, PriceProof, NO_PROOF};
 
-use crate::batch::{tx_size, tx_size_v0, TX_LIMIT};
-use crate::compute::{measured_cu, recommended_cu_limit, MAX_CU_LIMIT};
+use crate::batch::{tx_size, tx_size_v0};
+use crate::compute::{measured_cu, recommended_cu_limit};
 use crate::eval::Evaluator;
 use crate::sha256::chain_hasher;
 use crate::types::*;
@@ -145,9 +145,9 @@ impl Evaluator {
                 let cand: Vec<&Unit> = self.queue.iter().take(take + 1).collect();
                 let m = self.measure(&cand, policy, v0);
                 if Self::fits(&m, policy) || take == 0 {
-                    if take == 0 && (m.tx > TX_LIMIT || m.cu_limit > MAX_CU_LIMIT) && m.events <= journal_types::MAX_EVENTS_PER_BATCH && m.proofs <= journal_types::MAX_PROOFS_PER_BATCH {
-                        // a unit that cannot be split and that no transaction can carry (P27; a group over the batch format was counted already
-                        // by `exec.rs`): counted, never silently emitted as if it were fine
+                    if take == 0 && (m.tx > policy.max_tx_bytes || m.cu_limit > policy.max_cu) && m.events <= journal_types::MAX_EVENTS_PER_BATCH && m.proofs <= journal_types::MAX_PROOFS_PER_BATCH {
+                        // a unit that cannot be split and that no transaction under the policy can carry (P27; a group over the batch format
+                        // was counted already by `exec.rs`): counted, never silently emitted as if it were fine
                         self.stats.unpostable = self.stats.unpostable.saturating_add(1);
                     }
                     take += 1;
