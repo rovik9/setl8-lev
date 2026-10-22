@@ -15,7 +15,6 @@ fn pin_a_request_alone_is_pending() {
 
 // FINDING AUTH-13
 #[test]
-#[ignore = "FINDING AUTH-13: the verifier has no pass_cancelled line type, so watch keeps verifying a request the trader already cancelled"]
 fn a_cancelled_request_is_not_pending() {
     let acct = log::base58(&[9; 32]);
     let text = format!(

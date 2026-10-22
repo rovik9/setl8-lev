@@ -1997,7 +1997,6 @@ fn consts_frac_is_correct_for_every_size_the_tier_table_allows() {
 // DESIGN 7.4 says rounding is always against the trader. The effect is below one micro-USD of notional (no balance changes), so severity is info; it is a plain
 // implementation error (compare `qty * price > cap * DEN` exactly, or round the notional up).
 #[test]
-#[ignore = "FINDING ARI-2: the evaluator's notional cap compares the notional truncated toward zero, so a position up to 1 micro-USD above the cap is accepted"]
 fn finding_ari_2_notional_cap_is_enforced_on_the_exact_notional() {
     use common::*;
     use evaluator::codec::IntentKind;
@@ -2015,8 +2014,8 @@ fn finding_ari_2_notional_cap_is_enforced_on_the_exact_notional() {
 }
 
 #[test]
-fn notional_cap_truncation_is_pinned_the_equal_cap_is_accepted_and_one_micro_more_is_refused() {
-    // LIMITED: what the evaluator does today, pinned exactly (a fix of ARI-2 must change THIS test and un-ignore the finding).
+fn notional_cap_is_exact_the_equal_cap_is_accepted_and_the_least_excess_is_refused() {
+    // P25b (F-35, decision 68): the cap is compared on the EXACT notional, so 1000.000999 micro-USD is above a cap of 1000 (ARI-2 fixed).
     use common::*;
     use evaluator::codec::IntentKind;
     use evaluator::OrderReject as R;
@@ -2026,6 +2025,7 @@ fn notional_cap_truncation_is_pinned_the_equal_cap_is_accepted_and_one_micro_mor
     w.sample(0, T_1400, p4(10_000));
     let lim = |price| order(IntentKind::Limit, 0, 0, 1_000, price, 0, 0, 0, T_1400);
     assert!(w.order(lim(1_000_000_000_000)).is_ok(), "exact notional equal to the cap is allowed");
-    assert!(w.order(lim(1_000_000_000_999)).is_ok(), "PINNED: 1000.000999 micro-USD of exact notional is accepted although it is above the cap of 1000");
+    assert_eq!(w.order(lim(1_000_000_000_999)), Err(R::NotionalCap), "1000.000999 micro-USD of exact notional is above the cap of 1000");
+    assert_eq!(w.order(lim(1_000_000_000_001)), Err(R::NotionalCap), "even 1000.000001 micro-USD is above it");
     assert_eq!(w.order(lim(1_001_000_000_000)), Err(R::NotionalCap), "1001 micro-USD is refused");
 }

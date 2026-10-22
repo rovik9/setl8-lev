@@ -112,6 +112,10 @@ pub struct Replay<'a> {
     closed_nonces: HashSet<u32>,
     /// D-F09: the seconds in which a forced close was flagged; a `Fail` of such a second is a `FalseFailMarks`.
     flagged_forced: HashSet<i64>,
+    /// P25b (F-19): the feed and the status of the markets the log CHANGES, as they stand at the log position being replayed. The rules
+    /// file shows the state at the END of the log; before the first change a market had the first change's old value.
+    feed_now: BTreeMap<u16, [u8; 32]>,
+    status_now: BTreeMap<u16, u8>,
 }
 
 /// Collects findings with the cap and the miss de-duplication.
@@ -242,6 +246,8 @@ impl<'a> Replay<'a> {
             forced_pending: Vec::new(),
             closed_nonces: HashSet::new(),
             flagged_forced: HashSet::new(),
+            feed_now: BTreeMap::new(),
+            status_now: BTreeMap::new(),
             opened,
         })
     }
@@ -254,6 +260,14 @@ impl<'a> Replay<'a> {
 
     pub fn is_flat(&self) -> bool {
         self.positions.is_empty()
+    }
+
+    /// D-F20 (decision 68): the account's size must be one of the rule set's tiers (the chain takes it from `tier_size[tier_index]`).
+    pub fn check_opened(&mut self) {
+        let ctx = Ctx { seq: None, idx: None, time: self.opened.time };
+        if !self.rules.tier_sizes.contains(&self.opened.size_s) {
+            self.f.add(FindingClass::StateMismatch, ctx, format!("one of the tier sizes {:?}", self.rules.tier_sizes), self.opened.size_s.to_string(), "opened.size_s is not a tier size of the rules file");
+        }
     }
 
     /// D-F10/F11: every archive record the verifier will not use (a value that is not a positive price, a record out of the stream's
@@ -301,6 +315,85 @@ impl<'a> Replay<'a> {
         }
     }
 
+    /// P25b (F-24): the vault flipped the record to Abandoned: the account is over (no more events), whatever was open or pending.
+    pub fn on_account_abandoned(&mut self) {
+        self.terminal = true;
+        self.quick_fail_due = false;
+        self.bump_epoch();
+    }
+
+    // ------------------------------------------------------------------ admin market changes (P25b, F-19)
+
+    /// The feed of `market` at the log position being replayed.
+    pub(crate) fn feed_of(&self, market: u16) -> [u8; 32] {
+        self.feed_now.get(&market).copied().or_else(|| self.rules.markets.get(&market).map(|m| m.feed_id)).unwrap_or([0; 32])
+    }
+
+    /// The status of `market` at the log position being replayed.
+    pub(crate) fn status_of(&self, market: u16) -> u8 {
+        self.status_now.get(&market).copied().or_else(|| self.rules.markets.get(&market).map(|m| m.status)).unwrap_or(0)
+    }
+
+    /// Before the replay: a market the log changes started with the OLD value of its first change (the rules file shows the end state).
+    pub fn init_markets(&mut self, lines: &[crate::log::LineAt]) {
+        for l in lines {
+            match &l.line {
+                crate::log::Line::MarketFeedChanged { market, old_feed, .. } => {
+                    self.feed_now.entry(*market).or_insert(*old_feed);
+                }
+                crate::log::Line::MarketStatusChanged { market, old_status, .. } => {
+                    self.status_now.entry(*market).or_insert(*old_status);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A `market_feed_changed` line: the change must follow the feed the market had; from here on proofs are judged against the new one.
+    pub fn on_market_feed(&mut self, ctx: Ctx, market: u16, old: [u8; 32], new: [u8; 32]) {
+        if !self.rules.markets.contains_key(&market) {
+            self.f.add(FindingClass::UnknownMarket, ctx, "a market of the rules file", market.to_string(), "a feed change names a market the rules do not list");
+            return;
+        }
+        let have = self.feed_of(market);
+        if have != old {
+            self.f.add(FindingClass::StateMismatch, ctx, crate::hexutil::encode(&have), crate::hexutil::encode(&old), format!("the feed change of market {market} does not start from the feed the market had"));
+        }
+        self.feed_now.insert(market, new);
+    }
+
+    /// A `market_status_changed` line (same chain rule as the feed).
+    pub fn on_market_status(&mut self, ctx: Ctx, market: u16, old: u8, new: u8) {
+        if !self.rules.markets.contains_key(&market) {
+            self.f.add(FindingClass::UnknownMarket, ctx, "a market of the rules file", market.to_string(), "a status change names a market the rules do not list");
+            return;
+        }
+        let have = self.status_of(market);
+        if have != old {
+            self.f.add(FindingClass::StateMismatch, ctx, have.to_string(), old.to_string(), format!("the status change of market {market} does not start from the status the market had"));
+        }
+        self.status_now.insert(market, new);
+    }
+
+    /// After the whole log: the rules file is the state at the END of the log, so it must show the last change of every market.
+    pub fn check_markets_end_state(&mut self) {
+        let ctx = Ctx { seq: None, idx: None, time: self.last_time };
+        let feeds: Vec<(u16, [u8; 32])> = self.feed_now.iter().map(|(k, v)| (*k, *v)).collect();
+        for (m, f) in feeds {
+            let shown = self.rules.markets.get(&m).map(|x| x.feed_id);
+            if shown != Some(f) {
+                self.f.add(FindingClass::StateMismatch, ctx, crate::hexutil::encode(&f), shown.map(|x| crate::hexutil::encode(&x)).unwrap_or_default(), format!("the rules file does not show the last feed of market {m}"));
+            }
+        }
+        let statuses: Vec<(u16, u8)> = self.status_now.iter().map(|(k, v)| (*k, *v)).collect();
+        for (m, st) in statuses {
+            let shown = self.rules.markets.get(&m).map(|x| x.status);
+            if shown != Some(st) {
+                self.f.add(FindingClass::StateMismatch, ctx, st.to_string(), shown.map(|x| x.to_string()).unwrap_or_default(), format!("the rules file does not show the last status of market {m}"));
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ proofs
 
     /// Checks a proof against the rules and the archive. `market` is the event's market, or `None` for floating events
@@ -318,7 +411,7 @@ impl<'a> Replay<'a> {
                     return None;
                 }
             },
-            None => match self.rules.market_by_feed(&proof.feed_id) {
+            None => match self.rules.markets.values().find(|m| self.feed_of(m.id) == proof.feed_id) {
                 Some(m) => m,
                 None => {
                     self.f.add(FindingClass::ProofFeed, ctx, "the feed of a market of the rules file", crate::hexutil::encode(&proof.feed_id), "the proof's feed belongs to no market");
@@ -326,7 +419,8 @@ impl<'a> Replay<'a> {
                 }
             },
         };
-        let (mid, mk) = (m.id, m.clone());
+        let (mid, mut mk) = (m.id, m.clone());
+        mk.feed_id = self.feed_of(mid); // P25b (F-19): the feed as it stands at this log position
         match check_proof_without_price(proof, &mk.feed_id, u32::from(mk.max_age_secs), ev_time, false) {
             Ok(()) => {}
             Err(ProofError::WrongFeed) => {
@@ -664,7 +758,9 @@ impl<'a> Replay<'a> {
         if self.terminal && !matches!(ev, JournalEvent::Meta { .. }) {
             self.f.add(FindingClass::StateMismatch, ctx, "no events after the account failed", "an event", "the account is already terminal");
         }
-        if time < self.last_time && !matches!(ev, JournalEvent::Meta { .. }) {
+        // P25b (F-26): the program checks every event of a batch against the previous one, `Meta` included, and stores the Meta time
+        // as `last_batch_time`, so the verifier's clock follows the Meta times too
+        if time < self.last_time {
             self.f.add(FindingClass::StateMismatch, ctx, format!(">= {}", self.last_time), time.to_string(), "event time goes backwards");
         }
         if let Some(ph) = self.phases.last_mut() {
@@ -686,9 +782,7 @@ impl<'a> Replay<'a> {
             self.quick_fail_due = false;
         }
         self.apply(ctx, &ev, &proof);
-        if !matches!(ev, JournalEvent::Meta { .. }) {
-            self.last_time = self.last_time.max(time);
-        }
+        self.last_time = self.last_time.max(time);
     }
 
     fn apply(&mut self, ctx: Ctx, ev: &JournalEvent, proof: &Option<PriceProof>) {

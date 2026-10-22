@@ -75,7 +75,6 @@ fn control_a_hold_line_after_the_fill_does_not_condemn_the_fill() {
 /// the Meta time as `last_batch_time`. The verifier exempts Meta from the backwards check, so a Meta dated before the Fill that
 /// precedes it in the same batch is "Valid" here, `TimeBackwards` on chain (trust-matrix row 15 says Both).
 #[test]
-#[ignore = "FINDING V14: verifier does not flag a Meta dated before the previous event (program: TimeBackwards)"]
 fn a_meta_dated_before_the_previous_event_is_time_backwards() {
     let mut b = close_case(600);
     let m = b.metas[0].line;
@@ -89,7 +88,6 @@ fn a_meta_dated_before_the_previous_event_is_time_backwards() {
 /// Second half: the Meta time is the program's `last_batch_time`, so the next batch's first event must be >= it. The verifier
 /// keeps `last_time` from events only: a Close dated before the previous batch's Meta passes the monotonic clock.
 #[test]
-#[ignore = "FINDING V14: verifier does not update its clock from Meta, so an event dated before an earlier Meta is not flagged"]
 fn an_event_dated_before_the_meta_of_the_previous_batch_is_time_backwards() {
     let mut b = close_case(600);
     let m = b.metas[0].line;

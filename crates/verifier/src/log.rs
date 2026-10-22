@@ -3,7 +3,8 @@
 //! Line 1 is the header `{"type":"header","format":"setl8-lev-events","version":1}`. Every other line has a `"type"`:
 //! `opened`, `event` (the default when `type` is absent), `pass_requested`, `pass_confirmed`, `pass_rejected`,
 //! `pass_vetoed`, `phase_advanced`, `pass_finalized`, `account_failed`, `violation_fail`, and (M9c) `account_held` /
-//! `hold_released`. File order is chain order.
+//! `hold_released`, and (P25b, decision 68) `pass_cancelled`, `account_abandoned`, `market_feed_changed`, `market_updated`.
+//! File order is chain order.
 //! Hashes and raw bytes are lower-case hex; accounts and wallets are base58.
 use serde_json::Value;
 
@@ -43,6 +44,15 @@ pub enum Line {
     /// transaction. From that second on the account is held (no exposure increase) / no longer held.
     Held { time: i64 },
     HoldReleased { time: i64 },
+    /// P25b (F-24): the program's `PassCancelled` (the trader withdrew an unanswered request): the pending pass is resolved.
+    PassCancelled { phase: u8, time: i64 },
+    /// P25b (F-24): the program's `AccountAbandoned` (the vault flipped the record after 7 idle days): the account ended outside the journal.
+    AccountAbandoned { time: i64 },
+    /// P25b (F-19): the program's `MarketFeedChanged` (an admin remapped a market's feed). Market lines carry no `account`: they are
+    /// program-wide and sit in the log at the position the indexer saw them.
+    MarketFeedChanged { market: u16, old_feed: [u8; 32], new_feed: [u8; 32] },
+    /// P25b (F-19): an admin `update_market` that changed a market's status (the indexer reads the old and new status off the Market account).
+    MarketStatusChanged { market: u16, old_status: u8, new_status: u8 },
     /// A line whose `type` this version does not know.
     Unknown { type_name: String },
 }
@@ -132,6 +142,10 @@ fn parse_line(v: &Value) -> Result<(Option<[u8; 32]>, Line), String> {
         "violation_fail" => Line::ViolationFail { evidence_hash: hexf::<32>(v, "evidence_hash")? },
         "account_held" => Line::Held { time: i64f(v, "time")? },
         "hold_released" => Line::HoldReleased { time: i64f(v, "time")? },
+        "pass_cancelled" => Line::PassCancelled { phase: u8f(v, "phase")?, time: i64f(v, "time")? },
+        "account_abandoned" => Line::AccountAbandoned { time: i64f(v, "time")? },
+        "market_feed_changed" => Line::MarketFeedChanged { market: u16f(v, "market_id")?, old_feed: hexf::<32>(v, "old_feed")?, new_feed: hexf::<32>(v, "new_feed")? },
+        "market_status_changed" => Line::MarketStatusChanged { market: u16f(v, "market_id")?, old_status: u8f(v, "old_status")?, new_status: u8f(v, "new_status")? },
         other => Line::Unknown { type_name: other.to_string() },
     };
     Ok((account, line))
@@ -183,6 +197,16 @@ pub fn event_line(account: &[u8; 32], seq: u64, event: &[u8], proof: &[u8], slot
 /// The `account_held` / `hold_released` line of an indexer.
 pub fn hold_line(account: &[u8; 32], time: i64, held: bool) -> String {
     format!("{{\"type\":\"{}\",\"account\":\"{}\",\"time\":{time}}}\n", if held { "account_held" } else { "hold_released" }, base58(account))
+}
+
+/// The `market_feed_changed` line of an indexer (no `account`: market events are program-wide).
+pub fn market_feed_line(market: u16, old_feed: &[u8; 32], new_feed: &[u8; 32]) -> String {
+    format!("{{\"type\":\"market_feed_changed\",\"market_id\":{market},\"old_feed\":\"{}\",\"new_feed\":\"{}\"}}\n", crate::hexutil::encode(old_feed), crate::hexutil::encode(new_feed))
+}
+
+/// The `market_status_changed` line of an indexer.
+pub fn market_status_line(market: u16, old_status: u8, new_status: u8) -> String {
+    format!("{{\"type\":\"market_status_changed\",\"market_id\":{market},\"old_status\":{old_status},\"new_status\":{new_status}}}\n")
 }
 
 pub fn opened_line(o: &OpenedRec) -> String {

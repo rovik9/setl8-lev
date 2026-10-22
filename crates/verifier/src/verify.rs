@@ -107,7 +107,7 @@ pub fn run(p: &Parsed, as_of: Option<u64>) -> Report {
     let sample_prefix = archive::find_prefixes(&p.archive.stream, &sh);
     let intent_prefix = intents::find_prefixes(&p.intents.raw, &ih);
     let Some(mut rp) = Replay::new(&p.rules, &p.archive, &p.intents, p.opened.clone(), "primary", sample_prefix, intent_prefix) else {
-        return Report { verdict: Verdict::Mismatch, findings: vec![], truncated: false, per_phase: vec![], per_pass: vec![], state: StateSummary::default() };
+        return Report { verdict: Verdict::Mismatch, findings: vec![], truncated: false, per_phase: vec![], per_pass: vec![], state: StateSummary::default(), anchored: false };
     };
     let genesis = genesis_hash(&NativeSha256, &p.opened.account);
     if genesis != p.opened.genesis_hash {
@@ -120,11 +120,14 @@ pub fn run(p: &Parsed, as_of: Option<u64>) -> Report {
         );
     }
     rp.check_archive();
+    rp.check_opened();
     rp.check_intents(&p.opened.trader);
+    rp.init_markets(&p.lines);
     rp.init_walk();
     drive(&mut rp, &p.lines, as_of);
     rp.finish(as_of.is_some());
     if as_of.is_none() {
+        rp.check_markets_end_state();
         if let Some(s) = &p.snapshot {
             rp.compare_snapshot(s);
         }
@@ -133,12 +136,14 @@ pub fn run(p: &Parsed, as_of: Option<u64>) -> Report {
         Some(b) => second_recorder(p, b, as_of),
         None => vec![],
     };
-    build_report(rp, extra)
+    let mut report = build_report(rp, extra);
+    report.anchored = as_of.is_none() && p.snapshot.is_some();
+    report
 }
 
-/// Two samples of the same market and source timestamp may differ by at most this many e12 units (after the floor of
-/// `value / 10^6`). Two recorders of one stream see the same numbers, so the tolerance is NONE.
-pub const ARCHIVE_TOLERANCE_E12: u64 = 0;
+/// Two samples of the same market and source timestamp may differ by at most this many e18 units (the `quantized_value` itself, no
+/// flooring; audit F-22). Two recorders of one stream see the same numbers, so the tolerance is NONE.
+pub const ARCHIVE_TOLERANCE_E18: u128 = 0;
 
 /// The classes the second recorder can add: what the walk finds on the second archive.
 const WALK_CLASSES: [FindingClass; 17] = [
@@ -173,14 +178,16 @@ fn second_recorder(p: &Parsed, b: &Archive, as_of: Option<u64>) -> Vec<Finding> 
     let mut dis = Findings::new("second");
     for s in &b.samples {
         if let Some(a) = by_key.get(&(s.market, s.ts_ns)) {
-            let diff = a.abs_diff(s.value) / 1_000_000;
-            if diff > u128::from(ARCHIVE_TOLERANCE_E12) {
+            // F-22: the e18 values are compared exactly; the tolerance is explicit (`ARCHIVE_TOLERANCE_E18`, 0 = none) and there is
+            // no flooring, so two values on either side of an e12 boundary cannot hide
+            let diff = a.abs_diff(s.value);
+            if diff > ARCHIVE_TOLERANCE_E18 {
                 dis.add(
                     FindingClass::ArchiveDisagreement,
                     ctx,
                     format!("market {} second {} value {}", s.market, s.ts_ns / 1_000_000_000, a),
                     s.value.to_string(),
-                    format!("the archives differ by {diff} e12 units at source timestamp {} ns", s.ts_ns),
+                    format!("the archives differ by {diff} e18 units at source timestamp {} ns", s.ts_ns),
                 );
             }
         }
@@ -189,6 +196,7 @@ fn second_recorder(p: &Parsed, b: &Archive, as_of: Option<u64>) -> Vec<Finding> 
     let Some(mut rp) = Replay::new(&p.rules, b, &p.intents, p.opened.clone(), "second", Default::default(), Default::default()) else { return out };
     rp.check_archive();
     rp.check_intents(&p.opened.trader);
+    rp.init_markets(&p.lines);
     rp.init_walk();
     drive(&mut rp, &p.lines, as_of);
     rp.finish(as_of.is_some());
@@ -230,6 +238,14 @@ pub fn drive(rp: &mut Replay, lines: &[LineAt], as_of: Option<u64>) {
                 rp.on_pass_line(kind, *phase, *amount, *b, *seq, journal_hash, *time_or_eligible)
             }
             Line::PassRejected { .. } | Line::PassVetoed { .. } => open_pass = None,
+            // P25b (F-24): a request the trader withdrew is resolved like a reject; an abandoned account has ended outside the journal
+            Line::PassCancelled { .. } => open_pass = None,
+            Line::AccountAbandoned { .. } => {
+                open_pass = None;
+                rp.on_account_abandoned();
+            }
+            Line::MarketFeedChanged { market, old_feed, new_feed } => rp.on_market_feed(ctx, *market, *old_feed, *new_feed),
+            Line::MarketStatusChanged { market, old_status, new_status } => rp.on_market_status(ctx, *market, *old_status, *new_status),
             // The program emits `PhaseAdvanced` as well as `PassFinalized` for one `finalize_pass`: the one that directly
             // follows a `pass_finalized` with the same new phase confirms it and changes nothing (decision D5).
             Line::PhaseAdvanced { to_phase, .. } if just_finalized == Some(*to_phase) => {}
@@ -279,7 +295,7 @@ pub fn build_report(rp: Replay, extra: Vec<Finding>) -> Report {
     findings.sort_by(|a, b| (a.seq, a.event_index, a.class, &a.message).cmp(&(b.seq, b.event_index, b.class, &b.message)));
     let any_bad_pass = rp.passes.iter().any(|v| !v.valid);
     let verdict = if findings.is_empty() && !rp.f.truncated && !any_bad_pass { Verdict::Valid } else { Verdict::Mismatch };
-    Report { verdict, findings, truncated: rp.f.truncated, per_phase, per_pass: rp.passes, state }
+    Report { verdict, findings, truncated: rp.f.truncated, per_phase, per_pass: rp.passes, state, anchored: false }
 }
 
 #[cfg(test)]

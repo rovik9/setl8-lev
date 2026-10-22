@@ -39,33 +39,98 @@ fn watch(events: &[u8], f: &Files) -> (i32, String) {
 // ---------------------------------------------------------------------------------------------------------------------
 // V-10: the rules file is one static snapshot; an admin update_market changes the verdict of OLD honest history
 
-// FINDING V-10
-#[test]
-#[ignore = "FINDING V-10: a later feed remap (update_market) in the single rules snapshot turns every old honest proof into ProofFeed"]
-fn v_10_honest_history_stays_valid_after_an_admin_feed_remap() {
-    let b = design_4_9();
+// V-10 (F-19, FIXED by P25b / decision 68): the rules file shows the state of the markets at the END of the log; the log carries the
+// admin changes (`market_feed_changed`, `market_status_changed`) at the position the indexer saw them, and the replay applies them there.
+// The original tests changed only the rules file; they are ADAPTED: the rules file shows the new value AND the log has the change line.
+
+fn remapped(b: &Bundle) -> (Files, [u8; 32], [u8; 32]) {
     let f = b.files();
-    assert_eq!(run_inputs(&f, None).verdict, Verdict::Valid, "the honest baseline");
-    // the admin remaps market 0 to a new feed AFTER the history was written; the program accepted every old proof then
     let rules = String::from_utf8(f.rules.clone()).unwrap();
-    let old = hex_of(&b.spec.market(0).feed());
-    let new = "11".repeat(32);
-    assert!(rules.contains(&old));
-    let remapped = rules.replace(&old, &new);
-    let r = run_inputs(&f, Some(&remapped));
-    assert_eq!(r.verdict, Verdict::Valid, "honest history flagged after a remap: {:?}", r.classes());
+    let old = b.spec.market(0).feed();
+    let new = [0x11u8; 32];
+    assert!(rules.contains(&hex_of(&old)));
+    let mut f = f;
+    f.rules = rules.replace(&hex_of(&old), &hex_of(&new)).into_bytes();
+    (f, old, new)
 }
 
-// FINDING V-10
+fn events_with(b: &Bundle, extra: &str) -> Vec<u8> {
+    let mut e = b.events_text();
+    e.push_str(extra);
+    e.into_bytes()
+}
+
 #[test]
-#[ignore = "FINDING V-10: a later switch of a market to reduce-only (update_market) makes every old honest opening Fill a FillNotAllowed"]
+fn v_10_honest_history_stays_valid_after_an_admin_feed_remap() {
+    let b = design_4_9();
+    assert_eq!(run_inputs(&b.files(), None).verdict, Verdict::Valid, "the honest baseline");
+    let (mut f, old, new) = remapped(&b);
+    // without the change line the rules file shows a feed the whole history never used: ProofFeed, as before
+    assert!(run_inputs(&f, None).classes().contains(&C::ProofFeed));
+    // with the line (at the END of the log, after the history) the history is judged against the OLD feed
+    f.events = events_with(&b, &setl8_verify::log::market_feed_line(0, &old, &new));
+    let r = run_inputs(&f, None);
+    assert_eq!((r.classes(), r.verdict), (vec![], Verdict::Valid), "honest history flagged after a remap: {:#?}", r.findings);
+}
+
+#[test]
+fn a_feed_change_is_applied_at_its_log_position_and_must_chain() {
+    let b = design_4_9();
+    let (f, old, new) = remapped(&b);
+    // the change at the START (right after `opened`): the history that follows uses the old feed, which is no longer the market's: ProofFeed
+    let text = b.events_text();
+    let mut lines: Vec<&str> = text.lines().collect();
+    let opened = lines.iter().position(|l| l.contains("\"type\":\"opened\"")).unwrap();
+    let change = setl8_verify::log::market_feed_line(0, &old, &new);
+    lines.insert(opened + 1, change.trim_end());
+    let mut g = f.clone();
+    g.events = (lines.join("\n") + "\n").into_bytes();
+    assert!(run_inputs(&g, None).classes().contains(&C::ProofFeed), "a change before the history makes the old proofs wrong");
+    // a lone change with the wrong old feed makes the history's proofs wrong (the market is taken to have started with that feed)
+    let mut h = f.clone();
+    h.events = events_with(&b, &setl8_verify::log::market_feed_line(0, &[0x22; 32], &new));
+    assert!(run_inputs(&h, None).classes().contains(&C::ProofFeed));
+    // two changes that do not chain (the second starts from a feed the market never had) are a StateMismatch
+    let mut h = f.clone();
+    h.events = events_with(&b, &(setl8_verify::log::market_feed_line(0, &old, &[0x22; 32]) + &setl8_verify::log::market_feed_line(0, &[0x44; 32], &new)));
+    assert!(run_inputs(&h, None).classes().contains(&C::StateMismatch));
+    // and two that do chain are fine (old -> 22 -> new)
+    let mut h = f.clone();
+    h.events = events_with(&b, &(setl8_verify::log::market_feed_line(0, &old, &[0x22; 32]) + &setl8_verify::log::market_feed_line(0, &[0x22; 32], &new)));
+    let r = run_inputs(&h, None);
+    assert_eq!((r.classes(), r.verdict), (vec![], Verdict::Valid), "{:#?}", r.findings);
+    // a rules file that does not show the LAST change is a StateMismatch too
+    let mut k = f.clone();
+    k.events = events_with(&b, &setl8_verify::log::market_feed_line(0, &old, &[0x33; 32]));
+    let r = run_inputs(&k, None);
+    assert!(r.findings.iter().any(|x| x.class == C::StateMismatch && x.message.contains("last feed")), "{:#?}", r.findings);
+    // a change of a market the rules do not list
+    let mut u = f.clone();
+    u.events = events_with(&b, &setl8_verify::log::market_feed_line(9, &old, &new));
+    assert!(run_inputs(&u, None).classes().contains(&C::UnknownMarket));
+}
+
+#[test]
 fn v_10_honest_history_stays_valid_after_an_admin_sets_the_market_reduce_only() {
     let b = design_4_9();
     let f = b.files();
     let rules = String::from_utf8(f.rules.clone()).unwrap();
     assert!(rules.contains("\"status\":1"));
-    let r = run_inputs(&f, Some(&rules.replace("\"status\":1", "\"status\":2")));
-    assert_eq!(r.verdict, Verdict::Valid, "honest history flagged after reduce-only: {:?}", r.classes());
+    let mut g = f.clone();
+    g.rules = rules.replace("\"status\":1", "\"status\":2").into_bytes();
+    // the rules file shows reduce-only; without the log line the history's opening fills are refused
+    assert!(run_inputs(&g, None).classes().contains(&C::FillNotAllowed));
+    g.events = events_with(&b, &setl8_verify::log::market_status_line(0, 1, 2));
+    let r = run_inputs(&g, None);
+    assert_eq!((r.classes(), r.verdict), (vec![], Verdict::Valid), "honest history flagged after reduce-only: {:#?}", r.findings);
+    // the same change BEFORE the history takes effect from there
+    let text = b.events_text();
+    let mut lines: Vec<&str> = text.lines().collect();
+    let opened = lines.iter().position(|l| l.contains("\"type\":\"opened\"")).unwrap();
+    let change = setl8_verify::log::market_status_line(0, 1, 2);
+    lines.insert(opened + 1, change.trim_end());
+    g.events = (lines.join("\n") + "\n").into_bytes();
+    assert!(run_inputs(&g, None).classes().contains(&C::FillNotAllowed));
 }
 
 fn hex_of(b: &[u8; 32]) -> String {
@@ -169,7 +234,6 @@ fn parse_secs(bytes: &[u8]) -> f64 {
 
 // FINDING V-13
 #[test]
-#[ignore = "FINDING V-13: IntentFile::parse does a linear position() scan per duplicate nonce, O(n^2) on a file whose early nonces are repeated late"]
 fn v_13_intent_file_parse_is_linear_in_the_number_of_duplicate_lines() {
     let n = 20_000u32;
     let distinct = intents_text(1..=2 * n);
@@ -193,7 +257,6 @@ fn cancelled_bundle() -> (Bundle, i64) {
 
 // FINDING V-14
 #[test]
-#[ignore = "FINDING V-14: the program's PassCancelled has no line type in the verifier's format; a faithful pass_cancelled line is an UnknownEvent (MISMATCH for ever)"]
 fn v_14_a_pass_cancelled_line_is_understood() {
     let (b, _) = cancelled_bundle();
     let r = verify_no_snapshot(&b);
@@ -203,7 +266,6 @@ fn v_14_a_pass_cancelled_line_is_understood() {
 
 // FINDING V-14
 #[test]
-#[ignore = "FINDING V-14: watch does not treat a cancelled request as resolved (and a pass_cancelled line makes the account MISMATCH)"]
 fn v_14_watch_has_no_pending_pass_after_a_cancel() {
     let (b, _) = cancelled_bundle();
     let f = b.files();
@@ -213,7 +275,6 @@ fn v_14_watch_has_no_pending_pass_after_a_cancel() {
 
 // FINDING V-14
 #[test]
-#[ignore = "FINDING V-14: the program's AccountAbandoned has no line type in the verifier's format; a faithful account_abandoned line is an UnknownEvent"]
 fn v_14_an_account_abandoned_line_is_understood() {
     let mut b = design_4_9();
     let t = last_event_time(&b) + 7 * 86_400;

@@ -811,6 +811,7 @@ impl Bundle {
     }
 }
 
+#[derive(Clone)]
 pub struct Files {
     pub events: Vec<u8>,
     pub rules: Vec<u8>,

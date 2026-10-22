@@ -94,8 +94,7 @@ impl Evaluator {
                     if !sl_ok || !tp_ok {
                         return Err(OrderReject::InvalidLevel);
                     }
-                    let notional = engine::units::notional_micro(it.qty, it.price_e12).map_err(|_| OrderReject::Engine)?;
-                    if notional > i128::from(cfg.max_notional_micro) {
+                    if notional_over_cap(it.qty, it.price_e12, cfg.max_notional_micro) {
                         return Err(OrderReject::NotionalCap);
                     }
                 }
@@ -285,8 +284,7 @@ impl Evaluator {
             let new_sl = if it.sl_e12 != 0 { it.sl_e12 } else { keep_levels.0 };
             let new_tp = if it.tp_e12 != 0 { it.tp_e12 } else { keep_levels.1 };
             pos_after.insert(it.market, Pos { p: np, sl: new_sl, tp: new_tp });
-            let notional = engine::units::notional_micro(np.qty.unsigned_abs(), np.avg_entry_e12)?;
-            if notional > i128::from(cfg.max_notional_micro) {
+            if notional_over_cap(np.qty.unsigned_abs(), np.avg_entry_e12, cfg.max_notional_micro) {
                 return Ok(Err(OrderReject::NotionalCap));
             }
             let mut marks = self.marks.clone();

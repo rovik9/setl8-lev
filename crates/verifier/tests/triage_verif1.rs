@@ -328,14 +328,23 @@ fn v08_control_a_truncated_log_is_valid_without_a_snapshot_and_a_mismatch_with_o
 
 // FINDING V-08
 #[test]
-#[ignore = "FINDING V-08: a VALID verdict printed without --snapshot (and by `watch`, which drops it) never says the replay is not anchored to the account on chain"]
 fn v08_a_valid_verdict_without_a_chain_anchor_must_say_so() {
-    let b = cut_after_first_batch(&breach_then_recovery());
-    for cmd in ["account", "watch"] {
-        let (code, out) = run_cli(&b, cmd, false);
-        let low = out.to_lowercase();
-        assert!(code != 0 || low.contains("anchor") || low.contains("unverified against the chain") || low.contains("no snapshot"), "`{cmd}` printed an unqualified verdict for a log that no chain state vouches for: {out}");
-    }
+    // `account` without --snapshot, and `watch` (which never has one) on a log with a pending pass: P25b (F-36) prints
+    // NOT ANCHORED TO THE CHAIN in the same line as the VALID. (`watch` on a log with no pending pass says NO_PENDING_PASS: no verdict.)
+    let account_log = cut_after_first_batch(&breach_then_recovery());
+    let (code, out) = run_cli(&account_log, "account", false);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.lines().next().unwrap().starts_with("VERDICT: VALID") && out.lines().next().unwrap().contains("NOT ANCHORED TO THE CHAIN"), "{out}");
+    let mut pending = pass_case(0);
+    let (seq, t) = (pending.last_seq(), last_event_time(&pending));
+    pending.push_pass_requested(2, 8_000_000_000, 108_000_000_000, seq, t);
+    let (code, out) = run_cli(&pending, "watch", false);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.starts_with("VALID seq=") && out.trim_end().ends_with("NOT ANCHORED TO THE CHAIN"), "{out}");
+    // with the chain snapshot the account verdict is anchored and says nothing of the kind
+    let (code, out) = run_cli(&breach_then_recovery(), "account", true);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("NOT ANCHORED"), "{out}");
 }
 
 // ------------------------------------------------------------------------------------------------ V-09
@@ -353,13 +362,6 @@ fn try_with_rules(b: &Bundle, from: &str, to: &str) -> Result<setl8_verify::Repo
     setl8_verify::verify_account(&f.inputs())
 }
 
-#[test]
-fn v09_control_today_a_rules_file_of_another_tier_is_valid() {
-    let b = honest_long();
-    let r = with_rules(&b, "\"tier_sizes\":[100000000000]", "\"tier_sizes\":[5000000000]");
-    assert_eq!((r.classes(), r.verdict), (vec![], Verdict::Valid), "{:#?}", r.findings);
-}
-
 // FINDING V-09
 #[test]
 fn v09_the_rules_version_must_match_the_account() {
@@ -371,8 +373,11 @@ fn v09_the_rules_version_must_match_the_account() {
 
 // FINDING V-09
 #[test]
-#[ignore = "FINDING V-09: opened.size_s is never checked against the rules file's tier_sizes"]
 fn v09_the_account_size_must_be_a_tier_of_the_rules() {
     let r = with_rules(&honest_long(), "\"tier_sizes\":[100000000000]", "\"tier_sizes\":[5000000000]");
     assert_eq!(r.verdict, Verdict::Mismatch, "the account is a $100,000 account, the rules list only a $5,000 tier: {:#?}", r.findings);
+    assert!(r.findings.iter().any(|f| f.class == C::StateMismatch && f.message.contains("tier size")), "{:#?}", r.findings);
+    // the boundary: a rules file that lists the size among others is fine
+    let ok = with_rules(&honest_long(), "\"tier_sizes\":[100000000000]", "\"tier_sizes\":[5000000000,100000000000]");
+    assert_eq!((ok.classes(), ok.verdict), (vec![], Verdict::Valid), "{:#?}", ok.findings);
 }

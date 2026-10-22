@@ -85,7 +85,9 @@ fn sequence_gap_reordered_events() {
     let mut b = meta_only(4);
     b.lines.swap(2, 3);
     let r = verify_no_snapshot(&b);
-    only(&r, C::SequenceGap);
+    // P25b (F-26): the swapped Meta events also go back in time, which the verifier now flags for a Meta as the program does
+    assert_eq!(r.classes(), vec![C::SequenceGap, C::StateMismatch], "{:#?}", r.findings);
+    assert!(r.findings.iter().any(|f| f.class == C::StateMismatch && f.message.contains("backwards")));
 }
 
 #[test]

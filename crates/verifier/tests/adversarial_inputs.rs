@@ -422,7 +422,7 @@ fn rules_leaf_survivors(name: &str) -> Vec<String> {
 #[test]
 fn limited_rule_fields_that_can_change_without_the_verifier_noticing() {
     let mut common: Vec<String> = ["commission_e6", "holding_fee_e6", "leverage_x"].iter().flat_map(|k| (1..8).map(move |i| format!("/{k}/{i}"))).collect();
-    common.extend(["/fee_bps", "/markets/0/max_age_secs", "/markets/0/max_notional_usd", "/markets/0/qty_min", "/markets/0/sessions/0/0", "/markets/0/sessions/0/1", "/tier_sizes/0"].map(s));
+    common.extend(["/fee_bps", "/markets/0/max_age_secs", "/markets/0/max_notional_usd", "/markets/0/qty_min", "/markets/0/sessions/0/0", "/markets/0/sessions/0/1"].map(s)); // P25b (F-20): /tier_sizes/0 is checked against opened.size_s now
     let mut with_hold0 = common.clone();
     with_hold0.push(s("/holding_fee_e6/0"));
     for (name, expect) in [("quick_profit", &with_hold0), ("design_4_9", &with_hold0), ("holding_night", &common)] {
@@ -626,7 +626,7 @@ fn blocked_rules_file_structure_and_values() {
         ("max_notional_usd 0".into(), fx.with_rules(&rep1(&r, "\"max_notional_usd\":1000000000000000", "\"max_notional_usd\":0")), Want::NotValid),
         ("max_age_secs 0".into(), fx.with_rules(&rep1(&r, "\"max_age_secs\":60", "\"max_age_secs\":0")), Want::ValidBecause("every proof of the account is from the second of its event; the bound only bites for older proofs")),
         ("max_age_secs 65535".into(), fx.with_rules(&rep1(&r, "\"max_age_secs\":60", "\"max_age_secs\":65535")), Want::ValidBecause("a longer max age does not invalidate proofs that were younger than the smaller one")),
-        ("tier_sizes empty".into(), fx.with_rules(&rep1(&r, "\"tier_sizes\":[100000000000]", "\"tier_sizes\":[]")), Want::ValidBecause("tier_sizes is parsed but never read by the replay: see FINDING VRF-3")),
+        ("tier_sizes empty".into(), fx.with_rules(&rep1(&r, "\"tier_sizes\":[100000000000]", "\"tier_sizes\":[]")), Want::Has(C::StateMismatch)), // P25b (F-20): opened.size_s must be a tier of the rules
         ("tier_sizes with a negative".into(), fx.with_rules(&rep1(&r, "\"tier_sizes\":[100000000000]", "\"tier_sizes\":[-1]")), Want::Input("rules file:")),
         ("markets empty".into(), fx.with_rules(&rep1(&r, "\"markets\":[", "\"markets\":[],\"x\":[")), Want::NotValid),
         ("unknown top-level field is ignored".into(), fx.with_rules(&rep1(&r, "{\"commission_e6\"", "{\"extra\":{\"deep\":[1,2,3]},\"commission_e6\"")), Want::ValidBecause("unknown fields are ignored by design (verifier-formats.md: other Market fields are ignored)")),

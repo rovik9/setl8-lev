@@ -17,7 +17,10 @@ pub struct MarketJson {
     pub status: u8,
     pub qty_step: u64,
     pub qty_min: u64,
-    pub max_notional_usd: u64,
+    /// The wire name is `max_notional_usd` (the program's field name) but the value is MICRO-USD, as in the program, the evaluator and
+    /// the launch tool (audit F-37); `max_notional_micro` is accepted as a synonym.
+    #[serde(rename = "max_notional_usd", alias = "max_notional_micro")]
+    pub max_notional_micro: u64,
     pub sessions: Vec<[u16; 2]>,
 }
 
@@ -43,7 +46,7 @@ pub struct Market {
     pub status: u8,
     pub qty_step: u64,
     pub qty_min: u64,
-    pub max_notional_usd: u64,
+    pub max_notional_micro: u64,
     pub sessions: Vec<(u16, u16)>,
 }
 
@@ -96,7 +99,7 @@ impl Rules {
                 status: m.status,
                 qty_step: m.qty_step,
                 qty_min: m.qty_min,
-                max_notional_usd: m.max_notional_usd,
+                max_notional_micro: m.max_notional_micro,
                 sessions,
             };
             if markets.insert(m.id, market).is_some() {

@@ -51,7 +51,7 @@ pub enum Refusal {
     Quantity,
     /// Eight positions are open already and the order would open a ninth market.
     TooManyPositions,
-    /// The position the order leaves behind is above the market's `max_notional_usd` (compared in micro-USD, as the evaluator does).
+    /// The position the order leaves behind is above the market's cap (`max_notional_usd` in the file, micro-USD; compared EXACTLY).
     NotionalCap,
     /// `b' + P' - closing commission - this fill's commission` is below the margin of the positions it leaves.
     Margin,
@@ -84,6 +84,13 @@ struct Check {
 impl Check {
     const PENDING: Check = Check { lock: false, whole_qty: false };
     const MARKET: Check = Check { lock: true, whole_qty: true };
+}
+
+/// Whether `qty x price` (1e-6 units x 1e-12 USD) is above `cap_micro` micro-USD, compared on the exact product: the notional is not
+/// truncated first, so a position a fraction of a micro-USD over the cap is over it (DESIGN 7.4, audit F-35). The evaluator has the
+/// same function (`evaluator::config::notional_over_cap`); they must stay equal.
+pub fn notional_over_cap(qty_abs: u64, price_e12: u64, cap_micro: u64) -> bool {
+    u128::from(qty_abs) * u128::from(price_e12) > u128::from(cap_micro) * 1_000_000_000_000u128
 }
 
 /// The evaluator's cap on simultaneously open positions (`evaluator::config::MAX_POSITIONS`); the program does not enforce it.
@@ -134,7 +141,8 @@ pub struct Walker {
     pub exp: Vec<Expect>,
     filled: HashSet<u32>,
     pending: Vec<(u32, OrderIntent)>,
-    cancels: Vec<(i64, u32)>,
+    /// target nonce -> the EARLIEST `client_time` of a cancel naming it (F-23: one lookup per pending order and sample, not a scan)
+    cancel_at: HashMap<u32, i64>,
     sltp: Vec<(i64, OrderIntent)>,
     sltp_cursor: usize,
     /// Pending orders the samples of the second being walked trigger: (market, nonce) -> (price, sample index). Judged for
@@ -173,7 +181,12 @@ impl Walker {
 
     pub fn new(pending: Vec<(u32, OrderIntent)>, cancels: Vec<(i64, u32)>, mut sltp: Vec<(i64, OrderIntent)>) -> Walker {
         sltp.sort_by_key(|(t, _)| *t);
-        Walker { cursor: 0, marks: BTreeMap::new(), last_change: BTreeMap::new(), last_value: BTreeMap::new(), exp: vec![], filled: HashSet::new(), pending, cancels, sltp, sltp_cursor: 0, cand: BTreeMap::new(), refused: vec![], lc_at: Vec::new(), flip_open: HashMap::new(), floor_marks: BTreeMap::new() }
+        let mut cancel_at: HashMap<u32, i64> = HashMap::new();
+        for (t, target) in &cancels {
+            let e = cancel_at.entry(*target).or_insert(*t);
+            *e = (*e).min(*t);
+        }
+        Walker { cursor: 0, marks: BTreeMap::new(), last_change: BTreeMap::new(), last_value: BTreeMap::new(), exp: vec![], filled: HashSet::new(), pending, cancel_at, sltp, sltp_cursor: 0, cand: BTreeMap::new(), refused: vec![], lc_at: Vec::new(), flip_open: HashMap::new(), floor_marks: BTreeMap::new() }
     }
 }
 
@@ -359,7 +372,7 @@ impl<'a> Replay<'a> {
                 it.market == m
                     && it.client_time < sec
                     && !w.filled.contains(n)
-                    && !w.cancels.iter().any(|(ct, target)| target == n && *ct < sec)
+                    && w.cancel_at.get(n).is_none_or(|ct| *ct >= sec)
             })
             .copied()
             .collect();
@@ -585,7 +598,7 @@ impl<'a> Replay<'a> {
         if check.lock && !engine::can_increase_exposure(st, sec) {
             return Ok(Some(Refusal::Locked));
         }
-        if mk.status != 1 {
+        if self.status_of(market) != 1 {
             return Ok(Some(Refusal::NotTradable));
         }
         if self.rules.spread(market) == 0 {
@@ -610,8 +623,8 @@ impl<'a> Replay<'a> {
         let np = o.position.ok_or(())?;
         let mut after = pos.clone();
         after.insert(market, Pos { p: np, sl: 0, tp: 0 });
-        let notional = engine::units::notional_micro(np.qty.unsigned_abs(), np.avg_entry_e12).map_err(|_| ())?;
-        if notional > i128::from(mk.max_notional_usd) {
+        // audit F-35: the EXACT notional against the cap (rounding against the trader), as the evaluator does
+        if notional_over_cap(np.qty.unsigned_abs(), np.avg_entry_e12, mk.max_notional_micro) {
             return Ok(Some(Refusal::NotionalCap));
         }
         let (p_open, comm) = self.profit_for(w, &after, Some((market, bid, ask))).ok_or(())?;
@@ -2079,5 +2092,23 @@ mod refusal_tests {
             let w = resolve(rp, pending(1, 500_000 * EUR, 1));
             assert_eq!(outcome(&w), (vec![1], vec![]));
         });
+    }
+}
+
+#[cfg(test)]
+mod notional_tests {
+    use super::notional_over_cap;
+
+    #[test]
+    fn the_notional_cap_is_compared_on_the_exact_product() {
+        // qty 1,000 units x price 1.0 = exactly 1,000 micro-USD
+        assert!(!notional_over_cap(1_000, 1_000_000_000_000, 1_000), "equal to the cap is allowed");
+        assert!(notional_over_cap(1_000, 1_000_000_000_001, 1_000), "one e12 unit of price more is above it (1000.000001 micro-USD)");
+        assert!(!notional_over_cap(1_000, 999_999_999_999, 1_000));
+        assert!(notional_over_cap(1_000, 1_000_000_000_000, 999), "a cap one below");
+        // no overflow at the extremes
+        assert!(notional_over_cap(u64::MAX, u64::MAX, u64::MAX));
+        assert!(!notional_over_cap(0, u64::MAX, 0));
+        assert!(notional_over_cap(1, 1, 0), "any positive notional, however small, is above a cap of 0");
     }
 }

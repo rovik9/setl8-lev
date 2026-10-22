@@ -205,3 +205,28 @@ pub const MAX_ORDER_SKEW_SECS: i64 = 5;
 
 /// How far ahead of the evaluator's own receive time a price sample's source second may be (audit F-17).
 pub const MAX_SAMPLE_FUTURE_SECS: i64 = 5;
+
+/// Whether `qty x price` (1e-6 units x 1e-12 USD) is above `cap_micro` micro-USD, compared on the exact product (audit F-35, DESIGN 7.4:
+/// rounding is against the trader, so a notional a fraction of a micro-USD over the cap is over it). The verifier has the same function
+/// (`setl8_verify::walk::notional_over_cap`); they must stay equal.
+pub fn notional_over_cap(qty_abs: u64, price_e12: u64, cap_micro: u64) -> bool {
+    u128::from(qty_abs) * u128::from(price_e12) > u128::from(cap_micro) * 1_000_000_000_000u128
+}
+
+#[cfg(test)]
+mod notional_tests {
+    use super::notional_over_cap;
+
+    #[test]
+    fn the_notional_cap_is_compared_on_the_exact_product() {
+        // qty 1,000 units x price 1.0 = exactly 1,000 micro-USD
+        assert!(!notional_over_cap(1_000, 1_000_000_000_000, 1_000), "equal to the cap is allowed");
+        assert!(notional_over_cap(1_000, 1_000_000_000_001, 1_000), "one e12 unit of price more is above it (1000.000001 micro-USD)");
+        assert!(!notional_over_cap(1_000, 999_999_999_999, 1_000));
+        assert!(notional_over_cap(1_000, 1_000_000_000_000, 999), "a cap one below");
+        // no overflow at the extremes
+        assert!(notional_over_cap(u64::MAX, u64::MAX, u64::MAX));
+        assert!(!notional_over_cap(0, u64::MAX, 0));
+        assert!(notional_over_cap(1, 1, 0), "any positive notional, however small, is above a cap of 0");
+    }
+}

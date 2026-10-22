@@ -64,7 +64,7 @@ fn findings_carry_the_sequence_and_the_index_of_their_event() {
 }
 
 #[test]
-fn event_times_may_not_go_backwards_but_a_meta_may_carry_an_earlier_time() {
+fn event_times_may_not_go_backwards_and_neither_may_a_meta() {
     // a Close dated before the Fill that precedes it
     let mut b = close_case(600);
     let i = b.find(|e| matches!(e, E::Close { .. }));
@@ -73,11 +73,20 @@ fn event_times_may_not_go_backwards_but_a_meta_may_carry_an_earlier_time() {
     }
     let r = verify_no_snapshot(&b);
     assert!(r.findings.iter().any(|f| f.class == C::StateMismatch && f.message.contains("backwards")), "{:#?}", r.findings);
-    // the Meta of the Fill batch dated earlier than the Fill is not an error (it is not an event time)
+    // P25b (F-26): the Meta of the Fill batch dated earlier than the Fill IS an error, as in the program (every event of a batch,
+    // Meta included, is checked against the previous one)
     let mut b = close_case(600);
     let m = b.metas[0].line;
     if let E::Meta { time, .. } = b.ev_mut(m) {
         *time = T_1400 - 5;
+    }
+    let r = verify_no_snapshot(&b);
+    assert!(r.findings.iter().any(|f| f.class == C::StateMismatch && f.message.contains("backwards")), "{:#?}", r.findings);
+    // the boundary: a Meta dated exactly like the previous event is fine
+    let mut b = close_case(600);
+    let m = b.metas[0].line;
+    if let E::Meta { time, .. } = b.ev_mut(m) {
+        *time = T_1400;
     }
     valid(&b);
 }

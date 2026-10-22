@@ -152,10 +152,10 @@ fn archive_disagreement_alone_and_no_disagreement_for_identical_archives() {
     other.samples[1].value += 1_000_000; // +1 e12 unit of the mid (30 s after the fill; nothing acts on it)
     let r = verify_second(&b, other.archive_bytes());
     only(&r, C::ArchiveDisagreement);
-    // below the e12 floor (value + 1 of 1e-18) is no disagreement
+    // P25b (F-22): the e18 values are compared exactly, so even ONE e18 unit (below the engine's e12 floor) is a disagreement
     let mut tiny = b.clone();
     tiny.samples[1].value += 1;
-    assert_eq!(verify_second(&b, tiny.archive_bytes()).classes(), Vec::<C>::new());
+    assert_eq!(verify_second(&b, tiny.archive_bytes()).classes(), vec![C::ArchiveDisagreement]);
     // samples only the second archive has are not disagreements by themselves
     let mut extra = b.clone();
     let mut s = extra.samples[1];
@@ -623,7 +623,7 @@ fn watch_reports_the_newest_pending_pass() {
     let mut ok = pass_case(0);
     let (seq, t) = (ok.last_seq(), last_event_time(&ok));
     ok.push_pass_requested(2, 8_000_000_000, 108_000_000_000, seq, t);
-    assert_eq!(run(&ok), (0, format!("VALID seq={seq}\n")));
+    assert_eq!(run(&ok), (0, format!("VALID seq={seq} NOT ANCHORED TO THE CHAIN\n")));
     let mut short = pass_case(-1);
     short.push_pass_requested(2, 8_000_000_000, 108_000_000_000 - 1, seq, t);
     assert_eq!(run(&short), (1, format!("MISMATCH seq={seq} classes=PassInvalid\n")));

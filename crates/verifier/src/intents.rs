@@ -172,13 +172,13 @@ impl IntentFile {
         let header_end = header_end.ok_or_else(|| IntentFileError("intents file has no header line".into()))?;
         let mut by_nonce = HashMap::new();
         let mut duplicates = Vec::new();
+        // F-23: one hash-map pass, the FIRST occurrence of a nonce is kept (the old `position()` scan per duplicate was quadratic)
         for (i, l) in lines.iter().enumerate() {
-            if by_nonce.insert(l.nonce, i).is_some() {
-                duplicates.push(i);
-                // keep the FIRST occurrence
-                if let Some(first) = lines.iter().position(|x| x.nonce == l.nonce) {
-                    by_nonce.insert(l.nonce, first);
+            match by_nonce.entry(l.nonce) {
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(i);
                 }
+                std::collections::hash_map::Entry::Occupied(_) => duplicates.push(i),
             }
         }
         Ok(IntentFile { lines, raw: bytes.to_vec(), header_end, by_nonce, duplicates })

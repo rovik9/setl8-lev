@@ -45,7 +45,7 @@ fn vectors_from_disk_verify_valid_through_the_cli() {
     for (name, _) in vector_sets() {
         let (code, out) = run_cli(&vector_dir(name), &[]);
         assert_eq!(code, 0, "{name}: {out}");
-        assert!(out.starts_with("VERDICT: VALID\n"), "{out}");
+        assert!(out.starts_with("VERDICT: VALID"), "{out}");
         let (code, json) = run_cli(&vector_dir(name), &["--json"]);
         assert_eq!(code, 0);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();

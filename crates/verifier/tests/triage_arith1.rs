@@ -8,10 +8,9 @@ fn run(f: &Files) -> setl8_verify::Report {
     verify_account(&f.inputs()).expect("inputs parse")
 }
 
-/// FINDING arith-07 (same defect as the builder's VRF-3): the rules file is never bound to the account. The account was opened
-/// under rule set 1; a rules file that says rule set 2 must not give VALID.
+/// arith-07 (same defect as the builder's VRF-3, FIXED in M12 as an input error): the rules file is bound to the account. The account
+/// was opened under rule set 1; a rules file that says rule set 2 is refused (an input error, exit code 2), never VALID.
 #[test]
-#[ignore = "FINDING arith-07: opened.ruleset_version is not compared with rules.json ruleset_version"]
 fn arith_07_a_rules_file_of_another_rule_set_version_is_not_valid() {
     let b = close_case(600);
     let mut f = b.files();
@@ -19,13 +18,12 @@ fn arith_07_a_rules_file_of_another_rule_set_version_is_not_valid() {
     let r = String::from_utf8(f.rules.clone()).unwrap();
     assert!(r.contains("\"ruleset_version\":1"));
     f.rules = r.replace("\"ruleset_version\":1", "\"ruleset_version\":2").into_bytes();
-    let rep = run(&f);
-    assert_ne!(rep.verdict, Verdict::Valid, "rules file of version 2 replayed against an account of version 1: VALID");
+    let err = verify_account(&f.inputs()).expect_err("a rules file of version 2 for an account of version 1 is an input error");
+    assert!(err.to_string().contains("rule set"), "{err}");
 }
 
 /// FINDING arith-07: `opened.size_s` must be one of the rules file's tier sizes (the chain takes it from `tier_size[tier_index]`).
 #[test]
-#[ignore = "FINDING arith-07: opened.size_s is not checked against rules.json tier_sizes"]
 fn arith_07_a_size_that_is_not_a_tier_size_is_not_valid() {
     let b = close_case(600);
     let mut f = b.files();
@@ -39,7 +37,6 @@ fn arith_07_a_size_that_is_not_a_tier_size_is_not_valid() {
 /// FINDING arith-08: the second-recorder comparison floors the difference of two 1e-18 values, so two archives whose values
 /// straddle an e12 boundary (1_999_999 and 2_000_000 in e18 units: mids 1 and 2 in e12) are not reported as disagreeing.
 #[test]
-#[ignore = "FINDING arith-08: second recorder compares floor(|a-b| / 1e6), a one-e12-unit disagreement across a boundary is missed"]
 fn arith_08_second_recorder_sees_a_disagreement_across_an_e12_boundary() {
     let b = close_case(600);
     let mut f = b.files();

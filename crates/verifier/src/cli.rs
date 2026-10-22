@@ -133,7 +133,7 @@ pub fn try_newest_pending_pass(events: &[u8]) -> Result<Option<u64>, String> {
     for l in &lines {
         match &l.line {
             Line::Pass { kind: PassKind::Requested | PassKind::Confirmed, seq, .. } => pending = Some(*seq),
-            Line::PassRejected { .. } | Line::PassVetoed { .. } | Line::PhaseAdvanced { .. } | Line::PassFinalized { .. } | Line::AccountFailed { .. } | Line::ViolationFail { .. } => pending = None,
+            Line::PassRejected { .. } | Line::PassVetoed { .. } | Line::PassCancelled { .. } | Line::AccountAbandoned { .. } | Line::PhaseAdvanced { .. } | Line::PassFinalized { .. } | Line::AccountFailed { .. } | Line::ViolationFail { .. } => pending = None,
             _ => {}
         }
     }
@@ -162,7 +162,8 @@ fn watch(inputs: &mut Inputs, out: &mut String) -> i32 {
     match verify_account(inputs) {
         Ok(r) => {
             if r.verdict == Verdict::Valid {
-                out.push_str(&format!("VALID seq={seq}\n"));
+                // `watch` replays a prefix and never has a chain snapshot: its VALID is never anchored (audit F-36)
+                out.push_str(&format!("VALID seq={seq} NOT ANCHORED TO THE CHAIN\n"));
             } else {
                 let classes: Vec<&str> = r.classes().iter().map(|c| c.name()).collect();
                 out.push_str(&format!("MISMATCH seq={seq} classes={}\n", classes.join(",")));
@@ -179,7 +180,8 @@ fn watch(inputs: &mut Inputs, out: &mut String) -> i32 {
 /// Deterministic human-readable text.
 pub fn human(r: &Report) -> String {
     let mut s = String::new();
-    s.push_str(&format!("VERDICT: {}\n", if r.verdict == Verdict::Valid { "VALID" } else { "MISMATCH" }));
+    let note = if r.verdict == Verdict::Valid && !r.anchored { " (NOT ANCHORED TO THE CHAIN: no --snapshot was compared, so a log that lost its tail or was regenerated reads the same)" } else { "" };
+    s.push_str(&format!("VERDICT: {}{note}\n", if r.verdict == Verdict::Valid { "VALID" } else { "MISMATCH" }));
     let st = &r.state;
     s.push_str(&format!(
         "replayed: seq {} | b {} | q_tally {} | latch {} | tight_on {} (r {} g_peak {} l_level {}) | lock_until {} | phase {} | flat {} | trades_closed {} | head {}\n",
