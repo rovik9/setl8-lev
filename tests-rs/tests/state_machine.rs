@@ -7,11 +7,12 @@
 //! exactly one violated precondition names the one error (`x`). A cell that is allowed names the exact (status, held,
 //! pass_pending) triple that must follow, and a full-struct comparison of the account checks that nothing else moved.
 //!
-//! The account states of the table (the "grid" is status x held x pass_pending, 4 x 2 x 4 = 32 coordinates; only 10 of them
+//! The account states of the table (the "grid" is status x held x pass_pending, 4 x 2 x 4 = 32 coordinates; only 11 of them
 //! can exist, `reachable()` says which and `reach_*` tests show why):
 //!   A0 A1 A2   Active, not held, pass_pending 0 / 1 / 2
 //!   H0 H1 H2   Active, HELD,      pass_pending 0 / 1 / 2
 //!   F          Failed (report_fail), resettable            FX  Failed, already reset (`reset_at` != 0)
+//!   FH         Failed by report_fail WHILE HELD (P25c, decision 67 amendment): Failed + held, pass_pending 0, not resettable
 //!   FV         Failed by fail_for_violation (marker 3), wallet banned
 //!   Fvu        like FV, wallet unbanned afterwards (the marker, not the ban, refuses a reset)
 //!   AB         Abandoned (the vault's 7-day idle rule)     GR  Graduated (phase 5 finalized)
@@ -81,11 +82,13 @@ fn tri(a: &TradingAccount) -> (u8, u8, u8) {
     (a.status, a.held, a.pass_pending)
 }
 
-/// The ten (status, held, pass_pending) coordinates that can exist (DESIGN 5.1, 10.3, decision 60), by hand:
-/// Active with held 0/1 and pending 0/1/2; Failed with pending 0 (reset-able) or 3 (violation marker); Abandoned and
-/// Graduated with pending 0. A terminal account is never held and never pending (`end_account` clears both).
+/// The eleven (status, held, pass_pending) coordinates that can exist (DESIGN 5.1, 10.3, decision 60 and the P25c amendment of
+/// decision 67), by hand: Active with held 0/1 and pending 0/1/2; Failed with pending 0 (reset-able) or 3 (violation marker), and
+/// Failed + HELD with pending 0 (failed by `report_fail` while held, waiting for the two admins); Abandoned and Graduated with
+/// pending 0. A terminal account is never pending; it is held only in that one case (`end_account` clears the hold for every
+/// other way an account ends).
 fn reachable(status: u8, held: u8, pending: u8) -> bool {
-    matches!((status, held, pending), (0, 0 | 1, 0..=2) | (1, 0, 0 | 3) | (2, 0, 0) | (3, 0, 0))
+    matches!((status, held, pending), (0, 0 | 1, 0..=2) | (1, 0, 0 | 3) | (1, 1, 0) | (2, 0, 0) | (3, 0, 0))
 }
 
 /// Wallet counters must equal what the accounts say, and every account must sit on an existing coordinate.
@@ -146,6 +149,7 @@ const RNA: E = E::ResetNotAllowed;
 const WB: E = E::WalletBanned;
 const VNR: E = E::ViolationNoReset;
 const AAR: E = E::AccountAlreadyReset;
+const RVP: E = E::ReviewPending;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ins {
@@ -181,8 +185,9 @@ enum St {
     FX,
     AB,
     GR,
+    FH,
 }
-const STATES: [St; 12] = [St::A0, St::A1, St::A2, St::H0, St::H1, St::H2, St::F, St::FV, St::Fvu, St::FX, St::AB, St::GR];
+const STATES: [St; 13] = [St::A0, St::A1, St::A2, St::H0, St::H1, St::H2, St::F, St::FV, St::Fvu, St::FX, St::AB, St::GR, St::FH];
 
 struct Row {
     ins: Ins,
@@ -190,15 +195,15 @@ struct Row {
     program_ix: &'static str,
     signer: &'static str,
     /// Columns follow `STATES`.
-    open: [W; 12],
-    paused: [W; 12],
+    open: [W; 13],
+    paused: [W; 13],
 }
 
-const fn same(ins: Ins, program_ix: &'static str, signer: &'static str, a: [W; 12]) -> Row {
+const fn same(ins: Ins, program_ix: &'static str, signer: &'static str, a: [W; 13]) -> Row {
     Row { ins, program_ix, signer, open: a, paused: a }
 }
 
-// column order:  A0  A1  A2  H0  H1  H2  F  FV  Fvu  FX  AB  GR
+// column order:  A0  A1  A2  H0  H1  H2  F  FV  Fvu  FX  AB  GR  FH
 const TABLE: [Row; 16] = [
     // post_journal with a Meta-only batch (DESIGN I-1: Active, pass_pending != 2; a held account may post anything that is not an
     // exposure-increasing Fill; 6.1 set_paused: post_journal keeps working while paused)
@@ -206,30 +211,30 @@ const TABLE: [Row; 16] = [
         Ins::PostMeta,
         "post_journal",
         "evaluator",
-        [ok(0, 0, 0), ok(0, 0, 1), x(PP), ok(0, 1, 0), ok(0, 1, 1), x(PP), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA)],
+        [ok(0, 0, 0), ok(0, 0, 1), x(PP), ok(0, 1, 0), ok(0, 1, 1), x(PP), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA)],
     ),
     // post_journal with a Fill (exposure-increasing: also needs held == 0, I-1 / 6.3 hold_account)
     same(
         Ins::PostFill,
         "post_journal",
         "evaluator",
-        [ok(0, 0, 0), ok(0, 0, 1), x(PP), x(AH), x(AH), any(&[PP, AH]), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA)],
+        [ok(0, 0, 0), ok(0, 0, 1), x(PP), x(AH), x(AH), any(&[PP, AH]), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA)],
     ),
-    // report_fail at the static floor (I-11): Active, pass_pending != 2; a pending request (1) is cleared, a hold is cleared;
+    // report_fail at the static floor (I-11): Active, pass_pending != 2; a pending request (1) is cleared, a hold is KEPT (P25c);
     // works while paused (6.1). A2/H2 are written by editing `b` to the floor (an honest account cannot have b at the floor while
     // pass_pending is 2, the journal is frozen): the cell tests the precondition, not an honest history.
     same(
         Ins::ReportFail,
         "report_fail",
         "evaluator",
-        [ok(1, 0, 0), ok(1, 0, 0), x(PP), ok(1, 0, 0), ok(1, 0, 0), x(PP), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA)],
+        [ok(1, 0, 0), ok(1, 0, 0), x(PP), ok(1, 1, 0), ok(1, 1, 0), x(PP), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA)],
     ),
     // request_advance (6.2): Active, not held, not paused, flat, tight off, nothing pending, b >= 1.08 S
     Row {
         ins: Ins::Request,
         program_ix: "request_advance",
         signer: "trader",
-        open: [ok(0, 0, 1), x(ALR), x(ALR), x(AH), any(&[AH, ALR]), any(&[AH, ALR]), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA)],
+        open: [ok(0, 0, 1), x(ALR), x(ALR), x(AH), any(&[AH, ALR]), any(&[AH, ALR]), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA), any(&[NA, AH])],
         paused: [
             x(PAU),
             any(&[PAU, ALR]),
@@ -242,7 +247,7 @@ const TABLE: [Row; 16] = [
             any(&[PAU, NA]),
             any(&[PAU, NA]),
             any(&[PAU, NA]),
-            any(&[PAU, NA]),
+            any(&[PAU, NA]), any(&[PAU, NA, AH]),
         ],
     },
     // cancel_pass (6.2): ONLY if pass_pending == 1 and 3,600 s have passed; status, hold and pause are not mentioned, so a held
@@ -251,7 +256,7 @@ const TABLE: [Row; 16] = [
         Ins::Cancel,
         "cancel_pass",
         "trader",
-        [x(NP), ok(0, 0, 0), x(NP), x(NP), ok(0, 1, 0), x(NP), x(NP), x(NP), x(NP), x(NP), x(NP), x(NP)],
+        [x(NP), ok(0, 0, 0), x(NP), x(NP), ok(0, 1, 0), x(NP), x(NP), x(NP), x(NP), x(NP), x(NP), x(NP), x(NP)],
     ),
     // confirm_pass (6.3): state 1, held == 0, flat, b >= 1.08 S, Active; works while paused (6.1)
     same(
@@ -270,7 +275,7 @@ const TABLE: [Row; 16] = [
             any(&[NA, NP]),
             any(&[NA, NP]),
             any(&[NA, NP]),
-            any(&[NA, NP]),
+            any(&[NA, NP]), any(&[NA, NP, AH]),
         ],
     ),
     // reject_pass (6.3): state 1 only; works while paused; cannot touch money
@@ -278,14 +283,14 @@ const TABLE: [Row; 16] = [
         Ins::Reject,
         "reject_pass",
         "evaluator",
-        [x(NP), ok(0, 0, 0), x(NP), x(NP), ok(0, 1, 0), x(NP), x(NP), x(NP), x(NP), x(NP), x(NP), x(NP)],
+        [x(NP), ok(0, 0, 0), x(NP), x(NP), ok(0, 1, 0), x(NP), x(NP), x(NP), x(NP), x(NP), x(NP), x(NP), x(NP)],
     ),
     // veto_pass (6.1, 10.7): both admins, pass_pending 1 or 2 (the marker 3 is not a pending pass); a held account can be vetoed
     same(
         Ins::Veto,
         "veto_pass",
         "both admins",
-        [x(NP), ok(0, 0, 0), ok(0, 0, 0), x(NP), ok(0, 1, 0), ok(0, 1, 0), x(NP), x(NP), x(NP), x(NP), x(NP), x(NP)],
+        [x(NP), ok(0, 0, 0), ok(0, 0, 0), x(NP), ok(0, 1, 0), ok(0, 1, 0), x(NP), x(NP), x(NP), x(NP), x(NP), x(NP), x(NP)],
     ),
     // finalize_pass (6.4): state 2, held == 0, delay elapsed (fixture: it is), not paused, cap ok (fixture: it is), Active
     Row {
@@ -304,7 +309,7 @@ const TABLE: [Row; 16] = [
             any(&[NA, NP]),
             any(&[NA, NP]),
             any(&[NA, NP]),
-            any(&[NA, NP]),
+            any(&[NA, NP]), any(&[NA, NP, AH]),
         ],
         paused: [
             any(&[PAU, NP]),
@@ -318,7 +323,7 @@ const TABLE: [Row; 16] = [
             any(&[PAU, NA, NP]),
             any(&[PAU, NA, NP]),
             any(&[PAU, NA, NP]),
-            any(&[PAU, NA, NP]),
+            any(&[PAU, NA, NP]), any(&[PAU, NA, NP, AH]),
         ],
     },
     // hold_account (6.3): Active, not already held, non-zero evidence; "works in every pass state"; the pause does not stop it
@@ -326,16 +331,17 @@ const TABLE: [Row; 16] = [
         Ins::Hold,
         "hold_account",
         "evaluator",
-        [ok(0, 1, 0), ok(0, 1, 1), ok(0, 1, 2), x(AL), x(AL), x(AL), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA)],
+        [ok(0, 1, 0), ok(0, 1, 1), ok(0, 1, 2), x(AL), x(AL), x(AL), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA), any(&[NA, AL])],
     ),
     // release_hold (6.1): both admins, held == 0 is NotHeld; a pending pass is untouched and its delay clock runs on (10.3)
     same(
         Ins::ReleaseHold,
         "release_hold",
         "both admins",
-        [x(NH), x(NH), x(NH), ok(0, 0, 0), ok(0, 0, 1), ok(0, 0, 2), x(NH), x(NH), x(NH), x(NH), x(NH), x(NH)],
+        [x(NH), x(NH), x(NH), ok(0, 0, 0), ok(0, 0, 1), ok(0, 0, 2), x(NH), x(NH), x(NH), x(NH), x(NH), x(NH), ok(1, 0, 0)],
     ),
-    // fail_for_violation (6.1, 2.9): both admins, Active AND held; clears any pending pass (also state 2) and leaves the marker 3;
+    // fail_for_violation (6.1, 2.9, P25c): both admins, held AND (Active or Failed: a Failed + held account gets the marker, keeps its
+    // terminal_at, frees no second slot, makes no second vault call); clears any pending pass (also state 2) and leaves the marker 3;
     // works while paused
     same(
         Ins::Violation,
@@ -353,7 +359,7 @@ const TABLE: [Row; 16] = [
             any(&[NA, NH]),
             any(&[NA, NH]),
             any(&[NA, NH]),
-            any(&[NA, NH]),
+            any(&[NA, NH]), ok(1, 0, 3),
         ],
     ),
     // touch_activity (6.3, 10.1): a live (Active) account only; held, pending and pause do not matter
@@ -361,29 +367,31 @@ const TABLE: [Row; 16] = [
         Ins::Touch,
         "touch_activity",
         "evaluator",
-        [ok(0, 0, 0), ok(0, 0, 1), ok(0, 0, 2), ok(0, 1, 0), ok(0, 1, 1), ok(0, 1, 2), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA)],
+        [ok(0, 0, 0), ok(0, 0, 1), ok(0, 0, 2), ok(0, 1, 0), ok(0, 1, 1), ok(0, 1, 2), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA)],
     ),
     // release_account (6.2): the trader's own activity push, same states as touch_activity
     same(
         Ins::ReleaseAcct,
         "release_account",
         "trader",
-        [ok(0, 0, 0), ok(0, 0, 1), ok(0, 0, 2), ok(0, 1, 0), ok(0, 1, 1), ok(0, 1, 2), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA)],
+        [ok(0, 0, 0), ok(0, 0, 1), ok(0, 0, 2), ok(0, 1, 0), ok(0, 1, 1), ok(0, 1, 2), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA), x(NA)],
     ),
-    // close_account (6.2): a terminal account 7 days after it became terminal (fixture: 8 days), rent to the trader
+    // close_account (6.2): a terminal account 7 days after it became terminal (fixture: 8 days), rent to the trader; NOT a Failed + HELD
+    // one (P25c: the review evidence and the wallet's held_count must not vanish): ReviewPending
     same(
         Ins::Close,
         "close_account",
         "trader",
-        [x(NT), x(NT), x(NT), x(NT), x(NT), x(NT), W::Closed, W::Closed, W::Closed, W::Closed, W::Closed, W::Closed],
+        [x(NT), x(NT), x(NT), x(NT), x(NT), x(NT), W::Closed, W::Closed, W::Closed, W::Closed, W::Closed, W::Closed, x(RVP)],
     ),
-    // reset_account (6.2 "checks in order": paused, wallet not banned, previous account Failed, not violation-failed, not reset).
+    // reset_account (6.2 "checks in order": paused, wallet not banned, previous account Failed, not violation-failed, not held (P25c:
+    // ReviewPending), not reset).
     // FV is both banned and marked, so either of the two errors is allowed there.
     Row {
         ins: Ins::Reset,
         program_ix: "reset_account",
         signer: "trader (+ payer = trader)",
-        open: [x(RNA), x(RNA), x(RNA), x(RNA), x(RNA), x(RNA), W::Reset, any(&[WB, VNR]), x(VNR), x(AAR), x(RNA), x(RNA)],
+        open: [x(RNA), x(RNA), x(RNA), x(RNA), x(RNA), x(RNA), W::Reset, any(&[WB, VNR]), x(VNR), x(AAR), x(RNA), x(RNA), x(RVP)],
         paused: [
             any(&[PAU, RNA]),
             any(&[PAU, RNA]),
@@ -396,7 +404,7 @@ const TABLE: [Row; 16] = [
             any(&[PAU, VNR]),
             any(&[PAU, AAR]),
             any(&[PAU, RNA]),
-            any(&[PAU, RNA]),
+            any(&[PAU, RNA]), any(&[PAU, RVP]),
         ],
     },
 ];
@@ -460,6 +468,13 @@ fn world(st: St, paused: bool) -> World {
             pass_ready_bytes(&mut w);
             now = terminal_now(&w);
         }
+        St::FH => {
+            let t = t0 + 1_000;
+            w.ok(|w| w.hold(t, hash(1)));
+            w.fail_in(3, t + 10);
+            pass_ready_bytes(&mut w);
+            now = terminal_now(&w);
+        }
         St::FV | St::Fvu => {
             let t = t0 + 1_000;
             w.ok(|w| w.hold(t, hash(1)));
@@ -497,6 +512,7 @@ fn world(st: St, paused: bool) -> World {
         St::H2 => (0, 1, 2),
         St::F | St::FX => (1, 0, 0),
         St::FV | St::Fvu => (1, 0, 3),
+        St::FH => (1, 1, 0),
         St::AB => (2, 0, 0),
         St::GR => (3, 0, 0),
     };
@@ -584,7 +600,8 @@ fn expected_after(ins: Ins, pre: &TradingAccount, now: i64, aux: &Aux, post: &Tr
             e.last_batch_time = now;
             e.flat = 1;
             e.status = c::STATUS_FAILED;
-            e.held = 0;
+            // the hold is KEPT (P25c): a held account stays held, an unheld one stays unheld
+            e.held = pre.held;
             e.pass_pending = 0;
             e.pass_requested_at = 0;
             e.pass_proposed_at = now; // terminal_at
@@ -628,7 +645,10 @@ fn expected_after(ins: Ins, pre: &TradingAccount, now: i64, aux: &Aux, post: &Tr
             e.held = 0;
             e.pass_pending = c::PASS_VIOLATION;
             e.pass_requested_at = 0;
-            e.pass_proposed_at = now;
+            // an Active account becomes terminal now; a Failed + held one keeps the terminal_at of its report_fail
+            if pre.status == c::STATUS_ACTIVE {
+                e.pass_proposed_at = now;
+            }
         }
         Ins::Touch | Ins::ReleaseAcct => {
             assert!(post.last_activity_pushed == pre.last_activity_pushed || post.last_activity_pushed == now);
@@ -673,7 +693,7 @@ fn run_cell(wd: &mut World, ins: Ins, want: W, ctx: &str) -> Tally {
             assert_eq!(tri(&post), (s, h, p), "{ctx}: wrong (status, held, pass_pending) after an allowed call");
             let exp = expected_after(ins, &pre, wd.now, &aux, &post);
             assert_eq!(bytes_of(&exp), bytes_of(&post), "{ctx}: the account changed in more (or fewer) fields than the table says");
-            check_wallet_effect(ins, &pre_wallet, &wd.w.wallet_profile(), ctx);
+            check_wallet_effect(ins, &pre, &pre_wallet, &wd.w.wallet_profile(), ctx);
             t.allowed = 1;
         }
         W::Closed => {
@@ -725,19 +745,21 @@ fn run_cell(wd: &mut World, ins: Ins, want: W, ctx: &str) -> Tally {
     t
 }
 
-fn check_wallet_effect(ins: Ins, pre: &setl8_lev_trading::state::WalletProfile, post: &setl8_lev_trading::state::WalletProfile, ctx: &str) {
+fn check_wallet_effect(ins: Ins, acct: &TradingAccount, pre: &setl8_lev_trading::state::WalletProfile, post: &setl8_lev_trading::state::WalletProfile, ctx: &str) {
     let mut e = pre.clone();
     match ins {
         Ins::Hold => e.held_count += 1,
         Ins::ReleaseHold => e.held_count -= 1,
         Ins::ReportFail => {
-            // the hold (if any) is released and the slot is freed
+            // the slot is freed; a hold (if any) is KEPT, so held_count does not move (P25c)
             e.active_count -= 1;
-            e.held_count = 0;
         }
         Ins::Violation => {
-            e.active_count -= 1;
-            e.held_count = 0;
+            // an Active account frees its slot now; a Failed + held one freed it at its report_fail; the hold always goes
+            if acct.status == c::STATUS_ACTIVE {
+                e.active_count -= 1;
+            }
+            e.held_count -= 1;
             e.banned = 1;
         }
         _ => {}
@@ -786,6 +808,7 @@ grid! {
     grid_failed_already_reset_open: St::FX, false;
     grid_abandoned_open: St::AB, false;
     grid_graduated_open: St::GR, false;
+    grid_failed_held_open: St::FH, false;
     grid_a0_paused: St::A0, true;
     grid_a1_paused: St::A1, true;
     grid_a2_paused: St::A2, true;
@@ -798,6 +821,7 @@ grid! {
     grid_failed_already_reset_paused: St::FX, true;
     grid_abandoned_paused: St::AB, true;
     grid_graduated_paused: St::GR, true;
+    grid_failed_held_paused: St::FH, true;
 }
 
 /// The table has a row for every instruction that reads a TradingAccount, and together with the account-free instructions of
@@ -850,16 +874,16 @@ fn table_cell_counts() {
         }
     }
     println!("table cells {cells}: allowed {allowed}, refused with one named error {exact}, refused with a DESIGN-allowed set {anyof}");
-    assert_eq!(cells, 16 * 12 * 2);
+    assert_eq!(cells, 16 * 13 * 2);
     assert_eq!(cells, allowed + exact + anyof);
     // 32 grid coordinates x 2 (paused) x 16 rows = 1,024 grid cells; 10 coordinates exist => 320 grid cells; Fvu and FX are the
     // two extra sub-states of the Failed coordinates (wallet ban, reset_at) => 64 more table cells
     let coords = (0..4u8).flat_map(|s| (0..2u8).flat_map(move |h| (0..4u8).map(move |p| (s, h, p)))).count();
     let existing = (0..4u8).flat_map(|s| (0..2u8).flat_map(move |h| (0..4u8).map(move |p| (s, h, p)))).filter(|(s, h, p)| reachable(*s, *h, *p)).count();
-    assert_eq!((coords, existing), (32, 10));
+    assert_eq!((coords, existing), (32, 11));
     assert_eq!(coords * 2 * 16, 1_024);
     assert_eq!(existing * 2 * 16 + 2 * 2 * 16, cells);
-    assert_eq!((coords - existing) * 2 * 16, 704);
+    assert_eq!((coords - existing) * 2 * 16, 672);
 }
 
 // ============================================================================================ part B: the coordinates that cannot exist
@@ -947,10 +971,10 @@ fn sweep_status(status: u8, paused: bool) {
         }
     }
     println!("sweep status={status} paused={paused}: {cells} cells on non-existing coordinates, {ok_n} accepted, {err_n} refused; accepted: {accepted:?}");
-    // 22 non-existing coordinates over the four statuses: Active 2, Failed 6, Abandoned 7, Graduated 7
+    // 21 non-existing coordinates over the four statuses: Active 2, Failed 5, Abandoned 7, Graduated 7
     let want = match status {
         0 => 2,
-        1 => 6,
+        1 => 5,
         _ => 7,
     };
     assert_eq!(cells, want * 16);

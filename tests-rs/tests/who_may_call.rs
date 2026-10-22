@@ -19,7 +19,7 @@
 //!     of the same transaction (both admin signatures are on the transaction, the instruction can see only one).
 //!   * `open_account` / `reset_account` have a trader slot and a payer slot: the class is the buyer in both (the buyer owns a funded token
 //!     account), "both admins" puts SL8 in the trader slot and Rov in the payer slot.
-//! * Extra classes (not in the 208-cell matrix, counted separately): admin slots swapped, the same admin twice, the OLD evaluator after a rotation
+//! * Extra classes (not in the 224-cell matrix, counted separately): admin slots swapped, the same admin twice, the OLD evaluator after a rotation
 //!   and the NEW evaluator after it.
 //!
 //! Every table cell of a row runs in a fresh world, so a cell cannot lean on what an earlier cell left behind.
@@ -149,7 +149,7 @@ struct Row {
     variant: &'static str,
     design: &'static str,
     expect: [Exp; 8],
-    /// Extra classes with their hand-written result (not counted in the 208 cells).
+    /// Extra classes with their hand-written result (not counted in the 224 cells).
     extra: &'static [(Class, Exp)],
     run: fn(Class) -> Cell,
 }
@@ -355,6 +355,23 @@ fn rows() -> Vec<Row> {
             extra: X_BOTH_ADMINS,
             run: r_fail_for_violation,
         },
+        // P25c (decision 67 amendment): the two admin resolutions of a Failed + held account are both-admin only, like on an Active one
+        Row {
+            ix: "release_hold",
+            variant: "on a Failed + held account",
+            design: "6.1 / 14 + P25c: both admins",
+            expect: [U, U, U, U, OK, U, U, U],
+            extra: X_BOTH_ADMINS,
+            run: r_release_hold_failed,
+        },
+        Row {
+            ix: "fail_for_violation",
+            variant: "on a Failed + held account",
+            design: "6.1 / 14 + P25c: both admins",
+            expect: [U, U, U, U, OK, U, U, U],
+            extra: X_BOTH_ADMINS,
+            run: r_fail_for_violation_failed,
+        },
         Row {
             ix: "touch_activity",
             variant: "",
@@ -384,11 +401,11 @@ fn rows() -> Vec<Row> {
 
 /// Totals the lead pastes into the report. They are asserted against the table, so changing a cell means changing these.
 const INSTRUCTIONS: usize = 25; // the prompt said 26; `pub fn` inside the #[program] block counts 25 at HEAD
-const ROWS: usize = 26; // `set_paused` has two rows: pause (either admin) and unpause (both)
-const CELLS: usize = 208; // 26 rows x 8 classes (25 instructions x 8 = 200, plus the 8 cells of the second set_paused row)
-const ALLOWED_CELLS: usize = 41;
-const REFUSED_CELLS: usize = 167;
-const EXTRA_CELLS: usize = 51;
+const ROWS: usize = 28; // `set_paused` has two rows: pause (either admin) and unpause (both); P25c adds `release_hold` and `fail_for_violation` on a Failed + held account
+const CELLS: usize = 224; // 28 rows x 8 classes (25 instructions x 8 = 200, plus the second set_paused row and, P25c, release_hold and fail_for_violation on a Failed + held account: 3 x 8 = 24)
+const ALLOWED_CELLS: usize = 43;
+const REFUSED_CELLS: usize = 181;
+const EXTRA_CELLS: usize = 57;
 
 // ====================================================================================================== the instruction list
 
@@ -449,7 +466,8 @@ fn rows_and_program_instructions_are_the_same_set() {
     for r in &rs {
         assert!(seen.insert((r.ix, r.variant)), "duplicate row {} {}", r.ix, r.variant);
         if r.variant.is_empty() {
-            assert_eq!(rs.iter().filter(|o| o.ix == r.ix).count(), 1, "{} has an unnamed row and another row", r.ix);
+            // the only extra rows an unnamed row may have are the P25c "on a Failed + held account" variants of the same signers
+            assert_eq!(rs.iter().filter(|o| o.ix == r.ix && !o.variant.starts_with("on a Failed + held")).count(), 1, "{} has an unnamed row and another row", r.ix);
         }
     }
 }
@@ -1148,6 +1166,34 @@ fn r_release_hold(class: Class) -> Cell {
     go(&mut w, &k, class, Shape::Admins, vec![], ix, t + 1, &|w| w.account().held == 0 && w.wallet_profile().held_count == 0)
 }
 
+/// A held account failed by `report_fail` (P25c): Failed + held, clock after the fail.
+fn failed_while_held_world() -> (JEnv, Keys, i64) {
+    let (mut w, k) = fresh();
+    let t = w.t0 + 1_000;
+    assert_ok(w.hold(t, hash(1)));
+    w.fail_in(3, t + 10);
+    assert_eq!((w.account().status, w.account().held), (c::STATUS_FAILED, 1));
+    (w, k, t + 12)
+}
+
+fn r_release_hold_failed(class: Class) -> Cell {
+    let (mut w, k, t) = failed_while_held_world();
+    let ix = w.release_hold_ix(Admins::both(&w.v.e));
+    go(&mut w, &k, class, Shape::Admins, vec![], ix, t, &|w| {
+        let a = w.account();
+        a.status == c::STATUS_FAILED && a.held == 0 && a.pass_pending == 0 && w.wallet_profile().held_count == 0
+    })
+}
+
+fn r_fail_for_violation_failed(class: Class) -> Cell {
+    let (mut w, k, t) = failed_while_held_world();
+    let ix = w.violation_ix(Admins::both(&w.v.e), hash(9));
+    go(&mut w, &k, class, Shape::Admins, vec![], ix, t, &|w| {
+        let a = w.account();
+        a.status == c::STATUS_FAILED && a.violation_failed() && a.held == 0 && w.wallet_profile().banned == 1 && w.wallet_profile().held_count == 0
+    })
+}
+
 fn r_fail_for_violation(class: Class) -> Cell {
     let (mut w, k) = fresh();
     let t = w.t0 + 1_000;
@@ -1224,6 +1270,8 @@ row_tests! {
     matrix_hold_account => ("hold_account", ""),
     matrix_release_hold => ("release_hold", ""),
     matrix_fail_for_violation => ("fail_for_violation", ""),
+    matrix_release_hold_failed_held => ("release_hold", "on a Failed + held account"),
+    matrix_fail_for_violation_failed_held => ("fail_for_violation", "on a Failed + held account"),
     matrix_touch_activity => ("touch_activity", ""),
     matrix_release_account => ("release_account", ""),
     matrix_close_account => ("close_account", ""),

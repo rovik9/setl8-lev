@@ -1,9 +1,10 @@
-//! P25a, decision D-F32 precondition (audit finding F-32). The owner asked for `report_fail` to be refused on a HELD account, but only
-//! if a held account is frozen for trading. This file pins what a held account still does: it refuses new exposure (`Fill`,
-//! `AccountHeld`), but it still accepts `Fee` events (holding fees, commissions) and `Close` events at a loss, so its balance can fall to
-//! the floor while held. Refusing `report_fail` there would leave an account below its floor that can neither post a flat batch
-//! (`MustReportFail`) nor be failed until both admins release it: that contradicts DESIGN 2.9 ("no new exposure, no pass request,
-//! confirmation or payout finalization") and is a STOP-and-report item, not implemented.
+//! P25a, decision D-F32 precondition (audit finding F-32), pinned again by P25c (decision 67 amendment). The owner asked for
+//! `report_fail` to be refused on a HELD account, but only if a held account is frozen for trading. It is NOT: a held account refuses
+//! new exposure (`Fill`, `AccountHeld`), but it still accepts `Fee` events (holding fees, commissions) and `Close` events at a loss,
+//! so its balance can fall to the floor while held. Refusing `report_fail` there would leave an account below its floor that can
+//! neither post a flat batch (`MustReportFail`) nor be failed until both admins release it, so `report_fail` stays allowed (P25a STOP).
+//! P25c (option (a)): `report_fail` on a held account fails it but KEEPS the hold, so the review is not lost; the new behaviour is
+//! tested in `held_fail_review.rs`.
 mod common;
 
 use common::journal::*;
@@ -49,11 +50,12 @@ fn a_held_account_still_accepts_a_close_at_a_loss() {
 }
 
 #[test]
-fn a_held_account_below_the_floor_is_failed_by_report_fail_today_and_the_hold_is_cleared() {
+fn a_held_account_below_the_floor_is_failed_by_report_fail_and_the_hold_is_kept() {
     let (mut w, t) = held();
     let b = w.fail_batch(t, vec![], FailReason::StaticFloor, S100K / 100 * 92, true);
     w.edit_account(|a| a.b = S100K / 100 * 92);
     assert_ok(w.report_fail(t + 1, &b, 0, &[MARKET_EUR]));
     let a = w.account();
-    assert_eq!((a.status, a.held), (setl8_lev_trading::constants::STATUS_FAILED, 0));
+    assert_eq!((a.status, a.held), (setl8_lev_trading::constants::STATUS_FAILED, 1), "Failed, and the hold stays for the admins' review");
+    assert_eq!(w.wallet_profile().held_count, 1);
 }
