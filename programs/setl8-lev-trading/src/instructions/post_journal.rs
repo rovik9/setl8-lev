@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use engine::{AccountState, ClaimError, CloseClaim, Rules};
 use journal_types::{
-    apply_batch, FailReason, check_proof_without_price, check_signed_update_shape, in_session, price_e12_from_quantized, ChainError,
+    apply_batch, CloseReason, FailReason, check_proof_without_price, check_signed_update_shape, in_session, price_e12_from_quantized, ChainError,
     DecodeError, JournalBatch, JournalEvent, PriceProof, ProofError, Side, NO_PROOF,
 };
 use solana_sha256_hasher::hashv;
@@ -250,9 +250,13 @@ fn apply_fail(env: &Env, run: &mut Run, ev: &JournalEvent, arg: u8) -> Result<()
 
 /// One event. Time (I-3) is checked by the caller.
 fn apply_event(env: &Env, run: &mut Run, acct: &TradingAccount, ev: &JournalEvent) -> Result<()> {
-    // a quick tally over the limit allows nothing but the Fail event (and then the Meta)
+    // I-8 (decision 69, audit F-16): a quick tally over the limit allows nothing but the forced close-all of the remaining positions,
+    // `Close` events with reason `Fail`, then the Fail event and then the Meta. Any Fill, any Close with another reason, a Fee or any
+    // other event is refused. A `Close{Fail}` is allowed anywhere in a `report_fail` batch (a static-floor fail closes everything with
+    // them); the `Fail{PhaseQuick}` at the end still needs the tally above the limit (`FailQuickNotExceeded`).
     if let Mode::ReportFail(_) = env.mode {
-        if !matches!(ev, JournalEvent::Fail { .. } | JournalEvent::Meta { .. }) {
+        let forced_close = matches!(ev, JournalEvent::Close { reason: CloseReason::Fail, .. });
+        if !forced_close && !matches!(ev, JournalEvent::Fail { .. } | JournalEvent::Meta { .. }) {
             require!(!quick_over(&run.st)?, Setl8Error::QuickLimitExceeded);
         }
     }
