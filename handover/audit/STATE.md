@@ -1,5 +1,8 @@
-# P25b state (resume file)
+# P26 state (resume file)
 
-Task: handover/prompts/P25b-audit-fixes-evaluator-verifier.md (decision 68). Offline: export RUSTUP_TOOLCHAIN=stable.
-* DONE: groups A, B, C (all findings except F-16 STOP and F-25 DEFERRED), docs (verifier-formats, DESIGN 4.5/4.6, trust-matrix, decision 68, deploy checklist, module notes, AUDIT_REPORT section 4), mutation (240 mutants: 22 missed -> tests/refactor -> rerun 167: 0 missed)
-* NEXT: gates (test-engine.sh, tests-rs full, DIFF 10000, ENGINE 100000, golden, clippy, budget, .so sha256 unchanged: localnet 6cd19d26..., default 4a7af2ec...), AUDIT_REPORT "Changes after the audit, part 3", final report
+Task: handover/prompts/P26-F16-forced-close-after-overshoot.md (decision 69). Offline: export RUSTUP_TOOLCHAIN=stable.
+* step 1 DONE (RED on purpose): tests-rs/tests/quick_overshoot_closes.rs (15), arith_03 and e_03 un-ignored and adapted
+* NEXT step 2: program change (post_journal.rs apply_event: the I-8 check lets Close{reason Fail} through in report_fail mode), then DESIGN 4.4 I-8, 4.7, module notes, trust-matrix row, AUDIT_REPORT part 4, decision 69
+* then step 3 evaluator (greedy prefix, crossing close, forced closes after it with reason Fail, one unit for crossing+rest+Fail, unpostable = group > 8 events or > 3 proofs) + campaign story MultiQuick (floor >= 100) + verifier (accept Close{Fail} after overshoot, flag the dishonest variants)
+* step 4 mutation, step 5 gates, step 6 freeze note
+* FACTS: batch caps (8 events, 3 distinct proofs) stay: the failing batch can hold at most 6 closes (events) and closes in at most 3 markets (proofs) from the crossing close on; closes BEFORE the crossing go in earlier post_journal batches

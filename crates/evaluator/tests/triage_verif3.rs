@@ -92,7 +92,6 @@ fn quick_world(markets: usize) -> World {
 // continue nor be failed). Needs a DESIGN change: the program must accept several forced Close events after an overshoot (only
 // Close with reason Fail/Breach, then the Fail), or the evaluator must have another way to end the account.
 #[test]
-#[ignore = "FINDING E-03: a forced close of 3+ young profitable positions near the quick limit emits a Close sequence neither post_journal nor report_fail accepts | P25b STOP (F-16): the evaluator already orders the closes so that an overshoot is last whenever any order allows it; THIS set cannot be ordered (the two smallest credits already exceed the limit), so no sequence is postable under the program rules I-8/I-11 without a program or DESIGN change"]
 fn e_03_forced_closes_over_the_quick_limit_are_a_sequence_the_program_accepts() {
     let mut w = quick_world(4);
     for m in 0..4u16 {
@@ -115,13 +114,27 @@ fn e_03_forced_closes_over_the_quick_limit_are_a_sequence_the_program_accepts() 
     assert!(matches!(w.ev.status(), evaluator::Status::Failed(engine::FailReason::PhaseQuick)), "{:?}", w.ev.status());
     let evs = events_of(&w.drain());
 
-    // replay the Close events through the program's own engine calls (post_journal.rs:293-299) and count the closes from the first
-    // overshoot on: the program takes at most that one (as the last close before the Fail, in report_fail mode)
+    // replay the Close events through the program's own engine calls (post_journal.rs apply_slice) and look at what stands after the first
+    // overshoot of the quick limit: P25b/P26 (decision 69, ADAPTED from "at most one close from the first overshoot on"): the program now
+    // accepts any number of Close{Fail} events there, then the Fail; nothing else may follow the overshoot
     let mut st = engine::reset_phase_state(S100K);
     let rules = engine::Rules::default();
-    let mut from_first_overshoot = 0usize;
+    let mut over = false;
+    let mut closes = 0usize;
+    let mut forced_after = 0usize;
     for e in &evs {
-        if let JournalEvent::Close { side, qty, entry_e12, exit_e12, time, timer_start, pnl, quick, credited, .. } = e {
+        if over {
+            assert!(
+                matches!(e, JournalEvent::Close { reason: journal_types::CloseReason::Fail, .. } | JournalEvent::Fail { .. } | JournalEvent::Meta { .. }),
+                "{e:?} stands after the quick-limit overshoot: only Close{{Fail}}, then the Fail, then the Meta may"
+            );
+        }
+        if let JournalEvent::Close { side, qty, entry_e12, exit_e12, time, timer_start, pnl, quick, credited, reason, .. } = e {
+            closes += 1;
+            if over {
+                assert!(matches!(reason, journal_types::CloseReason::Fail));
+                forced_after += 1;
+            }
             let c = engine::check_close(&engine::CloseClaim {
                 long: *side == Side::Long,
                 qty: *qty,
@@ -136,11 +149,14 @@ fn e_03_forced_closes_over_the_quick_limit_are_a_sequence_the_program_accepts() 
             .expect("a well-formed close");
             let d = engine::apply_closed_slice(&st, &rules, c.credit, c.tally_delta).expect("slice");
             st = d.state;
-            if d.fail.is_some() || from_first_overshoot > 0 {
-                from_first_overshoot += 1;
+            if d.fail.is_some() {
+                over = true;
             }
         }
     }
-    assert!(from_first_overshoot <= 1, "{from_first_overshoot} Close events at or after the first overshoot of the quick limit: neither post_journal nor report_fail accepts them");
+    assert!(over, "the tally crossed the limit");
+    assert_eq!(closes, 4, "all four positions are closed in the journal");
+    assert!(forced_after >= 1, "at least one forced close follows the overshoot (the story is the E-03 shape)");
+    assert!(evs.iter().any(|e| matches!(e, JournalEvent::Fail { reason: journal_types::FailReason::PhaseQuick, .. })));
     assert_eq!(w.ev.stats().unpostable, 0);
 }
