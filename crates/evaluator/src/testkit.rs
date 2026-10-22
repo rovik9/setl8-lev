@@ -1383,3 +1383,32 @@ fn closed(p: &mut Plot, ctx: &Ctx) {
     }
     p.run(60, 10, 0, 300, 100_000);
 }
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+
+    fn markets(n: usize) -> Vec<MarketSpec> {
+        let mut m = markets_for(&mut Rng::new(7), false, false);
+        while m.len() < n {
+            let mut x = m[0].clone();
+            x.id = u16::try_from(m.len()).unwrap_or(0);
+            m.push(x);
+        }
+        m.truncate(n);
+        m
+    }
+
+    /// The multi-quick story trades three markets, four when the draw gave three or more; the commission story always three.
+    #[test]
+    fn the_stories_with_several_markets_take_three_or_four() {
+        for len in 1..=6usize {
+            let mut m = markets(len);
+            shape_markets(&mut m, Scenario::MultiQuick, 1);
+            assert_eq!(m.len(), if len >= 3 { 4 } else { 3 }, "multi-quick from {len} markets");
+            let mut m = markets(len);
+            shape_markets(&mut m, Scenario::CommissionFail, 1);
+            assert_eq!(m.len(), 3, "commission story from {len} markets");
+        }
+    }
+}
