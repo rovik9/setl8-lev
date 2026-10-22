@@ -341,7 +341,7 @@ impl Evaluator {
     }
 
     fn do_breach(&mut self, sec: i64, j: usize, marks: &BTreeMap<u16, usize>) -> Result<(), EvalError> {
-        let mut units = self.force_close_all(sec, CloseReason::Breach, None, Some(marks))?;
+        let mut units = self.force_close_all(sec, CloseReason::Breach, None, Some(marks), j)?;
         let over = self.quick_over();
         let tail = if over {
             Some(self.fail_event(sec, j, journal_types::FailReason::PhaseQuick))
@@ -376,7 +376,7 @@ impl Evaluator {
     }
 
     fn do_static_fail(&mut self, sec: i64, j: usize, marks: &BTreeMap<u16, usize>) -> Result<(), EvalError> {
-        let mut units = self.force_close_all(sec, CloseReason::Fail, None, Some(marks))?;
+        let mut units = self.force_close_all(sec, CloseReason::Fail, None, Some(marks), j)?;
         let tail = if self.quick_over() {
             Some(self.fail_event(sec, j, journal_types::FailReason::PhaseQuick))
         } else if self.st.b <= engine::static_floor_micro(&self.st)? {

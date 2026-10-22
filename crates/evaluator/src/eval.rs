@@ -57,8 +57,11 @@ pub struct Stats {
     pub closed_with_position: u32,
     /// Triggered pending orders the evaluator could not fill (margin, cap, lock, hold): the verifier expects them filled.
     pub refused_fills: u32,
-    /// Sequences the program cannot accept (an overshoot of the quick tally before the last close).
+    /// Forced close-all groups the program cannot take in one batch (decision 69): the first close over the quick limit, the closes after
+    /// it and the Fail need more than 8 events with the Meta, or more than 3 distinct price proofs. Must stay 0 over the campaigns.
     pub unpostable: u32,
+    /// Forced closes (reason Fail) that follow the first close over the quick limit in one failing sequence (decision 69, audit F-16).
+    pub forced_after_overshoot: u32,
     /// MARKET orders that passed the margin check with `equity - margin used == 0` exactly (M9c coverage).
     pub margin_exact: u32,
     /// Accepted market orders that could not execute when their second closed (margin, a market that closed, a lock).

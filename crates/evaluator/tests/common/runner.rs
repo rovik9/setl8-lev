@@ -548,6 +548,9 @@ pub struct M9cCover {
     pub unpriced_attempt_refused: u64,
     /// P25b (decision 68, audit F-16): forced-close sequences the program cannot accept (`Stats::unpostable`), SUMMED over the paths. Must be 0.
     pub unpostable: u64,
+    /// P26 (decision 69, audit F-16): paths in which the account failed at a quick-limit overshoot with at least one more position
+    /// closed after the crossing close (a `Close{Fail}` the program takes after the overshoot). Floor 100 per 10,000 paths.
+    pub forced_after_overshoot: u64,
     /// P25b (audit F-17): price samples the evaluator refused, summed over the paths (the campaign's generator feeds honest samples,
     /// so these stay 0 here; `crates/evaluator/tests/p25b_inputs.rs` feeds the hostile ones).
     pub samples_future: u64,
@@ -564,6 +567,7 @@ impl M9cCover {
         self.pending_held_refused += o.pending_held_refused;
         self.unpriced_attempt_refused += o.unpriced_attempt_refused;
         self.unpostable += o.unpostable;
+        self.forced_after_overshoot += o.forced_after_overshoot;
         self.samples_future += o.samples_future;
         self.samples_stale += o.samples_stale;
         self.samples_out_of_order += o.samples_out_of_order;
@@ -579,6 +583,7 @@ impl M9cCover {
             ("pending_quantity_refused", scale(100)),
             ("pending_held_refused", scale(100)),
             ("unpriced_attempt_refused", scale(100)),
+            ("forced_after_overshoot", scale(100)),
         ]
     }
 
@@ -590,6 +595,7 @@ impl M9cCover {
             "pending_quantity_refused" => self.pending_quantity_refused,
             "pending_held_refused" => self.pending_held_refused,
             "unpriced_attempt_refused" => self.unpriced_attempt_refused,
+            "forced_after_overshoot" => self.forced_after_overshoot,
             _ => 0,
         }
     }
@@ -623,6 +629,7 @@ pub fn m9c_cover(w: &World) -> M9cCover {
         pending_held_refused: n(OrderReject::AccountHeld, true),
         unpriced_attempt_refused: u64::from(w.ev.stats().unpriced_rejects > 0),
         unpostable: u64::from(w.ev.stats().unpostable),
+        forced_after_overshoot: u64::from(w.ev.stats().forced_after_overshoot > 0),
         samples_future: u64::from(w.ev.stats().samples_future),
         samples_stale: u64::from(w.ev.stats().samples_stale),
         samples_out_of_order: u64::from(w.ev.stats().samples_out_of_order),

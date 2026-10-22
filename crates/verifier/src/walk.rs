@@ -1147,12 +1147,24 @@ mod replay_tests {
             rp.on_fail(at(10), FailReason::PhaseQuick, rp.st.b);
             assert!(!classes(rp).contains(&FindingClass::ForcedCloseUnjustified) && !classes(rp).contains(&FindingClass::FalseFailMarks), "{:?}", classes(rp));
         });
-        // the Fail of ANOTHER second does not justify it
+        // the Fail of ANOTHER second does not justify it: it stays pending until an event of a later second arrives (or the log ends)
         with_replay(&[], |rp| {
             put(rp, floor(99, FloorKind::Breach, [0; 5]));
             assert_eq!(rp.walk_close(at(10), 0, CloseReason::Fail, 0, 0), None);
             rp.on_fail(at(11), FailReason::PhaseQuick, rp.st.b);
+            assert!(!classes(rp).contains(&FindingClass::ForcedCloseUnjustified), "still pending: {:?}", classes(rp));
+            rp.settle_forced_closes(None, Some(10), false); // an event of the SAME second changes nothing
+            assert!(!classes(rp).contains(&FindingClass::ForcedCloseUnjustified));
+            rp.settle_forced_closes(None, Some(11), false); // an event of a later second
             assert!(classes(rp).contains(&FindingClass::ForcedCloseUnjustified), "{:?}", classes(rp));
+        });
+        with_replay(&[], |rp| {
+            put(rp, floor(99, FloorKind::Breach, [0; 5]));
+            assert_eq!(rp.walk_close(at(10), 0, CloseReason::Fail, 0, 0), None);
+            rp.settle_forced_closes(None, None, false); // a Meta or nothing: no finding
+            assert!(!classes(rp).contains(&FindingClass::ForcedCloseUnjustified));
+            rp.settle_forced_closes(None, None, true); // the end of the log
+            assert!(classes(rp).contains(&FindingClass::ForcedCloseUnjustified));
         });
         // a StaticFloor Fail is not a quick-limit Fail: the close stays unjustified and the Fail rests on it
         with_replay(&[], |rp| {

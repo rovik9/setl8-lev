@@ -145,6 +145,10 @@ pub enum Scenario {
     /// M9c: the account is held for review while a pending order triggers and a market order arrives; the order is refused,
     /// stays pending and fills when the hold is released.
     Hold,
+    /// P26 (decision 69, audit F-16): three or four long positions in as many class-0 markets, all younger than 45 s and in profit;
+    /// the trader closes them one after the other. The first close is small, the second alone takes the quick tally over 2.8% of S:
+    /// the account fails and the positions still open are closed with it (`Close{Fail}` after the crossing close, then the `Fail`).
+    MultiQuick,
 }
 
 /// A complete history.
@@ -466,6 +470,7 @@ fn generate_inner(seed: u64, wild: bool) -> PathSpec {
         820..=869 => Scenario::Cap,
         870..=899 => Scenario::Remainder,
         740..=759 => Scenario::Hold,
+        600..=659 => Scenario::MultiQuick,
         700..=739 => Scenario::Unpriced,
         _ => Scenario::Noise,
     };
@@ -515,6 +520,7 @@ fn build_path(seed: u64, scenario: Scenario, tier: usize, size: i64, phase: u8, 
         Scenario::Cap => cap(&mut p, &ctx),
         Scenario::Remainder => remainder(&mut p, &ctx),
         Scenario::Hold => hold(&mut p, &ctx),
+        Scenario::MultiQuick => multi_quick(&mut p, &ctx),
     }
     // a final tick one second after the last input closes the last second
     let end = p.last + 2;
@@ -748,6 +754,26 @@ fn convert_flip(p: &mut Plot, ctx: &Ctx) {
 /// `Remainder`. All three trade a single FX market (class 0, 50x). `Unpriced` keeps two markets and takes the half-spread of the
 /// second away (the rule set does not price it, decision 64).
 fn shape_markets(markets: &mut Vec<MarketSpec>, scenario: Scenario, size: i64) {
+    if scenario == Scenario::MultiQuick {
+        // three markets, four when the draw gave three: all class 0 (50x), open all week, one source and spread each
+        let n: u16 = if markets.len() >= 3 { 4 } else { 3 };
+        markets.truncate(1);
+        let Some(m0) = markets.first_mut() else { return };
+        m0.class = 0;
+        m0.sessions = FULL_WEEK.to_vec();
+        m0.max_age_secs = 900;
+        m0.start_price = 1_100_000_000_000;
+        let base = m0.clone();
+        for i in 1..n {
+            let mut m = base.clone();
+            m.id = i;
+            m.symbol = symbol_of(0, i);
+            m.start_price = base.start_price + u64::from(i) * 37_000_000_000;
+            m.spread_e6 = base.spread_e6 + u32::from(i) * 7;
+            markets.push(m);
+        }
+        return;
+    }
     if scenario == Scenario::Unpriced {
         markets.truncate(2);
         if let Some(m) = markets.get_mut(1) {
@@ -1138,6 +1164,40 @@ fn quick_fail(p: &mut Plot, ctx: &Ctx) {
         p.run(15, 5, 0, 300, 100_000);
     }
     p.run(30, 5, 0, 300, 100_000);
+}
+
+/// F-16 (decision 69): `n` long positions of `k` thousandths of S in as many markets, opened together. Over 30 s each gains its own
+/// share of S (ppm): the first a little (its quick credit, half of it, fits under the limit), the others so much that each alone
+/// is credited more than the room that is left. The trader closes them in market order: the second close takes the tally over
+/// 2.8% of S, so the positions still open (one or two) are closed with it as `Close{Fail}`, and the account fails.
+fn multi_quick(p: &mut Plot, _ctx: &Ctx) {
+    let n = p.mk.len();
+    let k = p.rng.range(1_500, 2_500);
+    p.run(20, 5, 0, 200, 20_000);
+    p.long = true;
+    p.k_milli = k;
+    for m in 0..n {
+        let q = p.qty_for(m, k);
+        p.market_order(m, true, q, 0, 0);
+    }
+    p.run(5, 5, 0, 50, 0);
+    let gains: Vec<i64> = (0..n).map(|m| if m == 0 { p.rng.range(12_000, 16_000) } else { p.rng.range(52_000, 70_000) }).collect();
+    let steps = 6;
+    for _ in 0..steps {
+        p.t += 5;
+        for (m, g) in gains.iter().enumerate() {
+            let ppb = i64::try_from(i128::from(*g) * 1_000_000 / i128::from(k) / i128::from(steps)).unwrap_or(0);
+            p.bump(m, ppb);
+            p.mk[m].next_due = p.t;
+        }
+        p.tick(5);
+    }
+    p.post(false);
+    for m in 0..n {
+        p.close_order(m, 0);
+    }
+    p.run(30, 5, 0, 20, 0);
+    p.post(false);
 }
 
 fn tight_clean(p: &mut Plot, ctx: &Ctx) {

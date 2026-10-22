@@ -460,9 +460,12 @@ impl Evaluator {
         Ok((evs, over))
     }
 
-    /// One closing slice of the trader's (or a trigger's) own, with the rules of the quick limit and the static floor:
-    /// if booking the slice would push the quick tally over its limit, every other position (and the rest of this one) is
-    /// closed FIRST, then the slice, then `Fail{PhaseQuick}`: the program accepts nothing but the `Fail` after an overshoot.
+    /// One closing slice of the trader's (or a trigger's) own, with the rules of the quick limit and the static floor. If booking the
+    /// slice would push the quick tally over its limit (decision 69, audit F-16) the account fails and every other position (and the
+    /// rest of this one) is closed with it, in the order the program accepts: the others that keep the tally at or below the limit
+    /// first, smallest quick credit first, each with its commission, as units that can be posted before; then the slice itself, the
+    /// first close over the limit; then the remaining positions, each a `Close{Fail}` without commission; then `Fail{PhaseQuick}`. The
+    /// crossing close, the forced closes and the Fail are ONE unit (the program takes them in one `report_fail` batch).
     /// A slice that leaves the account flat at or below the static floor is followed by `Fail{StaticFloor}`.
     /// Returns whether the account failed.
     #[allow(clippy::too_many_arguments)]
@@ -471,19 +474,42 @@ impl Evaluator {
         let prev = self.preview_close(&pos, qty, price, t)?;
         let would_over = self.would_exceed_quick(prev.0, prev.1);
         let mut units: Vec<Vec<QEvent>> = Vec::new();
+        let mut group: Vec<QEvent> = Vec::new();
         if would_over {
-            units.extend(self.force_close_all(t, CloseReason::Fail, Some((market, qty)), None)?);
+            let mut rest = self.forced_todo(t, Some((market, qty)), None)?.into_iter().peekable();
+            // the others that keep the tally at or below the limit go first (smallest credit first)
+            while let Some(&(_, m, q, p, jj)) = rest.peek() {
+                let pos_m = self.positions.get(&m).copied().ok_or(EvalError::Invariant("close without a position"))?;
+                let (credit, tally) = self.preview_close(&pos_m, q, p, t)?;
+                if self.would_exceed_quick(credit, tally) {
+                    break;
+                }
+                rest.next();
+                let (evs, _) = self.do_close_event(t, m, q, p, jj, CloseReason::Fail, 0, false)?;
+                units.push(evs);
+            }
+            // the slice is the first close over the limit (it crosses on its own, so it crosses after the others too)
+            let (evs, _) = self.do_close_event(t, market, qty, price, j, reason, intent_id, false)?;
+            group.extend(evs);
+            for (_, m, q, p, jj) in rest {
+                let (evs, _) = self.do_close_event(t, m, q, p, jj, CloseReason::Fail, 0, false)?;
+                group.extend(evs);
+            }
+            self.account_forced_group(&group, j);
+        } else {
+            let (evs, _) = self.do_close_event(t, market, qty, price, j, reason, intent_id, true)?;
+            units.push(evs);
         }
-        // after the forced closes the slice may no longer exceed (it always does: Q only grows) - book it
-        let (evs, over) = self.do_close_event(t, market, qty, price, j, reason, intent_id, !would_over)?;
-        units.push(evs);
-        let tail = if over || would_over {
+        let tail = if would_over {
             Some(self.fail_event(t, j, journal_types::FailReason::PhaseQuick))
         } else if self.positions.is_empty() && self.st.b <= engine::static_floor_micro(&self.st)? {
             Some(self.fail_event(t, j, journal_types::FailReason::StaticFloor))
         } else {
             None
         };
+        if would_over {
+            units.push(group);
+        }
         let failed = tail.is_some();
         self.finish_units(&mut units, tail);
         for u in units {
@@ -492,39 +518,69 @@ impl Evaluator {
         Ok(failed)
     }
 
-    /// Closes every position at the current marks with `reason` (intent 0): the ones whose slice adds least to the quick
-    /// tally first, so that a slice that crosses the limit is the last one. `keep` names a position that stays open for
-    /// `qty` units (the slice the caller is about to book). `marks` are the marks of the decision that forces the closes (the
-    /// breach or static-fail sample, audit F-21); `None` = the current marks. Returns one unit per close (a close with its commission).
-    pub(crate) fn force_close_all(&mut self, t: i64, reason: CloseReason, keep: Option<(u16, u64)>, marks: Option<&std::collections::BTreeMap<u16, usize>>) -> Result<Vec<Vec<QEvent>>, EvalError> {
-        let mut todo: Vec<(i64, u16, u64, u64, usize)> = Vec::new();
-        let list: Vec<(u16, Pos)> = self.positions.iter().map(|(k, v)| (*k, *v)).collect();
-        for (m, p) in list {
+    /// The closes of every position that has to be closed (all of them; with `keep`, the rest of that market's position), as
+    /// `(quick tally the close adds, market, quantity, price, mark sample)`, smallest tally first (ties by market): the order in
+    /// which the quick limit is crossed as late as possible. `marks` are the marks of the decision that forces the closes (the breach or
+    /// static-fail sample, audit F-21); `None` = the current marks.
+    fn forced_todo(&self, t: i64, keep: Option<(u16, u64)>, marks: Option<&std::collections::BTreeMap<u16, usize>>) -> Result<Vec<ForcedClose>, EvalError> {
+        let mut todo: Vec<ForcedClose> = Vec::new();
+        for (m, p) in &self.positions {
             let held_qty = p.p.qty.unsigned_abs();
             let qty = match keep {
-                Some((km, keep_qty)) if km == m => held_qty.saturating_sub(keep_qty),
+                Some((km, keep_qty)) if km == *m => held_qty.saturating_sub(keep_qty),
                 _ => held_qty,
             };
             if qty == 0 {
                 continue;
             }
-            let j = *marks.unwrap_or(&self.marks).get(&m).ok_or(EvalError::Invariant("a position without a mark"))?;
+            let j = *marks.unwrap_or(&self.marks).get(m).ok_or(EvalError::Invariant("a position without a mark"))?;
             let s = *self.samples.get(j).ok_or(EvalError::Invariant("sample index"))?;
             let price = if p.p.qty.is_positive() { s.bid } else { s.ask };
-            let (_, tally) = self.preview_close(&p, qty, price, t)?;
-            todo.push((tally, m, qty, price, j));
+            let (_, tally) = self.preview_close(p, qty, price, t)?;
+            todo.push((tally, *m, qty, price, j));
         }
         todo.sort_by_key(|x| (x.0, x.1));
-        let n = todo.len();
-        let mut units = Vec::new();
-        for (i, (_, m, qty, price, j)) in todo.into_iter().enumerate() {
-            let (evs, over) = self.do_close_event(t, m, qty, price, j, reason, 0, false)?;
-            if over && i + 1 < n {
-                self.stats.unpostable = self.stats.unpostable.saturating_add(1);
+        Ok(todo)
+    }
+
+    /// Closes every position at the marks of the decision with `reason` (intent 0), the ones whose slice adds least to the quick
+    /// tally first. The closes before the first one over the quick limit are units of their own (posted before, with their commission);
+    /// the first close over the limit and every close after it (reason `Fail`, no commission: the program accepts nothing else there,
+    /// decision 69) are ONE unit, which `finish_units` ends with the `Fail`. `keep` names a position that stays open for `qty` units
+    /// (the slice the caller books itself). `fail_sample` is the sample the ending `Fail` will carry as its proof.
+    pub(crate) fn force_close_all(&mut self, t: i64, reason: CloseReason, keep: Option<(u16, u64)>, marks: Option<&std::collections::BTreeMap<u16, usize>>, fail_sample: usize) -> Result<Vec<Vec<QEvent>>, EvalError> {
+        let todo = self.forced_todo(t, keep, marks)?;
+        let mut units: Vec<Vec<QEvent>> = Vec::new();
+        let mut group: Vec<QEvent> = Vec::new();
+        let mut over_seen = false;
+        for (_, m, qty, price, j) in todo {
+            let r = if over_seen { CloseReason::Fail } else { reason };
+            let (evs, over) = self.do_close_event(t, m, qty, price, j, r, 0, false)?;
+            if over_seen || over {
+                over_seen = true;
+                group.extend(evs);
+            } else {
+                units.push(evs);
             }
-            units.push(evs);
+        }
+        if !group.is_empty() {
+            self.account_forced_group(&group, fail_sample);
+            units.push(group);
         }
         Ok(units)
+    }
+
+    /// Statistics of a crossing group (the first close over the limit and the forced closes after it): how many forced closes follow
+    /// the crossing one, and whether the group (with the `Fail` and the `Meta` that end it) fits one program batch: at most 8 events and
+    /// 3 distinct price proofs (the proof of the Fail is that of the decision sample, counted as one more when it is not one of the closes').
+    fn account_forced_group(&mut self, group: &[QEvent], fail_sample: usize) {
+        let closes = group.iter().filter(|q| matches!(q.ev, JournalEvent::Close { .. })).count();
+        self.stats.forced_after_overshoot = self.stats.forced_after_overshoot.saturating_add(u32::try_from(closes.saturating_sub(1)).unwrap_or(u32::MAX));
+        let mut proofs: std::collections::BTreeSet<usize> = group.iter().filter_map(|q| q.proof).collect();
+        proofs.insert(fail_sample);
+        if group.len() + 2 > journal_types::MAX_EVENTS_PER_BATCH || proofs.len() > journal_types::MAX_PROOFS_PER_BATCH {
+            self.stats.unpostable = self.stats.unpostable.saturating_add(1);
+        }
     }
 }
 
@@ -536,6 +592,9 @@ fn would_open(pos: Option<&Pos>, it: &OrderIntent) -> bool {
         Some(p) => (p.p.qty.is_positive()) == (it.side == 0) || it.qty > p.p.qty.unsigned_abs(),
     }
 }
+
+/// One forced close: `(quick tally the close adds, market, quantity, price, mark sample)`.
+type ForcedClose = (i64, u16, u64, u64, usize);
 
 #[cfg(test)]
 mod unpriced_tests {

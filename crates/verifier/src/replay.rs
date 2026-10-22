@@ -777,9 +777,15 @@ impl<'a> Replay<'a> {
         };
         self.walk_advance(walk_to, prev_seq);
         self.max_time = self.max_time.max(time);
-        if self.quick_fail_due && !self.terminal && !matches!(ev, JournalEvent::Fail { .. } | JournalEvent::Meta { .. } | JournalEvent::Fee { kind: FeeKind::Commission, .. }) {
+        // decision 69 (F-16): after the overshoot the program takes the forced close-all of the remaining positions (`Close{Fail}`), then
+        // the Fail; anything else is the evaluator walking away from the Fail
+        let forced_close = matches!(ev, JournalEvent::Close { reason: CloseReason::Fail, .. });
+        if self.quick_fail_due && !self.terminal && !forced_close && !matches!(ev, JournalEvent::Fail { .. } | JournalEvent::Meta { .. } | JournalEvent::Fee { kind: FeeKind::Commission, .. }) {
             self.f.add_once(FindingClass::MissedFail, ctx, "a Fail{PhaseQuick} right after the closing slice", "another event", "the quick tally is above 0.028 S and the account was not failed");
             self.quick_fail_due = false;
+        }
+        if !matches!(ev, JournalEvent::Meta { .. }) {
+            self.settle_forced_closes(None, Some(time), false);
         }
         self.apply(ctx, &ev, &proof);
         self.last_time = self.last_time.max(time);
@@ -858,15 +864,23 @@ impl<'a> Replay<'a> {
         }
     }
 
-    /// The pending `Close{Fail}` events are justified by a `Fail{PhaseQuick}` of their own second; any others are findings.
-    fn settle_forced_closes(&mut self, fail_time: Option<i64>) {
+    /// The pending `Close{Fail}` events (no floor decision of their second supports them) are justified by a `Fail{PhaseQuick}` of
+    /// their own second. With `fail_time` (a Fail event at that second) the ones of that second are settled; with `upto` (the time of an
+    /// event that has just arrived) every pending close of an EARLIER second is a finding, and with `all` (the end of the log) every
+    /// one. They survive a `Meta`: the closes before the first one over the quick limit are posted in a batch of their own, the failing
+    /// batch (decision 69) follows.
+    pub(crate) fn settle_forced_closes(&mut self, fail_time: Option<i64>, upto: Option<i64>, all: bool) {
         let list = std::mem::take(&mut self.forced_pending);
         for (c, market) in list {
             if fail_time == Some(c.time) {
                 continue;
             }
+            if !all && upto.is_none_or(|u| c.time >= u) {
+                self.forced_pending.push((c, market));
+                continue;
+            }
             self.flagged_forced.insert(c.time);
-            self.f.add(FindingClass::ForcedCloseUnjustified, c, "a Fail decision of the samples of this second, or a quick-limit Fail right after", format!("Close{{Fail}} in market {market}"), "a forced close that no sample of this second calls for and no quick-limit Fail followed");
+            self.f.add(FindingClass::ForcedCloseUnjustified, c, "a Fail decision of the samples of this second, or a quick-limit Fail in the same second", format!("Close{{Fail}} in market {market}"), "a forced close that no sample of this second calls for and no quick-limit Fail followed");
         }
     }
 
@@ -1177,7 +1191,8 @@ impl<'a> Replay<'a> {
         }
         // D-F13/D-F09: forced closes of this second that a quick-limit Fail justifies are settled; the others were flagged
         let quick_fail = (reason == FailReason::PhaseQuick).then_some(ctx.time);
-        self.settle_forced_closes(quick_fail);
+        // a StaticFloor Fail is no quick-limit Fail: the pending forced closes of its own second (and earlier ones) have no justification
+        self.settle_forced_closes(quick_fail, if quick_fail.is_none() { Some(ctx.time.saturating_add(1)) } else { None }, false);
         if self.flagged_forced.contains(&ctx.time) {
             self.f.add(FindingClass::FalseFailMarks, ctx, "closes priced with the simultaneous samples of one decision", "forced closes that no decision of the archive supports", "the Fail rests on marks that are not simultaneous archive samples");
         }
@@ -1194,7 +1209,6 @@ impl<'a> Replay<'a> {
             self.f.add_once(FindingClass::MissedFail, ctx, "a Fail{PhaseQuick} right after the closing slice", "none before the batch ended", "the quick tally is above 0.028 S and the account was not failed");
             self.quick_fail_due = false;
         }
-        self.settle_forced_closes(None);
         if flat != self.is_flat() {
             self.f.add(FindingClass::StateMismatch, ctx, self.is_flat().to_string(), flat.to_string(), "Meta.flat disagrees with the replayed positions");
         }
@@ -1355,6 +1369,9 @@ impl<'a> Replay<'a> {
 
     pub fn finish(&mut self, as_of: bool) {
         self.walk_finish();
+        if !as_of {
+            self.settle_forced_closes(None, None, true);
+        }
         self.flush_fees();
         if self.in_batch_events > 0 && !as_of {
             let ctx = Ctx { seq: Some(self.last_seq), idx: None, time: self.last_time };

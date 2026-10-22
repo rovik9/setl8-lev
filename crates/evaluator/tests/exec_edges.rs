@@ -200,7 +200,7 @@ fn forced_close(others: usize) -> World {
 }
 
 #[test]
-fn a_manual_close_over_the_quick_limit_closes_every_other_position_first() {
+fn a_manual_close_over_the_quick_limit_closes_every_other_position_in_the_order_the_program_accepts() {
     for others in [2usize, 3] {
         let mut w = forced_close(others);
         assert!(matches!(w.ev.status(), Status::Failed(engine::FailReason::PhaseQuick)), "{others}: {:?}", w.ev.status());
@@ -208,14 +208,16 @@ fn a_manual_close_over_the_quick_limit_closes_every_other_position_first() {
         let bs = w.drain();
         let evs = events_of(&bs);
         let reasons: Vec<CloseReason> = evs.iter().filter_map(|e| if let JournalEvent::Close { reason, .. } = e { Some(*reason) } else { None }).collect();
-        let mut want = vec![CloseReason::Fail; others];
-        want.push(CloseReason::Manual);
+        // decision 69: the other positions that keep the tally at or below the limit first (one here: 1,499 of 2,800), then the slice
+        // (the first close over the limit), then the remaining positions as forced closes
+        let mut want = vec![CloseReason::Fail, CloseReason::Manual];
+        want.extend(vec![CloseReason::Fail; others - 1]);
         assert_eq!(reasons, want, "{others}");
+        assert_eq!(w.ev.stats().forced_after_overshoot, u32::try_from(others - 1).unwrap(), "{others}");
         assert!(matches!(evs.last(), Some(JournalEvent::Fail { reason: FailReason::PhaseQuick, .. }) | Some(JournalEvent::Meta { .. })));
-        // the credits of the others run 1,499 / 2,999 / 4,498 against the limit 2,800: the slices after the first overshoot are
-        // counted as unpostable, except the last one of the group
-        let want_unpostable = if others == 2 { 0 } else { 1 };
-        assert_eq!(w.ev.stats().unpostable, want_unpostable, "{others} others");
+        // the group (the slice, the forced closes and the Fail) fits one program batch: 0 unpostable
+        assert_eq!(w.ev.stats().unpostable, 0, "{others} others");
+        assert_valid(&w, &bs);
     }
 }
 
