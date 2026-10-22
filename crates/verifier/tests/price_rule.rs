@@ -158,3 +158,18 @@ fn a_triggered_limit_order_is_filled_at_the_trigger_sample_not_at_an_older_one()
     let m = mismatches(&b);
     assert!(m.iter().any(|x| x.contains("OLDER")), "{m:?}");
 }
+
+#[test]
+fn the_forced_closes_of_a_breach_are_priced_with_the_marks_of_the_decision_sample() {
+    // breach_then_recovery: tamper the Close{Breach} to the genuine sample one step before the breach sample (inside the 60 s window)
+    let honest = breach_then_recovery();
+    valid(&honest);
+    let mut b = honest.clone();
+    let ci = b.find(|e| matches!(e, E::Close { reason: journal_types::CloseReason::Breach, .. }));
+    let tb = if let E::Close { time, .. } = b.ev_mut(ci) { *time } else { unreachable!() };
+    let before = b.samples.iter().map(|s| s.ts_sec()).filter(|t| *t < tb).max().expect("an earlier sample");
+    assert!(tb - before <= 60, "inside the market window: {tb} {before}");
+    reprice_with(&mut b, ci, before, 0);
+    let m = mismatches(&b);
+    assert!(m.iter().any(|x| x.contains("OLDER")), "{m:?}\n{:#?}", verify_no_snapshot(&b).findings);
+}

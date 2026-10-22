@@ -835,16 +835,13 @@ impl<'a> Replay<'a> {
             }
         }
         let describe = |i: usize| self.arch.samples.get(i).map(|s| format!("record {i} (second {}, ts {} ns)", s.ts_sec(), s.ts_ns)).unwrap_or_else(|| format!("record {i}"));
-        let (older, newer) = match (self.arch.samples.get(got), self.arch.samples.get(want)) {
-            (Some(g), Some(w)) => (g.ts_ns < w.ts_ns || (g.ts_ns == w.ts_ns && got < want), g.ts_ns > w.ts_ns || (g.ts_ns == w.ts_ns && got > want)),
-            _ => (false, false),
-        };
-        let how = if older {
-            "an OLDER sample than the rule names"
-        } else if newer {
-            "a NEWER sample than the rule names"
-        } else {
-            "another sample than the rule names"
+        // the order of two records: by source timestamp, then by place in the stream (`got != want`, so never equal)
+        let how = match (self.arch.samples.get(got), self.arch.samples.get(want)) {
+            (Some(g), Some(w)) => match (g.ts_ns, got).cmp(&(w.ts_ns, want)) {
+                std::cmp::Ordering::Less => "an OLDER sample than the rule names",
+                _ => "a NEWER sample than the rule names",
+            },
+            _ => "another sample than the rule names",
         };
         self.f.add(FindingClass::PriceSampleMismatch, ctx, describe(want), describe(got), format!("the {what} in market {market} is priced with {how}"));
         false
@@ -954,8 +951,12 @@ impl<'a> Replay<'a> {
         }
         self.check_intent(ctx, intent, market, qty, time, IntentUse::Close { reason, position_side: side });
         let walked = self.walk_close(ctx, market, reason, intent, qty);
-        let market_order = matches!(reason, CloseReason::Manual | CloseReason::Flip) && (walked.is_none() && self.market_intent(intent, market).is_some());
-        let want = if market_order { self.market_sample(market, time) } else { walked };
+        // a Manual or Flip close is either the execution of a pending order (the walk named its trigger sample) or of a market/close
+        // intent (the newest sample at or before the second); the other reasons are priced by what the walk named
+        let want = match reason {
+            CloseReason::Manual | CloseReason::Flip => walked.or_else(|| self.market_intent(intent, market).and_then(|_| self.market_sample(market, time))),
+            _ => walked,
+        };
         if !self.check_sample(ctx, market, want, "close") && matches!(reason, CloseReason::Breach | CloseReason::Fail) {
             self.flagged_forced.insert(time);
         }
@@ -1162,7 +1163,7 @@ impl<'a> Replay<'a> {
         self.bump_epoch();
     }
 
-    fn on_fail(&mut self, ctx: Ctx, reason: FailReason, b_after: i64) {
+    pub(crate) fn on_fail(&mut self, ctx: Ctx, reason: FailReason, b_after: i64) {
         let _ = self.walk_floor(ctx, FloorKind::Fail(reason), [0, 0, 0, 0, 0], true);
         if b_after != self.st.b {
             self.f.add(FindingClass::FloorMismatch, ctx, self.st.b.to_string(), b_after.to_string(), "Fail.b_after is not the closed balance");

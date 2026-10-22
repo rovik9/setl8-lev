@@ -85,3 +85,26 @@ fn an_intent_executed_in_one_batch_cannot_be_used_by_a_later_one() {
     assert_eq!(r.verdict, Verdict::Mismatch);
     assert!(r.findings.iter().any(|f| f.class == C::ForgedTrade && f.message.contains("already executed by an earlier batch")), "{:#?}", r.findings);
 }
+
+#[test]
+fn a_pending_order_is_placed_before_it_fills_the_boundary_is_the_fill_second() {
+    // a limit buy placed at +5, filled at +60 (stage2.rs limit_case); the fill may not precede the signed time of its order
+    let spec = Spec::base();
+    let script = vec![
+        Script::Sample { market: 0, t: T_1400, mid: eur(10_800) },
+        Script::Order { t: T_1400 + 5, intent: order(IntentKind::Limit, 0, 0, 200_000_000_000, eur(10_795), 0, 0, 0, T_1400 + 5) },
+        Script::Sample { market: 0, t: T_1400 + 30, mid: eur(10_798) },
+        Script::Sample { market: 0, t: T_1400 + 60, mid: eur(10_790) },
+        Script::Sample { market: 0, t: T_1400 + 90, mid: eur(10_810) },
+        Script::Heartbeat { t: T_1400 + 90 },
+    ];
+    let honest = Gen::new(spec).run(&script);
+    let dated_after = |t: i64| -> bool {
+        let mut b = honest.clone();
+        resign_time(&mut b, 0, 1, t);
+        verify_no_snapshot(&b).findings.iter().any(|f| f.class == C::ForgedTrade && f.message.contains("dated after the trade"))
+    };
+    assert!(!dated_after(T_1400 + 5), "the honest placement");
+    assert!(!dated_after(T_1400 + 60), "signed in the fill's own second: not after the trade");
+    assert!(dated_after(T_1400 + 61), "signed one second after the fill");
+}

@@ -282,6 +282,9 @@ fn v_14_an_account_abandoned_line_is_understood() {
     b.push_raw(&format!("\"type\":\"account_abandoned\",\"trader\":\"{trader}\",\"time\":{t}"));
     let r = verify_no_snapshot(&b);
     assert!(!r.classes().contains(&C::UnknownEvent), "{:?}", r.findings);
+    // P25b (F-24): the line ends the account (it is terminal in the replay), it is not just ignored
+    assert!(r.state.terminal, "{:?}", r.state);
+    assert!(!verify_no_snapshot(&design_4_9()).state.terminal);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -1138,6 +1138,33 @@ mod replay_tests {
     }
 
     #[test]
+    fn closes_that_only_a_quick_limit_fail_of_their_own_second_can_justify() {
+        use journal_types::FailReason;
+        // a Fail close of another position, then a Fail{PhaseQuick} of the SAME second: justified, no finding of the F-13/F-09 kind
+        with_replay(&[], |rp| {
+            put(rp, floor(99, FloorKind::Breach, [0; 5])); // creates the walker
+            assert_eq!(rp.walk_close(at(10), 0, CloseReason::Fail, 0, 0), None);
+            rp.on_fail(at(10), FailReason::PhaseQuick, rp.st.b);
+            assert!(!classes(rp).contains(&FindingClass::ForcedCloseUnjustified) && !classes(rp).contains(&FindingClass::FalseFailMarks), "{:?}", classes(rp));
+        });
+        // the Fail of ANOTHER second does not justify it
+        with_replay(&[], |rp| {
+            put(rp, floor(99, FloorKind::Breach, [0; 5]));
+            assert_eq!(rp.walk_close(at(10), 0, CloseReason::Fail, 0, 0), None);
+            rp.on_fail(at(11), FailReason::PhaseQuick, rp.st.b);
+            assert!(classes(rp).contains(&FindingClass::ForcedCloseUnjustified), "{:?}", classes(rp));
+        });
+        // a StaticFloor Fail is not a quick-limit Fail: the close stays unjustified and the Fail rests on it
+        with_replay(&[], |rp| {
+            put(rp, floor(99, FloorKind::Breach, [0; 5]));
+            assert_eq!(rp.walk_close(at(10), 0, CloseReason::Fail, 0, 0), None);
+            rp.on_fail(at(10), FailReason::StaticFloor, rp.st.b);
+            assert!(classes(rp).contains(&FindingClass::ForcedCloseUnjustified), "{:?}", classes(rp));
+            assert!(classes(rp).contains(&FindingClass::FalseFailMarks), "{:?}", classes(rp));
+        });
+    }
+
+    #[test]
     fn a_floor_event_consumes_exactly_the_matching_decision_and_compares_its_numbers() {
         with_replay(&[], |rp| {
             let ts = [1, 2, 3, 4, 5];
@@ -1320,6 +1347,53 @@ mod margin_tests {
         let mut v: Vec<u32> = w.refused.iter().map(|r| r.2).collect();
         v.sort_unstable();
         v
+    }
+
+    /// The floor expectations of second T0 for a tight-mode account holding 1,000,000 EUR long at 1.0, S = $100,000 (static floor 92,000,
+    /// tight floor L = 96,000), given the mids of the samples of that second (all stamped T0, in this order).
+    type Expectations = (Vec<(FloorKind, usize)>, Vec<(u16, usize)>);
+
+    fn floor_expectations(mids: &[u64]) -> Expectations {
+        let samples: Vec<Sample> = mids.iter().map(|m| smp(0, *m)).collect();
+        let mut out = (vec![], vec![]);
+        with(0, &samples, |rp| {
+            rp.positions.insert(0, long(1_000_000, ONE, 120));
+            rp.st.tight_on = true;
+            rp.st.r = rp.st.b;
+            rp.st.g_peak = 0;
+            rp.st.l_start = 96_000_000_000;
+            rp.st.l_level = 96_000_000_000;
+            rp.walk = Some(Walker::new(vec![], vec![], vec![]));
+            rp.walk_advance(T0, 0);
+            let w = rp.walk.as_ref().unwrap();
+            out.0 = w.exp.iter().filter_map(|e| if let ExpKind::Floor(k, _) = &e.kind { Some((*k, e.sample)) } else { None }).collect();
+            out.1 = w.floor_marks.get(&T0).cloned().unwrap_or_default();
+        });
+        out
+    }
+
+    #[test]
+    fn a_static_fail_sample_wins_over_a_breach_sample_of_the_same_second_in_either_order() {
+        // 0.995 is breach-shaped (E about 95,000, between the floors), 0.990 is at or under the static floor (E about 90,000)
+        let breach = ONE / 1000 * 995;
+        let fail = ONE / 1000 * 990;
+        let fail_kind = FloorKind::Fail(FailReason::StaticFloor);
+        // control: the breach alone is expected as a Breach, with the marks of its own sample
+        let (exp, marks) = floor_expectations(&[breach]);
+        assert_eq!(exp, vec![(FloorKind::Breach, 0)]);
+        assert_eq!(marks, vec![(0, 0)]);
+        // the fail alone
+        let (exp, marks) = floor_expectations(&[fail]);
+        assert_eq!(exp, vec![(fail_kind, 0)]);
+        assert_eq!(marks, vec![(0, 0)]);
+        // breach first, fail second: only the Fail is expected, priced with the FAIL sample's marks (record 1)
+        let (exp, marks) = floor_expectations(&[breach, fail]);
+        assert_eq!(exp, vec![(fail_kind, 1)]);
+        assert_eq!(marks, vec![(0, 1)]);
+        // fail first, breach second: the Breach is not even added, and the marks stay those of the fail (record 0)
+        let (exp, marks) = floor_expectations(&[fail, breach]);
+        assert_eq!(exp, vec![(fail_kind, 0)]);
+        assert_eq!(marks, vec![(0, 0)]);
     }
 
     #[test]
