@@ -934,7 +934,8 @@ fn cases() -> Vec<Case> {
                 t.set_meta_time(0, m);
                 t.fix();
             },
-            expect: Verifier(&[F::PriceSampleMismatch]),
+            // the fill is dated 60 s after the trade the signed intent describes: the intent window (5 s) is broken too (P25b, F-14)
+            expect: Verifier(&[F::ForgedTrade, F::PriceSampleMismatch]),
             after: None,
         },
         Case {
@@ -952,7 +953,8 @@ fn cases() -> Vec<Case> {
                 t.set_meta_time(0, m);
                 t.fix();
             },
-            expect: Both(Setl8Error::ProofTooOld, &[F::ProofAge]),
+            // P25b (F-14): the fill is also dated 61 s after the trade its signed intent describes
+            expect: Both(Setl8Error::ProofTooOld, &[F::ProofAge, F::ForgedTrade]),
             after: None,
         },
         // ============================================================ 4. mass-fails accounts
