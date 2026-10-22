@@ -10,7 +10,7 @@ Task: handover/prompts/P23-devnet-rehearsal.md. Offline: `export RUSTUP_TOOLCHAI
 * the devnet run itself: STOPPED at the faucet (every request rate limited, 0 SOL on all keys).
 
 ## NEXT
-* the devnet part needs SOL: `scripts/devnet-rehearsal.sh --cluster devnet needs` prints the amounts (the upgrade authority needs about 15.9 SOL for the two deployments, 17.4 SOL in all). The public faucet refused the first request (rate limited): Rovik funds the PUBLIC keys that `needs` prints, in the browser (https://faucet.solana.com).
+* the devnet part needs SOL: `scripts/devnet-rehearsal.sh --cluster devnet needs` prints the amounts (devnet: the upgrade authority needs 11.59 SOL for the two deployments, 13.07 SOL in all; the local validator's higher rent gives 17.3). The public faucet refused the first request (rate limited): Rovik funds the PUBLIC keys that `needs` prints, in the browser (https://faucet.solana.com).
 * then, in this order:
   1. `scripts/devnet-rehearsal.sh --cluster devnet build`            (idempotent; rebuilds the scratch trees)
   2. `scripts/devnet-rehearsal.sh --cluster devnet fund`             (retries the faucet; `needs` shows what is missing)
