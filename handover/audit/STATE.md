@@ -9,8 +9,12 @@ Task: handover/prompts/P27-runtime-compute-budget.md (decision 71). Offline: `ex
   * campaigns: `engine_only` (engine-only, 10,000 and 100,000 paths) asserts limit >= cu, limit <= 1,400,000, size <= 1,232 (with and without a priority fee), `Stats::unpostable == 0`, prints the largest limit and size; new story `CommissionFail` (three closes, three fees, Fail, Meta: 8 events) and coverage `fail8_commission` (floor 100 per 10,000); the LiteSVM harness sends the limit instruction and the lookup-table form.
 * the measured fact: LiteSVM 0.7.0 (Agave 2.3.13) under-counts every `emit_cpi!` event by 6,000 CU inside the inner invocation (6,539 against 12,539); it cannot be configured away (handover/cu-runtime.md "Why LiteSVM differs").
 
-## NEXT (in this order)
-* step 4: tests-rs/tests/budget_runtime.rs (written; fill `CEILINGS` with `BUDGET_RUNTIME_CALIBRATE=1`).
-* step 5: docs: backend-compute-contract.md (new), deploy-checklist, module-11, DESIGN, AUDIT_REPORT part 5, design-decisions 71.
-* step 6: D-03 note in verifier-formats.md (written).
-* step 7: gates with timings, clippy, program diff, mutation (cargo-mutants --in-diff on compute.rs and callers).
+* step 4: `tests-rs/tests/budget_runtime.rs` (5 tests, no validator) + `handover/backend-compute-contract.md`.
+* step 5: DESIGN section 11, deploy checklist, module-10/11, devnet-rehearsal D-01/D-02 marked resolved, AUDIT_REPORT part 5, decision 71.
+* step 6: D-03 note in verifier-formats.md section 11 (verifier stays strict).
+* step 7 gates (all green): build-test-so.sh prints 43fdd935...; test-engine.sh 283 s; tests-rs full 458 s (830 passed, 5 ignored); DIFF_PATHS=10000 453 s; ENGINE_PATHS=100000 174 s (unpostable 0, largest limit 270,000, largest transaction 1,229 bytes with limit and price, 98 lookup-table batches, fail8_commission 1,406 against 1,000); golden check.py; clippy -D warnings clean for evaluator, tests-rs, tools/devnet-rehearsal; the tool's 42 unit tests; `git diff ded93b7 HEAD -- programs Cargo.lock Cargo.toml rust-toolchain.toml Anchor.toml` empty.
+* mutation (`cargo mutants -p setl8-lev-evaluator --in-diff <57c2804..HEAD of crates/evaluator/src>`): run 1 164 mutants (127 caught, 12 timeouts from proptest shrinking, 18 unviable, 7 missed); tests and one simplification added; last full run 150 mutants: 128 caught, 18 unviable, 4 missed; one more fixed (slide pinned to 5%). SURVIVORS (3), argued: `compute.rs` `cell_of` `e < MAX_EVENTS` and `p < MAX_PROOFS` with `<=` (the cell one past the table is computed from the same measured set, so the hole it fills gets the same value: equivalent); `testkit.rs` `commission_fail` `/ n` with `* n` (the generator's slide step is 9x larger, the account still fails at the same floor crossing and every observable the tests pin is the same: generator tuning, not product logic).
+
+## OPEN FOR ROVIK
+* Confirm that the backend may keep an address lookup table (decision 71): without it the quick-limit groups of three or more closes in three source-3 markets cannot be sent.
+* Devnet part of P23 still waits for SOL; re-measure on devnet and mainnet-beta before launch.
