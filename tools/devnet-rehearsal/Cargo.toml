@@ -1,0 +1,34 @@
+[package]
+name = "devnet-rehearsal"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Test scaffolding: drives setl8-lev-trading and the real core vault end to end on a real cluster (devnet, or a local validator for the selftest) with the reference evaluator, and replays the chain's own events through the public verifier."
+
+# Standalone workspace with its own Cargo.lock (seeded from tests-rs's), not a member of the root workspace.
+[workspace]
+
+[dependencies]
+# The program crate is used only to build instructions and decode accounts and events (the program under test is the deployed .so).
+setl8-lev-trading = { path = "../../programs/setl8-lev-trading", features = ["no-entrypoint", "localnet"] }
+setl8-shared-interfaces = { git = "https://github.com/rovik9/setl8-turbo", rev = "3b0580c47979387e03f11c280d93a5870c66cd3e" }
+anchor-lang = "0.32.1"
+anchor-spl = { version = "0.32.1", default-features = false, features = ["token"] }
+setl8-lev-engine = { path = "../../crates/engine" }
+setl8-lev-journal-types = { path = "../../crates/journal-types" }
+setl8-lev-evaluator = { path = "../../crates/evaluator" }
+setl8-lev-verifier = { path = "../../crates/verifier" }
+ed25519-dalek = "1"
+sha2 = "0.10"
+serde_json = "1"
+bincode = "1"
+base64 = "0.21"
+bs58 = "0.5"
+ureq = { version = "2.12", default-features = false, features = ["tls", "json"] }
+solana-keypair = "2"
+solana-signer = "2"
+solana-transaction = { version = "2", features = ["bincode", "serde"] }
+solana-hash = "2"
+solana-message = "2"
+solana-pubkey = "2"
+serde = { version = "1", features = ["derive"] }

@@ -1,15 +1,22 @@
-# P26 state (resume file)
+# P23 state (resume file): the devnet rehearsal
 
-Task: handover/prompts/P26-F16-forced-close-after-overshoot.md (decision 69). Offline: export RUSTUP_TOOLCHAIN=stable.
-* step 1 DONE (RED on purpose; green since step 2): tests-rs/tests/quick_overshoot_closes.rs (15), arith_03 and e_03 un-ignored and adapted
-* step 2 DONE (program change 9864bac; docs partly: DESIGN I-8, 4.7; the rest of the docs go with step 6/5 — see NEXT). Was: program change (post_journal.rs apply_event: the I-8 check lets Close{reason Fail} through in report_fail mode), then DESIGN 4.4 I-8, 4.7, module notes, trust-matrix row, AUDIT_REPORT part 4, decision 69
-* then step 3 evaluator (greedy prefix, crossing close, forced closes after it with reason Fail, one unit for crossing+rest+Fail, unpostable = group > 8 events or > 3 proofs) + campaign story MultiQuick (floor >= 100) + verifier (accept Close{Fail} after overshoot, flag the dishonest variants)
-* step 4 mutation, step 5 gates, step 6 freeze note
-* FACTS: batch caps (8 events, 3 distinct proofs) stay: the failing batch can hold at most 6 closes (events) and closes in at most 3 markets (proofs) from the crossing close on; closes BEFORE the crossing go in earlier post_journal batches
-* step 3 DONE: evaluator (close_checked/force_close_all/forced groups, Stats::forced_after_overshoot), verifier (pending Close{Fail} settled by a same-second PhaseQuick Fail, survive Meta), Scenario::MultiQuick (r 600..=619, floor forced_after_overshoot 100 per 10,000 paths in M9cCover::floors), crates/evaluator/tests/multi_quick.rs (VALID + 3 dishonest variants)
-* NEXT: module notes + trust-matrix BOTH row + decision 69 + AUDIT_REPORT part 4 + deploy-checklist duty text (docs commit, still step 2's list), step 4 mutation, step 5 gates (build-test-so.sh, anchor-build-checked.sh, test-engine.sh, tests-rs, DIFF 10000, ENGINE 100000, golden, clippy, budget), step 6 freeze note
-* step 4 DONE: program mutants (post_journal.rs apply_event, 4 listed + 4 hand-made) 8/8 killed (handover/audit/mutation-results-p26.jsonl); cargo-mutants --in-diff on evaluator/verifier: 66 mutants, 3 unviable, 13 missed -> tests added (breach crossing, unpostable 3 vs 4 markets, MultiQuick market pins, Meta of a later second) -> remaining 4 argued equivalent (exec.rs account_forced_group event bound, implied by the proof bound: 3 mutants; testkit shape_markets n draw: 1)
-* NEXT: step 5 gates (build-test-so.sh, anchor-build-checked.sh, test-engine.sh, tests-rs, DIFF 10000, ENGINE 100000, golden, clippy, budget), AUDIT_REPORT part 4 with numbers, step 6 freeze note
-* step 5 DONE: gates green (build-test-so, anchor default, test-engine 1,491/0/6, tests-rs 825/0/5, DIFF 10,000, ENGINE 100,000, golden, clippy, budget); MultiQuick range narrowed to r 600..=619 (659 broke the sl/tp floors); AUDIT_REPORT part 4 written
-* NEXT: step 6 freeze note in handover/deploy-checklist.md
-* step 6 DONE: freeze note in handover/deploy-checklist.md. P26 complete.
+Task: handover/prompts/P23-devnet-rehearsal.md. Offline: `export RUSTUP_TOOLCHAIN=stable`. Everything below is PUBLIC data; keys live in ~/.setl8-devnet-lev (outside the repo, mode 700).
+
+## DONE
+* step 1: tools/devnet-rehearsal (the driver, own Cargo.lock, 39 unit tests, clippy -D warnings clean) + scripts/devnet-rehearsal.sh (keys, build, needs, fund, deploy, run, status, all, selftest). The two programs build in scratch trees under ~/.setl8-devnet-lev (throwaway program ids AND throwaway admin keys; the scratch build WITHOUT the swaps reproduces the freeze note's localnet sha256 43fdd935...).
+* the offline selftest (`scripts/devnet-rehearsal.sh selftest ...`, a local solana-test-validator, Agave 4.0.2, a scratch program build whose MINIMUM pass delay is 60 s so the day-2 part runs in minutes): S0, S1, S2 (day 1 and day 2), S3, S5 PASS; S4 FAIL = the findings below.
+
+## NEXT
+* the devnet part needs SOL: `scripts/devnet-rehearsal.sh --cluster devnet needs` prints the amounts (the upgrade authority needs about 15.9 SOL for the two deployments, 17.4 SOL in all). The public faucet refused the first request (rate limited): Rovik funds the PUBLIC keys that `needs` prints, in the browser (https://faucet.solana.com).
+* then, in this order:
+  1. `scripts/devnet-rehearsal.sh --cluster devnet build`            (idempotent; rebuilds the scratch trees)
+  2. `scripts/devnet-rehearsal.sh --cluster devnet fund`             (retries the faucet; `needs` shows what is missing)
+  3. `scripts/devnet-rehearsal.sh --cluster devnet deploy`
+  4. `scripts/devnet-rehearsal.sh --cluster devnet run`              (day 1: S0..S5)
+  5. one day later (the pass delay is 86,400 s; the printed unix second says when): the SAME command `scripts/devnet-rehearsal.sh --cluster devnet run` (resume: finalize_pass, phase 3, the third reset, the 12 h lock of F1; S4 and S5 are redone)
+* state.json: ~/.setl8-devnet-lev/work-devnet/state.json (resumable, no secrets); results.md and measure.md next to it.
+
+## FINDINGS so far (selftest on a local validator, to be confirmed on devnet)
+* D-01 (high): every `emit_cpi!` event costs about 17,300 CU on this runtime (12,539 inside the self-invocation); LiteSVM costs 10-12k. A legal `report_fail` of 8 events and 3 proofs fails with ComputationalBudgetExceeded (signature in state.json, label "report_fail ev=8 pr=3 heavy H1"); 7 events use 196,812 CU, 6 use 179,548, 5 use 162,284. A legal `post_journal` of 8 events and 3 proofs uses 186,144 CU. The evaluator's `cu_estimate` and the budget.rs ceilings were fitted on LiteSVM.
+* D-02 (medium): seven instructions with one event cost more than their budget.rs ceilings (confirm_pass, create_market, create_ruleset, hold_account, unban_wallet, veto_pass, and request_advance is within 3%); all far below 200,000.
+* D-03 (low): the verifier does not know the mock proof source 255: an account traded with mock proofs is never VALID (ProofShape); the rehearsal trades its verification-grade accounts with the markets' real source format (2) on the localnet build.
