@@ -144,3 +144,11 @@ Survivor: "report_fail: flat not set" removes `acct.flat = 1;`. It is equivalent
 - **Evaluator operations**: key custody and rotation (`set_evaluator`, both admins); the sample archive and the watchdog (M9) running before any pass can be confirmed; the vault keeper running `reconcile_product` before each heartbeat (the payout tally must equal the vault's books).
 - **Rent and fees**: the evaluator and the payer accounts funded with SOL (each `finalize_pass` payer pays one `PayoutClaim` rent).
 - **Policy items still open**: what admins do after a veto (OPEN_QUESTIONS #8), the hedging thresholds of 2.9 (#7), the reset price after a wrongful fail (#9).
+
+## After the audit: P25c (decision 67 amendment, audit F-32)
+* `report_fail` on a HELD account fails it exactly as before but keeps the hold (`pass_common::end_account_keep_hold`): Failed + held, `held_count` unchanged, the wallet slot freed. `end_account` (every other path) still clears a hold.
+* `reset_account` and `close_account` refuse a Failed + held account with `ReviewPending` (6110). `reset_account` checks it after `ViolationNoReset` and before any CPI.
+* `release_hold` needed no code change (it never checked the status): on a Failed + held account it makes an ordinary resettable failure.
+* `fail_for_violation` accepts Active + held (unchanged) and Failed + held: marker 3, wallet banned, hold cleared (`held_count - 1`), `terminal_at` kept, NO second `active_count - 1` and NO vault call (the vault record is already Failed; the vault answers a second `flag_trader_failed` with 6005). Account lists of all these instructions are unchanged.
+* Tests: `held_fail_review.rs` (13), state-machine column FH, two who-may-call rows, `auth07_*` un-ignored, fuzz invariants T-3c / P-violation / P-reset updated.
+

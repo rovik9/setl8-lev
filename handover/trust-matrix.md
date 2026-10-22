@@ -158,5 +158,15 @@ Two more limits follow from the table without being separate rows: a verifier th
 ## P25a changes (decision 67, handover/AUDIT_REPORT.md "Changes after the audit")
 * No row moved class and no row was added. The "finalize_pass before the delay has elapsed" row is unchanged; the delay itself is now limited to 1 to 6 days by the program (`InvalidLimits`), so the vault's 7-day idle limit cannot swallow a confirmed pass if the evaluator refreshes the activity during the delay (the evaluator's duty, deploy checklist).
 * The admin and cancel events (`EvaluatorChanged`, `LimitsChanged`, `PausedChanged`, `RuleSetCreated`, `MarketCreated`, `MarketUpdated`, `MarketFeedChanged`, `WalletBanned`, `WalletUnbanned`, `PassCancelled`) are CPI events now, the same delivery as the journal events. Who can see them changed from "anyone who reads the transaction log text" to "anyone who reads inner instructions"; the verifier still does not model them (F-19, F-24 stay open).
-* F-32 stays as it is: a held account can still take Fee and losing Close events, and `report_fail` on it clears the hold.
+* F-32 is FIXED by P25c (see below).
+
+## P25c additions (decision 67 amendment, audit F-32): an account failed while held
+A held account is not frozen for losses (`Fee` and `Close` events still post), so the evaluator's `report_fail` stays allowed on it; the account then stays Failed + held until both admins decide. Two new rows (the rest of the matrix is unchanged); each has a named test in `tests-rs/tests/held_fail_review.rs`:
+
+| class | who | caught by | note |
+|---|---|---|---|
+| reset: a trader resets an account that was failed while held (hedge farming: pay the reset price and carry on before the review) | Program | ReviewPending (6110) | `reset_of_a_failed_account_that_is_still_held_is_refused_with_review_pending`. Before any CPI, bytes untouched; permanent until both admins `release_hold` (then an ordinary reset) or `fail_for_violation` (then ViolationNoReset, 6108, for ever). The evaluator cannot make the review disappear by failing the account: `report_fail` keeps the hold. |
+| close: a trader closes a Failed + held account to erase the evidence and leave the wallet's `held_count` above zero | Program | ReviewPending (6110) | `close_account_refuses_a_failed_held_account_until_the_hold_is_resolved`. Without this a closed Failed + held account would block `ban_wallet` for the wallet for good (`WalletHasHeldAccount`). |
+
+Unchanged: a Failed + held account cannot post any journal event (`AccountNotActive`), so its balance cannot move any more; only the two admins can resolve it (`release_hold`, `fail_for_violation`), both-admin instructions in the who-may-call matrix. A stolen evaluator key can still `hold_account` anyone (a pause, DESIGN 4.7), and with this change can also leave a held account Failed + held by failing it at its real floor; that is a delay for the trader until both admins release, not a loss beyond the failure the key could already cause.
 
