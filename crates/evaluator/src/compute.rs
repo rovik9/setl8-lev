@@ -83,28 +83,29 @@ pub type Table = [[u64; MAX_PROOFS + 1]; MAX_EVENTS + 1];
 
 /// The tables the measurements imply: entry (e, p) is the maximum over every measured shape of that kind with at most e events and
 /// at most p proofs; an entry no measurement is below (a shape the format cannot have, such as a failing batch of one event) takes the
-/// value of the next larger entry, so the table never has a hole that asks for less.
+/// smaller non-zero value of the next larger entries (one more event, one more proof), so the table never has a hole that asks for less.
 pub fn fit(measured: &[Measured]) -> (Table, Table) {
-    let mut out = [[[0u64; MAX_PROOFS + 1]; MAX_EVENTS + 1]; 2];
-    for (k, t) in out.iter_mut().enumerate() {
-        let post = k == 0;
-        for e in 0..=MAX_EVENTS {
-            for p in 0..=MAX_PROOFS {
-                t[e][p] = measured.iter().filter(|m| m.post == post && m.events <= e && m.proofs <= p).map(|m| m.max_cu).max().unwrap_or(0);
-            }
-        }
-        // holes (nothing measured at or below): the smaller non-zero neighbour above or to the right, from the top down
-        for e in (0..=MAX_EVENTS).rev() {
-            for p in (0..=MAX_PROOFS).rev() {
-                if t[e][p] == 0 {
-                    let up = if e < MAX_EVENTS { t[e + 1][p] } else { 0 };
-                    let right = if p < MAX_PROOFS { t[e][p + 1] } else { 0 };
-                    t[e][p] = [up, right].into_iter().filter(|x| *x > 0).min().unwrap_or(0);
-                }
-            }
+    (table_of(measured, true), table_of(measured, false))
+}
+
+fn table_of(measured: &[Measured], post: bool) -> Table {
+    let mut t: Table = [[0; MAX_PROOFS + 1]; MAX_EVENTS + 1];
+    for (e, row) in t.iter_mut().enumerate() {
+        for (p, cell) in row.iter_mut().enumerate() {
+            *cell = cell_of(measured, post, e, p);
         }
     }
-    (out[0], out[1])
+    t
+}
+
+fn cell_of(measured: &[Measured], post: bool, e: usize, p: usize) -> u64 {
+    let raw = measured.iter().filter(|m| m.post == post && m.events <= e && m.proofs <= p).map(|m| m.max_cu).max().unwrap_or(0);
+    if raw > 0 {
+        return raw;
+    }
+    let up = if e < MAX_EVENTS { cell_of(measured, post, e + 1, p) } else { 0 };
+    let right = if p < MAX_PROOFS { cell_of(measured, post, e, p + 1) } else { 0 };
+    [up, right].into_iter().filter(|x| *x > 0).min().unwrap_or(0)
 }
 
 #[cfg(test)]
