@@ -470,7 +470,7 @@ fn generate_inner(seed: u64, wild: bool) -> PathSpec {
         820..=869 => Scenario::Cap,
         870..=899 => Scenario::Remainder,
         740..=759 => Scenario::Hold,
-        600..=659 => Scenario::MultiQuick,
+        600..=619 => Scenario::MultiQuick,
         700..=739 => Scenario::Unpriced,
         _ => Scenario::Noise,
     };
