@@ -222,6 +222,66 @@ fn a_manual_close_over_the_quick_limit_closes_every_other_position_in_the_order_
 }
 
 #[test]
+fn a_forced_close_posted_before_the_failing_batch_survives_a_meta_of_a_later_second() {
+    // the closes before the crossing one go in batches of their own; their `Meta` may carry a later second than the close (the evaluator
+    // posts when it drains): the verifier must not settle the pending forced close at that Meta, the `Fail` of the next batch justifies it
+    let mut w = forced_close(2);
+    let mut bs = w.ev.drain_batches(&evaluator::BatchPolicy::MAX.with_max_events(3));
+    let k = bs
+        .iter()
+        .position(|b| b.batch.events.iter().any(|e| matches!(e, JournalEvent::Close { reason: CloseReason::Fail, .. })) && !b.batch.events.iter().any(|e| matches!(e, JournalEvent::Fail { .. })))
+        .expect("a batch with the prefix close, before the failing one");
+    assert_valid(&w, &bs);
+    if let Some(JournalEvent::Meta { time, .. }) = bs[k].batch.events.last_mut() {
+        *time += 1;
+    }
+    let rep = verify(&w, &bs);
+    assert!(!rep.classes().contains(&setl8_verify::FindingClass::ForcedCloseUnjustified), "{}", describe(&rep));
+}
+
+#[test]
+fn a_crossing_group_that_needs_more_than_three_proofs_is_counted_as_unpostable() {
+    // n positions of 1 M EUR, each +0.6% in 20 s (a $2,999 quick credit, over 0.028 S alone, so none fits under the limit first): the manual
+    // close of the last one crosses, the other n - 1 follow it, all in the same batch with the Fail. One proof per market: three fit, four do not.
+    for (n, unpostable) in [(3usize, 0u32), (4, 1)] {
+        let mut w = quick_profit_world(n, &vec![MEUR; n]);
+        for m in 0..n as u16 {
+            w.sample(m, T_1400 + 20, p4(10_060));
+        }
+        w.ev.tick(T_1400 + 21);
+        w.order(close_order(n as u16 - 1, 0, T_1400 + 21)).unwrap();
+        w.ev.tick(T_1400 + 22);
+        assert!(matches!(w.ev.status(), Status::Failed(engine::FailReason::PhaseQuick)), "{n}");
+        assert_eq!(w.ev.stats().forced_after_overshoot, n as u32 - 1, "{n}");
+        assert_eq!(w.ev.stats().unpostable, unpostable, "{n} markets");
+    }
+}
+
+#[test]
+fn a_breach_whose_closes_cross_the_quick_limit_closes_the_rest_as_forced_closes() {
+    // two 1 M EUR longs, both +10.7% in 20 s (tight mode), back to +5.7% (the equity touches the tight floor: a breach): each close alone
+    // is credited $2,850 > $2,800, so the first close of the breach crosses the limit and the other position follows it as a forced close
+    let mut w = quick_profit_world(2, &[MEUR, MEUR]);
+    for m in 0..2u16 {
+        w.sample(m, T_1400 + 20, p4(11_070));
+    }
+    w.ev.tick(T_1400 + 21);
+    for m in 0..2u16 {
+        w.sample(m, T_1400 + 40, p4(10_570));
+    }
+    w.ev.tick(T_1400 + 45);
+    assert!(matches!(w.ev.status(), Status::Failed(engine::FailReason::PhaseQuick)), "{:?}", w.ev.status());
+    assert!(w.ev.positions().is_empty());
+    let bs = w.drain();
+    let evs = events_of(&bs);
+    let reasons: Vec<CloseReason> = evs.iter().filter_map(|e| if let JournalEvent::Close { reason, .. } = e { Some(*reason) } else { None }).collect();
+    assert_eq!(reasons, vec![CloseReason::Breach, CloseReason::Fail]);
+    assert_eq!(w.ev.stats().forced_after_overshoot, 1);
+    assert_eq!(w.ev.stats().unpostable, 0);
+    assert_valid(&w, &bs);
+}
+
+#[test]
 fn a_pass_request_waits_for_the_journal() {
     let mut w = world(0, 1_000_000_000_000_000, 1);
     w.sample(0, T_1400, p4(10_000));

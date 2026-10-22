@@ -187,3 +187,53 @@ fn an_extra_forced_close_after_the_account_is_flat_is_caught() {
     }
     assert!(caught >= 10, "{caught} caught");
 }
+
+#[test]
+fn a_forced_close_nothing_justifies_is_reported_when_an_event_of_a_later_second_arrives() {
+    // a relabelled first close, then a Fill of a later second with its price off by one unit: the finding of the close comes BEFORE the
+    // one of the fill (the close is settled by the first event of a later second, not at the end of the log)
+    let mut caught = 0;
+    for seed in seeds_of(Scenario::TightClean, 12) {
+        let (r, _) = run(seed);
+        let mut relabelled = false;
+        let Some(items) = mutated(&r.items, |e| match e {
+            JournalEvent::Close { reason, .. } if !relabelled && *reason != CloseReason::Fail => {
+                *reason = CloseReason::Fail;
+                relabelled = true;
+                false
+            }
+            JournalEvent::Fill { price_e12, .. } if relabelled => {
+                *price_e12 += 1;
+                true
+            }
+            _ => false,
+        }) else {
+            continue;
+        };
+        let rep = judge(&r, &items);
+        let order: Vec<C> = rep.findings.iter().map(|f| f.class).collect();
+        let forced = order.iter().position(|c| *c == C::ForcedCloseUnjustified).unwrap_or_else(|| panic!("seed {seed}: {order:?}"));
+        let later = order.iter().position(|c| *c == C::PriceMismatch).unwrap_or_else(|| panic!("seed {seed}: {order:?}"));
+        assert!(forced < later, "seed {seed}: {order:?}");
+        caught += 1;
+    }
+    assert!(caught >= 5, "{caught} caught");
+}
+
+#[test]
+fn the_story_trades_three_or_four_class_0_markets_with_distinct_prices_and_spreads() {
+    let mut sizes = std::collections::BTreeSet::new();
+    for seed in seeds_of(Scenario::MultiQuick, 60) {
+        let spec = generate(seed);
+        let ms = &spec.markets;
+        sizes.insert(ms.len());
+        assert!(ms.len() == 3 || ms.len() == 4, "seed {seed}");
+        for (i, m) in ms.iter().enumerate() {
+            assert_eq!((m.id, m.class), (i as u16, 0), "seed {seed}");
+            assert_eq!(m.symbol, format!("M{i}C0"), "seed {seed}");
+            assert_eq!(m.start_price, ms[0].start_price + i as u64 * 37_000_000_000, "seed {seed}");
+            assert_eq!(m.spread_e6, ms[0].spread_e6 + 7 * i as u32, "seed {seed}");
+        }
+    }
+    assert_eq!(sizes.into_iter().collect::<Vec<_>>(), vec![3, 4], "both sizes occur");
+}

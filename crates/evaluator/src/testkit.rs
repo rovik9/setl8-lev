@@ -760,6 +760,7 @@ fn shape_markets(markets: &mut Vec<MarketSpec>, scenario: Scenario, size: i64) {
         markets.truncate(1);
         let Some(m0) = markets.first_mut() else { return };
         m0.class = 0;
+        m0.symbol = symbol_of(0, 0);
         m0.sessions = FULL_WEEK.to_vec();
         m0.max_age_secs = 900;
         m0.start_price = 1_100_000_000_000;

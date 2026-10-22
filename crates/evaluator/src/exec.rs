@@ -578,6 +578,8 @@ impl Evaluator {
         self.stats.forced_after_overshoot = self.stats.forced_after_overshoot.saturating_add(u32::try_from(closes.saturating_sub(1)).unwrap_or(u32::MAX));
         let mut proofs: std::collections::BTreeSet<usize> = group.iter().filter_map(|q| q.proof).collect();
         proofs.insert(fail_sample);
+        // the event bound is implied by the proof bound while every close sits in its own market (one position per market, no fee after the
+        // overshoot): more than six closes are in more than three markets. It stays as the batch format's own limit.
         if group.len() + 2 > journal_types::MAX_EVENTS_PER_BATCH || proofs.len() > journal_types::MAX_PROOFS_PER_BATCH {
             self.stats.unpostable = self.stats.unpostable.saturating_add(1);
         }
