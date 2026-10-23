@@ -1,0 +1,41 @@
+You are writing the DESIGN (and only the design) of the NEWS SPREAD for setl8-lev-trading in THIS repo (branch main). Required state: 72a46de or later committed. THE PROGRAM IS FROZEN (localnet sha256 43fdd9356c774ea343686e5f6bf781b998a01670664c2af6b8233bf97f22bc1b, default ebbd0786d2d1a58a9ef11e539baed4c9057fc3eab59ed8e62a5506bcba6f2c3b). THIS PROMPT CHANGES NO CODE: nothing under programs/, crates/, tests-rs/, tools/ (not even uncommitted; if you want a prototype, copy the repo to a scratch directory under /private/tmp and delete it afterwards). You write documents only, then STOP for Rovik's approval; the implementation is a later prompt. No network. Do not touch ~/setl8-observer-run or tools/session-observer/data.
+Rules as always: no push/tag/git-config change; explicit-path commits after scripts/secret-scan-staged.sh; author env vars GIT_AUTHOR_NAME=Rovik GIT_AUTHOR_EMAIL=therovikdev@gmail.com GIT_COMMITTER_NAME=Rovik GIT_COMMITTER_EMAIL=therovikdev@gmail.com; commit messages end with: Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>; never read or print keys/keypairs/.env; --offline, RUSTUP_TOOLCHAIN=stable, --locked. ~/Documents/setl8-vault and ~/Documents/setl8-shared-interfaces are read-only. LIMIT DISCIPLINE: no parallel agent waves; keep handover/audit/STATE.md updated.
+
+READ FIRST: docs/DESIGN.md (2, 4.4 to 4.7, 10, 13, 14), the engine functions that price a Fill and a Close and compute marks (read only), programs/setl8-lev-trading/src (post_journal, report_fail, open/reset, the batch loop, state.rs layouts), handover/trust-matrix.md, handover/AUDIT_REPORT.md section 8, handover/cu-runtime.json, handover/backend-compute-contract.md, handover/verifier-formats.md, handover/design-decisions.md (decisions 14, 24, 64, 67 to 72).
+
+THE DECISION (Rovik, 2026-10-23; to be recorded as decision 73 once he approves the design)
+1. News spread = 10 x the market's normal half-spread (with the owner base of 100 e6 that is 1,000 e6 = 10 bp per side, 20 bp full spread: the "20 pips" he asked for first).
+2. News window = from 60 s before the news time T to 60 s after it, [T - 60 s, T + 60 s] in journal event seconds (state exactly which ends are inclusive, and say what happens at the boundary second).
+3. It applies to every execution priced inside the window: market Fills, Closes, triggered pending orders (priced at the trigger sample's second), breach closes and forced Fail closes. It does NOT stack: overlapping windows still give 10x, never 100x.
+
+DEFAULTS TO EVALUATE (for each: agree or disagree, with evidence from the code and numbers)
+D1. The calendar lives ON CHAIN and is published by the admins as emit_cpi events (so the hash chain and the public verifier see it). The evaluator can never declare "news" by itself; the program re-derives the spread from the calendar for every priced event, exactly like it re-checks the rest of the arithmetic.
+D2. Anti-retroactivity: a window can only be published with start >= now + NEWS_MIN_LEAD_SECS (default 3,600 s) and can be removed only before its start; duration of one window capped (default 900 s); the number of live and future windows capped; who may publish (propose from DESIGN 14: one admin or both, with the reason). A compromised admin must not be able to widen a spread on a fill that has already happened.
+D3. Granularity: a class bitmask (u8, 8 classes) per window versus a market bitmask versus one window per market; recommend one with the byte cost.
+D4. The multiplier 10 is a protocol constant in the program (no rule-set layout change), unless a layout change is needed anyway. Say how a future different multiplier would be rolled out.
+D5. MARKS: floor, breach and quick-limit computations keep the BASE spread; the news spread applies to executions only. First read how the engine computes marks and equity. If marks use the half-spread, STOP that part and write the options with numbers (at 50x leverage a 10 bp widening of the mark is 5 % of the account: a spread artifact alone could breach the floor), and give a recommendation.
+D6. WHERE the calendar is stored and how the instructions see it. Compare at least: (i) a fixed array inside the Config account (layout change), (ii) one NewsWindow PDA per window passed as extra accounts, (iii) one NewsCalendar PDA holding a fixed ring of N windows that post_journal and report_fail read. For each: account bytes and rent, extra accounts per instruction and the transaction bytes against 1,232 (with and without the address lookup table of decision 71), added CU (estimate from cu-runtime.json: say how), what happens if the evaluator passes a stale or wrong calendar account (it must fail loudly, never price silently with the wrong spread), and the layout/PDA derivation.
+
+THE DOCUMENT handover/news-spread-design.md MUST ANSWER, WITH NUMBERS
+1. Exactly which instructions change, which engine/program functions would change, and whether crates/engine can stay untouched (pass an adjusted half-spread into the pure engine function from the program layer). If the engine must change, say where and why.
+2. The new admin instructions or arguments, their account lists and error codes (next free after 6110), the new events and their layout, the invariant(s) added (next free I-number), and the new who-may-call rows.
+3. Evaluator changes (how it learns the calendar, how it prices, how it handles a fill during the window, a window appearing mid-batch) and verifier changes (log line types in handover/verifier-formats.md, a finding class for a wrong spread appended at the END of the list, trust-matrix rows with BOTH/PROGRAM/VERIFIER/NEITHER and the reason).
+4. Compute and transaction-size impact per instruction shape from cu-runtime.json and handover/backend-compute-contract.md: will any current worst case exceed its limit, the 1,400,000 cap or 1,232 bytes? Could any forced close-all become unpostable?
+5. Attacks and tests the audit must add: fake window to hurt one trader, window spam, evaluator omitting a window, window edge seconds, overlapping windows, window during a closed or unpriced market, publishing inside the lead time, removing a started window, replayed publish, a batch that straddles the window start and end, quick-trade interplay, same-second breach in a window. List the hand-written tests that come first.
+6. Everything that must be redone after the program changes: program build hashes (both builds), the freeze note, budget.rs and the runtime model (cu-runtime.json), the M12 audit (list which sections), mutation runs, golden vectors, the devnet rehearsal, the vault fixture (is it affected at all? say yes or no with the reason), and the order in which to do it. Say plainly that the independent human review must start AFTER this change.
+7. Backend duties, not code: who publishes windows, how far ahead, what the calendar source must satisfy (crypto-native, no KYC, no phone or face verification: name no vendor, only the requirements), what happens with unscheduled news (not covered: say so), and a monitoring alert for "a window starts in under N minutes and none is published".
+8. A short list of choices where the design could reasonably go either way and your recommendation for each.
+
+WORK
+1. Write handover/news-spread-design.md. Commit it (explicit path, secret scan).
+2. Add "73 (PROPOSED, awaiting Rovik)" to handover/design-decisions.md with the three decision lines above and a pointer to the design; update handover/audit/STATE.md. Commit.
+3. STOP. Do not implement. If anything in DESIGN contradicts the decision, say it in the report.
+
+REPORT BACK (paste this block, nothing longer):
+- the recommended design in at most 12 lines: where the calendar lives, who publishes, instructions and accounts changed, new error codes, invariant added
+- agree/disagree on D1 to D6, one line each with the key number
+- impact table: account bytes, tx bytes (with and without lookup table), CU per affected shape against limits; any shape that no longer fits
+- crates/engine untouched yes/no and why
+- the list of work after approval, in order, with what each step re-runs
+- STOP items or "none"; choices where the design could go either way (recommendation each)
+- `git log --oneline -6` and `git status --short`
