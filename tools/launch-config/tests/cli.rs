@@ -26,7 +26,7 @@ fn out(o: &Output) -> (i32, String, String) {
 fn verify_passes_on_the_committed_files() {
     let root = scratch("verify");
     let (code, so, se) = out(&run(&root, &["verify"]));
-    assert_eq!((code, so.trim(), se.as_str()), (0, "OK: 21 markets, 29 PENDING flags", ""));
+    assert_eq!((code, so.trim(), se.as_str()), (0, "OK: 21 markets, 21 PENDING flags", ""));
 }
 
 #[test]
@@ -35,7 +35,9 @@ fn production_verify_fails_while_pending_flags_remain() {
     let (code, so, se) = out(&run(&root, &["verify", "--production"]));
     assert_eq!(code, 1);
     assert_eq!(so, "");
-    assert!(se.contains("VIOLATION: 29 PENDING flags remain"), "{se}");
+    // decision 72 (P24a): the 21 market spreads are the ONLY thing that keeps production from passing; the commissions are final
+    assert!(se.contains("VIOLATION: 21 PENDING flags remain (21 market spreads, 0 class commissions)"), "{se}");
+    assert_eq!(se.lines().filter(|l| l.starts_with("VIOLATION")).count(), 1, "{se}");
 }
 
 #[test]
@@ -56,7 +58,7 @@ fn generate_is_idempotent_and_reproduces_the_committed_bytes() {
     std::fs::write(root.join("config/launch.md"), "stale").unwrap();
     let (code, so, _) = out(&run(&root, &["generate"]));
     assert_eq!(code, 0);
-    assert!(so.contains("21 markets, 29 PENDING flags"));
+    assert!(so.contains("21 markets, 21 PENDING flags"));
     assert_eq!(std::fs::read_to_string(root.join("config/launch.json")).unwrap(), json());
     assert_eq!(std::fs::read_to_string(root.join("config/launch.md")).unwrap(), md());
     // a second run changes nothing
@@ -73,7 +75,7 @@ fn verify_fails_on_a_hand_edited_output_or_input() {
     assert!(se.contains("config/launch.json differs"), "{se}");
     // an edit of the input that is not regenerated
     let root = scratch("tamper-input");
-    std::fs::write(root.join("config/launch-markets.toml"), toml().replacen("half_spread_e6 = 150", "half_spread_e6 = 151", 1)).unwrap();
+    std::fs::write(root.join("config/launch-markets.toml"), toml().replacen("half_spread_e6 = 50", "half_spread_e6 = 51", 1)).unwrap();
     let (code, _, se) = out(&run(&root, &["verify"]));
     assert_eq!(code, 1);
     assert!(se.contains("config/launch.json differs") && se.contains("config/launch.md differs"), "{se}");

@@ -133,7 +133,7 @@ Smaller points, all consistent with the design but worth the owner's eye:
 | `ENGINE_PATHS=100000` (release) | 100,000 paths (112,558 segments with the resets) green in 14.3 s on 10 threads; `verifier_invalid: 0`; no disagreement |
 | clippy `-D warnings` | clean: evaluator, verifier, program, tests-rs (all targets), tools/launch-config |
 | golden | `check.py` 0 mismatches in every file; the nine function files byte-identical; eight scenario files regenerated (fills at the ask and bid), `r1_zero_spread` is `r1_minimal_spread` |
-| `tools/launch-config` | 80 tests green; `launch-config verify`: OK, 21 markets, 29 PENDING flags |
+| `tools/launch-config` | 80 tests green; `launch-config verify`: OK, 21 markets, 29 PENDING flags (P24a, decision 72: 21 flags, the 8 commissions are final) |
 | budgets | `post_journal` 125,276 CU / 1,181 B (ceilings 144,100 / 1,232), `report_fail` 151,317 CU / 1,149 B (ceilings 174,000 / 1,232) |
 
 Coverage of the 10,000-path differential run (floors in brackets, 100 each at 10,000 paths unless noted): market margin exact 639; market margin refused 640 (150); pending notional refused 509; pending quantity refused 289; pending held refused 186; **unpriced attempt refused 378**. Of the 100,000-path run: 6,192; 6,196; 4,988; 2,961; 2,023; **3,941** (floors 1,000; 1,500).

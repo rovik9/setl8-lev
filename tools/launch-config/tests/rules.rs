@@ -268,10 +268,10 @@ fn the_rule_set_is_the_launch_rule_set() {
     assert_eq!(r.reset_ladder_bps, [10_000, 11_500, 12_000, 12_750, 13_000]);
     assert_eq!(r.tier_size, [2_500, 5_000, 10_000, 15_000, 20_000, 25_000, 50_000, 75_000, 100_000, 200_000].map(|x| x * 1_000_000));
     assert_eq!(r.tier_cost, [30, 55, 99, 145, 189, 235, 489, 689, 859, 1_599].map(|x| x * 1_000_000));
-    // commission per class (PENDING placeholders): metals 20, indices 20, energy 20, stocks 100, the rest 0
-    assert_eq!(r.commission_e6, [0, 0, 20, 20, 20, 100, 0, 0]);
-    // half-spreads by market id
-    assert_eq!(&r.spread_e6[..21], &[150, 200, 300, 100, 250, 250, 250, 100, 120, 200, 300, 300, 500, 300, 300, 300, 300, 500, 300, 500, 300]);
+    // commission per class (decision 72, the owner's fixed cost): 0.03 % of notional per side on every class
+    assert_eq!(r.commission_e6, [300; 8]);
+    // half-spreads by market id (decision 72: the owner's base, 1 bp FULL spread = 50 e6 per side, on every market)
+    assert_eq!(&r.spread_e6[..21], &[50; 21]);
     assert!(r.spread_e6[21..].iter().all(|s| *s == 0));
     assert_eq!(r.spread_e6.len(), MAX_MARKETS);
 }
@@ -396,26 +396,30 @@ fn parse_refuses_unknown_fields_and_a_wrong_format() {
 #[test]
 fn production_fails_while_a_pending_flag_remains_and_the_default_passes() {
     let i = base();
-    assert_eq!(emit::pending_flags(&i), 21 + 8, "one per market half-spread and one per class commission");
+    // decision 72: the commissions are final, only the 21 market half-spreads (oracle-noise floor check pending, P24b) are flagged
+    assert_eq!(emit::pending_flags(&i), 21, "one per market half-spread, none per class commission");
+    assert!(i.commission.iter().all(|c| !c.pending && c.e6 == 300));
+    assert!(i.market.iter().all(|m| m.spread_pending && m.half_spread_e6 == 50 && m.spread_note == "owner base 50 e6 set; oracle-noise floor check pending (P24b)"));
     assert!(all(&i, false).is_empty());
     let v = all(&i, true);
     assert_eq!(v.len(), 1);
-    assert!(v[0].contains("29 PENDING flags remain"), "{v:?}");
-    // clearing the flags of the markets alone is not enough
+    assert!(v[0].contains("21 PENDING flags remain (21 market spreads, 0 class commissions)"), "{v:?}");
+    // clearing the flags of the markets is enough now
     let mut j = base();
     j.market.iter_mut().for_each(|m| m.spread_pending = false);
-    assert!(has(&all(&j, true), "8 PENDING flags remain"));
-    // nor is clearing the commissions alone
-    let mut j = base();
-    j.commission.iter_mut().for_each(|c| c.pending = false);
-    assert!(has(&all(&j, true), "21 PENDING flags remain"));
+    assert!(all(&j, true).is_empty(), "no flag, production passes");
+    // a commission flag alone fails it, and is named as a commission
+    j.commission[2].pending = true;
+    assert!(has(&all(&j, true), "1 PENDING flags remain (0 market spreads, 1 class commissions)"));
+    // both kinds are counted apart
+    let mut k = base();
+    k.commission[2].pending = true;
+    assert!(has(&all(&k, true), "22 PENDING flags remain (21 market spreads, 1 class commissions)"));
     // one flag left on one market
     let mut j = base();
     j.market.iter_mut().for_each(|m| m.spread_pending = false);
-    j.commission.iter_mut().for_each(|c| c.pending = false);
-    assert!(all(&j, true).is_empty(), "no flag, production passes");
     j.market[20].spread_pending = true;
-    assert!(has(&all(&j, true), "1 PENDING flags remain"));
+    assert!(has(&all(&j, true), "1 PENDING flags remain (1 market spreads, 0 class commissions)"));
 }
 
 // ---- the committed files
@@ -483,7 +487,7 @@ fn launch_json_has_only_string_leaves_in_id_order_with_padded_sessions() {
 
 #[test]
 fn the_markdown_carries_the_numbers_the_report_needs() {
-    assert!(md().contains("**PENDING flags: 29**"));
+    assert!(md().contains("**PENDING flags: 21**"));
     assert!(md().contains("SPY and QQQ are the ETFs, not the indices"));
     assert!(md().contains("`NO_QUOTE_CONV`"));
     assert!(md().contains("| 9 | xyz:JP225 | JP225 (Nikkei 225) | 4 | 3 Indices | 40 |"));
@@ -565,10 +569,56 @@ fn a_launch_with_no_or_too_many_session_windows_is_refused() {
 #[test]
 fn the_commission_flag_is_printed_for_its_own_class_only() {
     let mut i = base();
-    i.commission[3].pending = false; // class 3, indices
+    i.commission[2].pending = true; // class 2, metals
     let md = emit::markdown(&i, &launch(&i));
-    assert!(md.contains("| 3 | Indices | 20 | 200 | 20 | - |"), "{md}");
-    assert!(md.contains("| 2 | Metals | 20 | 400 | 20 | PENDING |"));
-    assert!(md.contains("| 4 | Energy | 10 | 400 | 20 | PENDING |"));
-    assert!(md.contains("**PENDING flags: 28**"));
+    assert!(md.contains("| 2 | Metals | 20 | 400 | 300 | PENDING |"), "{md}");
+    assert!(md.contains("| 3 | Indices | 20 | 200 | 300 | - |"));
+    assert!(md.contains("| 4 | Energy | 10 | 400 | 300 | - |"));
+    assert!(md.contains("**PENDING flags: 22**"));
+}
+
+/// P24a (decision 72): the owner's costs are in launch.md in words and as a table, with the reading of "1 pip", the news-spread gap and the
+/// numbers the owner asked for.
+#[test]
+fn the_markdown_states_the_owner_costs_the_pip_reading_and_the_cost_table() {
+    let md = md();
+    assert!(md.contains("300 e6 of notional (0.03 %) on every class"), "commission sentence");
+    assert!(md.contains("the owner's base is 50 e6 (1.00 bp of price, full) on every market"), "spread sentence");
+    assert!(md.contains("\"1 pip on all markets\" as a FULL spread of 1 basis point of price (1 pip of EURUSD is about 0.93 bp), so half 0.50 bp per side"));
+    assert!(md.contains("if 1 pip per side or a per-class pip size was meant, it is one number per market to change"));
+    assert!(md.contains("half-spread = max(owner base, oracle-noise floor)"));
+    assert!(md.contains("News spread: not implemented, decision pending."));
+    assert!(md.contains("* BTC: owner base 50 e6 set; oracle-noise floor check pending (P24b)"));
+    // the cost table, class by class: leverage, round-trip commission, round-trip spread, trips to the 8 % floor, USD per 100,000 notional
+    for row in [
+        "| 0 | FX majors | 50 | 300 | 3.00 | 0.50 | 2.66 | 30.00 |",
+        "| 1 | FX minors | 20 | 300 | 1.20 | 0.20 | 6.66 | 30.00 |",
+        "| 2 | Metals | 20 | 300 | 1.20 | 0.20 | 6.66 | - |",
+        "| 3 | Indices | 20 | 300 | 1.20 | 0.20 | 6.66 | - |",
+        "| 4 | Energy | 10 | 300 | 0.60 | 0.10 | 13.33 | - |",
+        "| 5 | Stocks | 5 | 300 | 0.30 | 0.05 | 26.66 | - |",
+        "| 6 | Crypto majors | 5 | 300 | 0.30 | 0.05 | 26.66 | - |",
+        "| 7 | Crypto alts | 2 | 300 | 0.12 | 0.02 | 66.66 | - |",
+    ] {
+        assert!(md.contains(row), "{row}");
+    }
+    assert!(md.contains("Pepperstone Razor, $3.50 per standard lot (100,000) per side. Here: $30.00 per 100,000 of notional per side at 300 e6."));
+}
+
+/// The cost table follows the numbers: a different commission and spread give different rows (it is computed, not typed).
+#[test]
+fn the_cost_table_is_computed_from_the_rule_set() {
+    let mut i = base();
+    i.commission.iter_mut().for_each(|c| c.e6 = 100);
+    i.market.iter_mut().for_each(|m| m.half_spread_e6 = 100);
+    let l = launch(&i);
+    let t = emit::cost_table(&i, &l.ruleset);
+    assert!(t.contains("| 0 | FX majors | 50 | 100 | 1.00 | 1.00 | 8.00 | 10.00 |"), "{t}");
+    assert!(t.contains("| 7 | Crypto alts | 2 | 100 | 0.04 | 0.04 | 200.00 | - |"), "{t}");
+    // a class without a market takes the largest half-spread of the file
+    let mut j = base();
+    j.market.retain(|m| m.class != 1);
+    j.market[0].half_spread_e6 = 80;
+    let t = emit::cost_table(&j, &launch(&j).ruleset);
+    assert!(t.contains("| 1 | FX minors | 20 | 300 | 1.20 | 0.32 | 6.66 | 30.00 |"), "{t}");
 }
