@@ -153,6 +153,10 @@ pub enum Scenario {
     /// floor: the failing batch holds the three forced closes, their three commissions, the `Fail` and the `Meta` (8 events, 3 proofs),
     /// the heaviest legal `report_fail` the evaluator emits with fees.
     CommissionFail,
+    /// P24a (decision 72): the close-all stress stories of the event-count check, never drawn by `generate`: `n` positions in `n` markets
+    /// slide through the static floor (`CloseAllStatic`) or the second close crosses the quick limit (`CloseAllQuick`); see `close_all_story`.
+    CloseAllStatic,
+    CloseAllQuick,
 }
 
 /// A complete history.
@@ -444,6 +448,16 @@ pub fn leverage_of(class: u8) -> i64 {
     [50, 20, 20, 20, 10, 5, 5, 2].get(usize::from(class)).copied().unwrap_or(1)
 }
 
+/// P24a (decision 72): the owner's launch costs: 0.03 % commission per side on every class (300 e6) and the half-spread base of 50 e6.
+pub const LAUNCH_COMMISSION_E6: u32 = 300;
+pub const LAUNCH_HALF_SPREAD_E6: u32 = 50;
+
+/// Whether the campaigns run with the owner's launch costs on every path (`SETL8_LAUNCH_COSTS` set) instead of the random per-path costs.
+/// The `Edge` story (exact arithmetic, no commission by design) keeps its own numbers.
+pub fn launch_costs_requested() -> bool {
+    std::env::var_os("SETL8_LAUNCH_COSTS").is_some()
+}
+
 /// Generates the history of `seed`.
 pub fn generate(seed: u64) -> PathSpec {
     generate_inner(seed, false)
@@ -502,6 +516,12 @@ fn generate_inner(seed: u64, wild: bool) -> PathSpec {
     if rng.chance(comm_ppm) && scenario != Scenario::Edge {
         commission = [rng.range(5, 40) as u32, 30, 30, 30, 40, 50, 60, 80];
     }
+    if launch_costs_requested() && scenario != Scenario::Edge {
+        commission = [LAUNCH_COMMISSION_E6; 8];
+        for m in markets.iter_mut().filter(|m| m.spread_e6 > 0) {
+            m.spread_e6 = LAUNCH_HALF_SPREAD_E6;
+        }
+    }
     let opened_time = match scenario {
         Scenario::Night => MONDAY + 2 * DAY + 20 * 3_600 + rng.range(0, 3_000),
         Scenario::Closed => MONDAY + 2 * DAY + 19 * 3_600 + rng.range(0, 1_500),
@@ -536,6 +556,8 @@ fn build_path(seed: u64, scenario: Scenario, tier: usize, size: i64, phase: u8, 
         Scenario::Hold => hold(&mut p, &ctx),
         Scenario::MultiQuick => multi_quick(&mut p, &ctx),
         Scenario::CommissionFail => commission_fail(&mut p, &ctx),
+        Scenario::CloseAllStatic => close_all(&mut p, false),
+        Scenario::CloseAllQuick => close_all(&mut p, true),
     }
     // a final tick one second after the last input closes the last second
     let end = p.last + 2;
@@ -543,6 +565,26 @@ fn build_path(seed: u64, scenario: Scenario, tier: usize, size: i64, phase: u8, 
     p.steps.push(Step::Post { sec: end, heartbeat: true });
     let batch_max_events = [8usize, 8, 8, 6, 4, 3, 2][(seed % 7) as usize];
     PathSpec { seed, scenario, tier, size_micro: size, phase, opened_time, markets, commission_e6: commission, steps: p.steps, batch_max_events, end }
+}
+
+/// P24a: the close-all stories of the event-count check. `n` long positions in `n` class-0 markets of proof `source` (the biggest account tier,
+/// so margin never limits), opened together. `quick = false`: they slide together through the static floor and the account fails with all `n`
+/// positions closed, each with its commission (`Close, Fee` x n, `Fail`, `Meta`); `quick = true`: the first gains a little, the others a lot,
+/// the second close crosses the quick limit and the other `n - 2` positions are closed with it (decision 69, no commission on them).
+/// `launch` = the owner's costs (300 e6, 50 e6), otherwise no commission and a half-spread of 30 e6.
+pub fn close_all_story(seed: u64, n: usize, quick: bool, launch: bool, source: u8) -> PathSpec {
+    let tier = 9;
+    let size = TIER_SIZES_DOLLARS[tier] * USD;
+    let spread = if launch { LAUNCH_HALF_SPREAD_E6 } else { 30 };
+    let markets: Vec<MarketSpec> = (0..n)
+        .map(|i| {
+            let id = u16::try_from(i).unwrap_or(0);
+            MarketSpec::plain(id, 0, symbol_of(0, id), source, 1_100_000_000_000 + u64::from(id) * 37_000_000_000, 900, spread, FULL_WEEK.to_vec())
+        })
+        .collect();
+    let commission = if launch { [LAUNCH_COMMISSION_E6; 8] } else { [0; 8] };
+    let scenario = if quick { Scenario::CloseAllQuick } else { Scenario::CloseAllStatic };
+    build_path(seed, scenario, tier, size, 2, markets, commission, MONDAY + DAY + 8 * 3_600, true)
 }
 
 // ---------------------------------------------------------------------------------------------- M8: the reset story
@@ -1242,6 +1284,53 @@ fn commission_fail(p: &mut Plot, _ctx: &Ctx) {
         p.tick(5);
     }
     p.run(30, 5, 0, 20, 0);
+    p.post(false);
+}
+
+/// P24a: `n = p.mk.len()` long positions of `k` thousandths of S, opened together after a warm-up long enough for every market to have a
+/// sample. `quick = false`: all slide together by 9 to 13 % of S in total (the static floor), `quick = true`: the first gains 1.2 to 1.6 % of S,
+/// the others 5.2 to 7 % each (the second close crosses the quick limit, the rest are closed with it).
+fn close_all(p: &mut Plot, quick: bool) {
+    let n = p.mk.len();
+    let k = p.rng.range(1_500, 2_500);
+    p.run(60, 5, 0, 200, 20_000);
+    p.long = true;
+    p.k_milli = k;
+    for m in 0..n {
+        let q = p.qty_for(m, k);
+        p.market_order(m, true, q, 0, 0);
+    }
+    p.run(10, 5, 0, 50, 0);
+    let steps = 6;
+    let shares: Vec<i64> = (0..n)
+        .map(|m| {
+            if quick {
+                if m == 0 {
+                    p.rng.range(12_000, 16_000)
+                } else {
+                    p.rng.range(52_000, 70_000)
+                }
+            } else {
+                -p.rng.range(90_000, 130_000) / i64::try_from(n).unwrap_or(1)
+            }
+        })
+        .collect();
+    for _ in 0..steps {
+        p.t += 5;
+        for (m, g) in shares.iter().enumerate() {
+            let ppb = i64::try_from(i128::from(*g) * 1_000_000 / i128::from(k) / i128::from(steps)).unwrap_or(0);
+            p.bump(m, ppb);
+            p.mk[m].next_due = p.t;
+        }
+        p.tick(5);
+    }
+    if quick {
+        p.post(false);
+        for m in 0..n {
+            p.close_order(m, 0);
+        }
+    }
+    p.run(40, 5, 0, 20, 0);
     p.post(false);
 }
 

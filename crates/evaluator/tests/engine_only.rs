@@ -7,12 +7,16 @@ use std::sync::Mutex;
 /// The largest `SetComputeUnitLimit` and the largest transaction (with a priority fee) any campaign batch asked for (P27).
 static BIGGEST_LIMIT: AtomicU64 = AtomicU64::new(0);
 static BIGGEST_TX: AtomicU64 = AtomicU64::new(0);
+/// P24a: batches at the event maximum (8 events), the largest number of events and of proofs of any batch.
+static AT_MAX_EVENTS: AtomicU64 = AtomicU64::new(0);
+static MOST_EVENTS: AtomicU64 = AtomicU64::new(0);
+static BATCHES: AtomicU64 = AtomicU64::new(0);
 /// Batches that needed a version-0 transaction with a lookup table (a group that cannot be split and does not fit a legacy transaction).
 static LOOKUP_TX: AtomicU64 = AtomicU64::new(0);
 
 use common::runner::*;
 use common::*;
-use evaluator::testkit::{generate, generate_after_reset, generate_wild, reset_story, PathSpec};
+use evaluator::testkit::{generate, generate_after_reset, generate_wild, launch_costs_requested, reset_story, PathSpec};
 use evaluator::*;
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -103,6 +107,11 @@ fn check(spec: &PathSpec, r: &RunResult) -> Result<(), String> {
         }
         BIGGEST_LIMIT.fetch_max(b.cu_limit, std::sync::atomic::Ordering::Relaxed);
         BIGGEST_TX.fetch_max(with_price as u64, std::sync::atomic::Ordering::Relaxed);
+        BATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        MOST_EVENTS.fetch_max(ne as u64, std::sync::atomic::Ordering::Relaxed);
+        if ne == journal_types::MAX_EVENTS_PER_BATCH {
+            AT_MAX_EVENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
     Ok(())
 }
@@ -206,6 +215,7 @@ fn engine_only_campaign() {
     // P25b (audit F-16): every forced-close sequence the evaluator emitted is one the program accepts
     println!("coverage unpostable: {} (must be 0); samples refused: future {}, stale {}, out of order {}", c.m9c.unpostable, c.m9c.samples_future, c.m9c.samples_stale, c.m9c.samples_out_of_order);
     assert_eq!(c.m9c.unpostable, 0, "Stats::unpostable must stay 0 over the campaign");
+    println!("batches (P24a): {} in all, {} at the event maximum ({} events), the most events in one batch {}{}", BATCHES.load(Ordering::Relaxed), AT_MAX_EVENTS.load(Ordering::Relaxed), journal_types::MAX_EVENTS_PER_BATCH, MOST_EVENTS.load(Ordering::Relaxed), if launch_costs_requested() { " (with the owner's launch costs on every path)" } else { "" });
     println!("compute (P27): the largest SetComputeUnitLimit requested {} (maximum {}), the largest transaction {} bytes with limit and price instructions (maximum 1232); batches that needed a lookup-table transaction: {}", BIGGEST_LIMIT.load(Ordering::Relaxed), evaluator::compute::MAX_CU_LIMIT, BIGGEST_TX.load(Ordering::Relaxed), LOOKUP_TX.load(Ordering::Relaxed));
     for (name, floor) in ResetCover::floors(n) {
         println!("coverage {name}: {} (floor {floor})", c.resets.value_of(name));
@@ -213,7 +223,11 @@ fn engine_only_campaign() {
             short.push(format!("{name} {} < {floor}", c.resets.value_of(name)));
         }
     }
-    assert!(short.is_empty() || !f.is_empty() || std::env::var("ENGINE_WILD").is_ok(), "under-exercised: {short:?}");
+    // with the owner's launch costs (P24a) the stories were written for other costs: the floors are printed, not asserted
+    assert!(short.is_empty() || !f.is_empty() || std::env::var("ENGINE_WILD").is_ok() || launch_costs_requested(), "under-exercised: {short:?}");
+    if launch_costs_requested() && !short.is_empty() {
+        println!("coverage floors below their value under the launch costs (not asserted): {short:?}");
+    }
     if !f.is_empty() {
         let mut fs: Vec<_> = f.iter().collect();
         fs.sort_by_key(|x| x.0);
