@@ -88,6 +88,9 @@ pub struct MarketIn {
     /// Half-spread in e6 of the mid (rule set `spread_e6[market id]`) and whether it is still a placeholder.
     pub half_spread_e6: u16,
     pub spread_pending: bool,
+    /// Why the half-spread is still flagged (decision 72: the owner's base is set, the oracle-noise floor check is pending); printed in launch.md.
+    #[serde(default)]
+    pub spread_note: String,
     /// Session variants (see `session.rs`); the generator takes their intersection.
     pub session_variants: Vec<Vec<String>>,
     pub session_note: String,

@@ -180,7 +180,8 @@ pub fn all(i: &Input, l: &Launch, production: bool) -> Vec<String> {
     if production {
         let n = emit::pending_flags(i);
         if n > 0 {
-            v.push(format!("{n} PENDING flags remain: the rule set numbers are placeholders (decision 14); not for production"));
+            let spreads = i.market.iter().filter(|m| m.spread_pending).count();
+            v.push(format!("{n} PENDING flags remain ({spreads} market spreads, {} class commissions): the rule set numbers are placeholders or not final (decisions 14 and 72); not for production", n - spreads));
         }
     }
     v

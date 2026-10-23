@@ -159,6 +159,66 @@ fn secs(ms: u64) -> String {
 
 const CLASS_NAMES: [&str; CLASSES] = ["FX majors", "FX minors", "Metals", "Indices", "Energy", "Stocks", "Crypto majors", "Crypto alts"];
 
+/// The owner's fixed costs (decision 72) in words, from the numbers of the rule set.
+fn owner_costs(i: &Input, r: &RuleSetOut) -> String {
+    let (cmin, cmax) = (r.commission_e6.iter().min().copied().unwrap_or(0), r.commission_e6.iter().max().copied().unwrap_or(0));
+    let (smin, smax) = (i.market.iter().map(|m| m.half_spread_e6).min().unwrap_or(0), i.market.iter().map(|m| m.half_spread_e6).max().unwrap_or(0));
+    let comm = if cmin == cmax { format!("{cmin} e6 of notional ({} %) on every class", pct_e6(u64::from(cmin))) } else { format!("{cmin} to {cmax} e6 of notional by class") };
+    let spr = if smin == smax { format!("{smin} e6 ({} bp of price, full) on every market", bp_e6(smin)) } else { format!("{smin} to {smax} e6 by market") };
+    let mut t = String::new();
+    let _ = write!(t, "**Owner costs (decision 72, Rovik, 2026-10-23).** Commission per side, charged at open and at close: {comm}. Half-spread: the owner's base is {spr}, a base read from \"1 pip on all markets\" as a FULL spread of 1 basis point of price (1 pip of EURUSD is about 0.93 bp), so half {} bp per side; if 1 pip per side or a per-class pip size was meant, it is one number per market to change (and a new rule set version if the rule set was already created). The rule is half-spread = max(owner base, oracle-noise floor): the floor is computed per market from the observer data (P24b) and raises the base where oracle noise is larger, so every spread stays flagged PENDING (note: \"owner base 50 e6 set; oracle-noise floor check pending (P24b)\") and `launch-config verify --production` fails on those flags and on nothing else. News spread: not implemented, decision pending. A rule set is immutable: `create_ruleset` for v{} runs only AFTER P24b has raised the bases where needed.", bp_e6_half(smax), r.version);
+    t
+}
+
+/// `e6` parts per million of notional as a percentage with `places` decimals (3 e6 = 0.0003 %): 300 e6 -> "0.03".
+fn pct_e6(e6: u64) -> String {
+    // e6 / 1e6 * 100 = e6 / 10_000 percent
+    let hundredths = e6 * 100 / 10_000;
+    format!("{}.{:02}", hundredths / 100, hundredths % 100)
+}
+
+/// A half-spread of `e6` per million is `e6 / 100` basis points for the FULL spread when doubled: 50 e6 half -> 1.00 bp full.
+fn bp_e6(half_e6: u16) -> String {
+    let hundredths = u64::from(half_e6) * 2; // full spread in 1/100 bp: 2 x 50 e6 = 100 hundredths = 1.00 bp
+    format!("{}.{:02}", hundredths / 100, hundredths % 100)
+}
+
+fn bp_e6_half(half_e6: u16) -> String {
+    let hundredths = u64::from(half_e6); // 50 e6 = 0.50 bp
+    format!("{}.{:02}", hundredths / 100, hundredths % 100)
+}
+
+/// Per class: leverage, the round-trip commission and the round-trip spread cost as a percentage of the account at full leverage, and how
+/// many full-leverage round trips of commission alone use the 8 % static floor; for the FX classes the commission per 100,000 of notional
+/// per side next to the reference of $3.50 per standard lot per side (Pepperstone Razor).
+pub fn cost_table(i: &Input, r: &RuleSetOut) -> String {
+    let mut s = String::new();
+    let _ = writeln!(s, "Round trip = one side at open and one at close. Percentages are of the account at FULL leverage (leverage x notional share), truncated to two decimals. A full spread is twice the half-spread; the spread cost uses the largest half-spread of the class's markets (the owner base where the class has no market). The static floor is 8 % of the account size.\n");
+    let _ = writeln!(s, "| class | name | leverage 1: | commission / side (e6) | round-trip commission (% of account) | round-trip spread (% of account) | full-leverage round trips of commission alone to the 8 % floor | commission per 100,000 notional per side (USD) |");
+    let _ = writeln!(s, "|---|---|---|---|---|---|---|---|");
+    let base = i.market.iter().map(|m| m.half_spread_e6).max().unwrap_or(0);
+    for (k, name) in CLASS_NAMES.iter().enumerate() {
+        let lev = u64::from(r.leverage_x[k]);
+        let c = u64::from(r.commission_e6[k]);
+        let half = i.market.iter().filter(|m| usize::from(m.class) == k).map(|m| m.half_spread_e6).max().unwrap_or(base);
+        // ppm of the account: leverage x e6 per side, two sides
+        let comm_ppm = 2 * lev * c;
+        let spread_ppm = 2 * lev * u64::from(half);
+        let trips = if comm_ppm == 0 { "-".to_string() } else { let h = 80_000u64 * 100 / comm_ppm; format!("{}.{:02}", h / 100, h % 100) };
+        let usd = if k < 2 { format!("{}.{:02}", 100_000 * c / 1_000_000, 100_000 * c % 1_000_000 / 10_000) } else { "-".to_string() };
+        let _ = writeln!(s, "| {k} | {name} | {lev} | {c} | {} | {} | {trips} | {usd} |", pct_ppm(comm_ppm), pct_ppm(spread_ppm));
+    }
+    let _ = writeln!(s, "\nReference for the FX classes: Pepperstone Razor, $3.50 per standard lot (100,000) per side. Here: ${} per 100,000 of notional per side at {} e6.", { let c = u64::from(r.commission_e6[0]); format!("{}.{:02}", 100_000 * c / 1_000_000, 100_000 * c % 1_000_000 / 10_000) }, r.commission_e6[0]);
+    let _ = writeln!(s, "\nNews spread: not implemented, decision pending.");
+    s
+}
+
+/// ppm of the account as a percentage with two decimals: 30,000 ppm = "3.00".
+fn pct_ppm(ppm: u64) -> String {
+    let h = ppm / 100;
+    format!("{}.{:02}", h / 100, h % 100)
+}
+
 /// Pending flags: one per market half-spread still a placeholder and one per class commission still a placeholder.
 pub fn pending_flags(i: &Input) -> usize {
     i.market.iter().filter(|m| m.spread_pending).count() + i.commission.iter().filter(|c| c.pending).count()
@@ -196,6 +256,14 @@ pub fn markdown(i: &Input, l: &Launch) -> String {
             m.half_spread_e6,
             if flags.is_empty() { "-".to_string() } else { flags.join("; ") },
         );
+    }
+
+    let notes: Vec<_> = i.market.iter().filter(|m| !m.spread_note.is_empty()).collect();
+    if !notes.is_empty() {
+        let _ = writeln!(s, "\nSpread notes:\n");
+        for m in notes {
+            let _ = writeln!(s, "* {}: {}", m.symbol, m.spread_note);
+        }
     }
 
     let _ = writeln!(s, "\n## How each number was derived\n");
@@ -263,7 +331,13 @@ pub fn markdown(i: &Input, l: &Launch) -> String {
         let pend = i.commission.iter().find(|c| usize::from(c.class) == k).is_some_and(|c| c.pending);
         let _ = writeln!(s, "| {} | {} | {} | {} | {} | {} |", k, name, r.leverage_x[k], r.holding_fee_e6[k], r.commission_e6[k], if pend { "PENDING" } else { "-" });
     }
-    let _ = writeln!(s, "\nEvery half-spread above and every commission above is a PLACEHOLDER (decision 14: the real numbers come from Rovik's friend). A rule set is immutable: the real numbers are a NEW rule set version, old accounts keep the old one, and `create_ruleset` for v1 is run only AFTER the real numbers exist.\n");
+    if i.commission.iter().any(|c| c.pending) || i.market.iter().any(|m| m.spread_pending && m.spread_note.is_empty()) {
+        let _ = writeln!(s, "\nEvery half-spread above and every commission flagged PENDING is a PLACEHOLDER (decision 14: the real numbers come from Rovik's friend). A rule set is immutable: the real numbers are a NEW rule set version, old accounts keep the old one, and `create_ruleset` for v1 is run only AFTER the real numbers exist.\n");
+    } else {
+        let _ = writeln!(s, "\n{}\n", owner_costs(i, r));
+    }
+    let _ = writeln!(s, "## Cost table (numbers only)\n");
+    let _ = writeln!(s, "{}", cost_table(i, r));
 
     let _ = writeln!(s, "## Adding a market after launch\n");
     let _ = writeln!(s, "{UNPRICED_GUARD}");
