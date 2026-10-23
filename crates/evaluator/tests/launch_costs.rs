@@ -131,3 +131,49 @@ fn every_fill_and_every_close_carries_a_commission_with_the_owner_costs() {
     assert_eq!(fills, fills_fee, "every Fill is followed by its commission Fee");
     assert!(closes_fee * 100 >= closes * 80, "most closes carry one");
 }
+
+/// The same N positions as ONE failing batch (the shape of decision 69), computed from the real encoder with source-3 proofs: events, proofs,
+/// the measured compute and the limit the model asks for, the transaction bytes legacy and with the lookup table, and whether it is a legal
+/// batch. `static`: every close carries a commission fee (2N + 2 events); `quick`: the crossing close and the forced closes carry none (N + 2).
+#[test]
+fn the_single_batch_shape_of_a_close_all_for_one_to_eight_positions() {
+    use evaluator::batch::{tx_size, tx_size_v0};
+    use evaluator::BatchKind;
+    use evaluator::compute::{measured_cu, recommended_cu_limit};
+    use journal_types::{CloseReason, FailReason, JournalBatch, PriceProof, Side};
+    let close = |m: u16, p: u8| JournalEvent::Close { market: m, side: Side::Long, qty: u64::MAX, entry_e12: u64::MAX, exit_e12: u64::MAX, time: i64::MAX, timer_start: i64::MAX, pnl: i64::MIN, quick: true, credited: i64::MIN, reason: CloseReason::Fail, intent_id: u32::MAX, proof: p };
+    let fee = |m: u16| JournalEvent::Fee { kind: FeeKind::Commission, market: m, amount: u64::MAX, time: i64::MAX };
+    let proof = |i: u8| PriceProof { source: 3, feed_id: [i; 32], timestamp_ns: u64::MAX, quantized_value: i128::MIN, signed_update: vec![255; 32] };
+    println!("\none failing batch for N positions (source-3 proofs):");
+    println!("| story | N | events | proofs | measured CU | limit | legacy bytes | lookup-table bytes | legal batch |");
+    println!("|---|---|---|---|---|---|---|---|---|");
+    for quick in [false, true] {
+        for n in 1..=8usize {
+            let mut events = Vec::new();
+            for i in 0..n {
+                let m = u16::try_from(i).unwrap();
+                events.push(close(m, u8::try_from(i.min(254)).unwrap()));
+                if !quick {
+                    events.push(fee(m));
+                }
+            }
+            events.push(JournalEvent::Fail { time: i64::MAX, reason: FailReason::PhaseQuick, b_after: i64::MIN, proof: 0 });
+            events.push(JournalEvent::Meta { time: i64::MAX, flat: true, samples_hash: [255; 32], intents_hash: [255; 32], engine_version: u16::MAX });
+            let proofs: Vec<PriceProof> = (0..n).map(|i| proof(u8::try_from(i).unwrap())).collect();
+            let (ne, np) = (events.len(), proofs.len());
+            let len = JournalBatch { first_seq: u64::MAX, prev_hash: [255; 32], events, proofs }.to_bytes().map(|b| b.len());
+            let kind = BatchKind::ReportFail(engine::FailReason::PhaseQuick);
+            let legal = ne <= 8 && np <= 3;
+            // the format has 8 events and 3 proofs; beyond it the encoder refuses (len is Err) and the model gives the transaction maximum
+            let (cu, lim, leg, v0) = match &len {
+                Ok(l) => (measured_cu(kind, ne, np).to_string(), recommended_cu_limit(kind, ne, np).to_string(), tx_size(kind, np, *l, true).to_string(), tx_size_v0(kind, np, *l, true).to_string()),
+                Err(_) => ("-".into(), "-".into(), "-".into(), "-".into()),
+            };
+            println!("| {} | {n} | {ne} | {np} | {cu} | {lim} | {leg} | {v0} | {} |", if quick { "quick limit (no fee on the closes)" } else { "static floor (fee on every close)" }, if legal { "yes" } else { "NO: over 8 events or 3 proofs" });
+            if legal {
+                let l = len.unwrap();
+                assert!(tx_size_v0(kind, np, l, true) <= 1_232 && recommended_cu_limit(kind, ne, np) <= 1_400_000, "quick {quick} n {n}");
+            }
+        }
+    }
+}
