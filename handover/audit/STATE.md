@@ -1,6 +1,6 @@
-# P24a state (resume file): the owner's fixed trading costs
+# P24a / P24a-r1 state (resume file): the owner's fixed trading costs (REVISED: commission 200 e6, half-spread 100 e6)
 
-Task: handover/prompts/P24a-owner-fixed-costs.md (decision 72). Offline: `export RUSTUP_TOOLCHAIN=stable`. THE PROGRAM IS FROZEN (localnet sha256 43fdd935..., default ebbd0786...): no change to programs/, crates/engine, crates/journal-types, Cargo.lock, Cargo.toml, rust-toolchain.toml, Anchor.toml (`git diff 64629c1 HEAD -- ...` must stay empty).
+Task: handover/prompts/P24a-owner-fixed-costs.md (decision 72) and handover/prompts/P24a-r1-revised-costs.md (the revision, done). THE NUMBERS NOW: commission 200 e6 per side (0.02 %), half_spread_e6 100 on every market (1 bp per side); the steps below were done with 300 e6 / 50 e6 and re-done with the new numbers by P24a-r1 (f70110e, 8e456f7, 46e8d1b, fc726ee, 5813b2f). Offline: `export RUSTUP_TOOLCHAIN=stable`. THE PROGRAM IS FROZEN (localnet sha256 43fdd935..., default ebbd0786...): no change to programs/, crates/engine, crates/journal-types, Cargo.lock, Cargo.toml, rust-toolchain.toml, Anchor.toml (`git diff 64629c1 HEAD -- ...` must stay empty).
 
 ## DONE
 * step 1 (dada536): `config/launch-markets.toml`: commission 300 e6 on all 8 classes (`pending = false`), `half_spread_e6 = 50` on all 21 markets, `spread_pending = true` + `spread_note` "owner base 50 e6 set; oracle-noise floor check pending (P24b)"; `launch.json`, `launch.md` regenerated; the tool got an optional `spread_note`, the owner-cost paragraph, the computed cost table and a production failure that names spread and commission flags. `verify` OK (21 markets, 21 PENDING flags); `verify --production` fails with ONE violation (21 market spreads, 0 class commissions). Rule set stays version 1.
@@ -9,7 +9,13 @@ Task: handover/prompts/P24a-owner-fixed-costs.md (decision 72). Offline: `export
 * step 4: the cost table is in launch.md (generated) and in the report.
 * step 5 (751b451): decision 72, deploy-checklist section "Owner's fixed costs", launch-config.md section with the event-count tables.
 
+## P24a-r1 (revision, done)
+* config: commission 200 e6 x 8 classes, half_spread_e6 100 x 21 markets, note "owner base 100 e6 set; oracle-noise floor check pending (P24b)"; `verify` OK (21 PENDING flags); `verify --production` fails with ONE violation, 21 market spreads, 0 class commissions.
+* Event counts per Fill/Close and the close-all tables N = 1..8: identical to P24a (diffed). Smallest legal order (SOL, $10.331236): fee 2,067 micro-USD, pinned by a test. Campaigns 10,000 paths: unpostable 0, largest limit 270,000, largest tx 1,229 bytes.
+* Gates: launch-config 82 tests, test-engine.sh 1,525 passed 0 failed 8 ignored, tests-rs 830 passed 0 failed 5 ignored, clippy -D warnings clean (evaluator, launch-config, tests-rs), localnet sha 43fdd935..., `git diff 64629c1 HEAD -- programs crates/engine crates/journal-types Cargo.lock Cargo.toml rust-toolchain.toml Anchor.toml` empty.
+
 ## NEXT
 * P24b: the oracle-noise floor per market from the observer data; raises the base where needed and clears the spread flags; THEN `launch-config verify --production` passes and `create_ruleset` v1 can run.
 * News spread: not implemented, decision pending (needs a design decision and, with the frozen program, a different mechanism).
-* Confirm the reading of "1 pip" (FULL spread of 1 bp, half 50 e6).
+* Confirm the readings: "1 pip each side" = 1 bp per side (half-spread 100 e6, a round trip pays 2 bp), and the commission is 0.02 % per SIDE (if per round trip: 100 e6).
+* P28a (news-spread DESIGN, no code): handover/prompts/P28a-news-spread-design.md; decision 73 proposed after it.
