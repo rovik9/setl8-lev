@@ -106,7 +106,7 @@ pub enum SampleError {
     UnknownMarket,
     /// The value is not a positive price.
     BadValue,
-    /// The source second is earlier than a sample already recorded: the stream is in non-decreasing second order.
+    /// The source second is earlier than the evaluator's clock (the newest accepted sample second or the last `tick`): the stream is in non-decreasing second order.
     OutOfOrder,
     /// The market's own timestamps went backwards.
     MarketTimeBackwards,

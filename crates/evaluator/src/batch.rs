@@ -1,7 +1,8 @@
 //! The transaction model behind the SPLIT rule: how many bytes the signed `post_journal` / `report_fail` transaction
 //! takes and how many compute units it may use. Sizes are exact (Solana legacy transaction format, one signature);
-//! compute units are a conservative bound whose constants were fitted to the M5b/M7 measurements and are checked
-//! against the real program in `tests-rs/tests/differential.rs` for every batch of the gate run.
+//! compute units are the worst case MEASURED on the validator (`compute::measured_cu`, `handover/cu-runtime.json`); the limit to
+//! request is `compute::recommended_cu_limit`. `tests-rs/tests/budget_runtime.rs` asserts the numbers and the campaigns
+//! (`engine_only.rs`, `differential.rs`) check every batch against them.
 use crate::types::BatchKind;
 
 /// Maximum size of a serialized Solana transaction.

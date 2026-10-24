@@ -3,7 +3,7 @@
 //! Line 1 is the header `{"type":"header","format":"setl8-lev-events","version":1}`. Every other line has a `"type"`:
 //! `opened`, `event` (the default when `type` is absent), `pass_requested`, `pass_confirmed`, `pass_rejected`,
 //! `pass_vetoed`, `phase_advanced`, `pass_finalized`, `account_failed`, `violation_fail`, and (M9c) `account_held` /
-//! `hold_released`, and (P25b, decision 68) `pass_cancelled`, `account_abandoned`, `market_feed_changed`, `market_updated`.
+//! `hold_released`, and (P25b, decision 68) `pass_cancelled`, `account_abandoned`, `market_feed_changed`, `market_status_changed`.
 //! File order is chain order.
 //! Hashes and raw bytes are lower-case hex; accounts and wallets are base58.
 use serde_json::Value;

@@ -8,12 +8,18 @@
 //!
 //! # Model
 //! * Time is whole seconds. Samples arrive in non-decreasing source-second order. A second is *closed* when the evaluator's
-//!   clock (the newest second of any sample, order or `tick`) moves past it; a closed second is processed once:
+//!   clock (the newest second of any accepted sample or `tick`; an order never moves the clock, decision 68, F-18) moves past it; a closed second is processed once:
 //!   rollover fees, the decision pass over its samples, the events that follow, then the second's queued orders.
 //! * Decisions use the account at the START of the second (handover/verifier-formats.md 7); an action changes the state
 //!   for the next second. Of several samples of one second giving the same kind of decision, the last one's numbers count.
-//! * Orders execute when their second closes, at the newest sample of their market that existed when they arrived.
-//! * `drain_batches` turns the queue into batches: at most 8 events (the `Meta` last), 3 proofs, 1,232 bytes, 200,000 CU.
+//! * Orders execute when their second closes. A market or close order is priced with the newest sample of its market, in stream
+//!   order, whose source second is at or before the second it executes in (`exec.rs` `order_sample`, decision 68, D-F08); a triggered
+//!   limit or stop and a stop-loss or take-profit with the TRIGGER sample (`decide.rs`); the forced closes of a breach or a fail with
+//!   the marks of the decision's sample.
+//! * `drain_batches` turns the queue into batches: at most 8 events (the `Meta` last), 3 proofs, 1,232 bytes WITH the
+//!   `SetComputeUnitLimit` instruction, and the compute limit `compute::recommended_cu_limit(kind, events, proofs)` (the worst case
+//!   measured on Agave 4.0.2 x 1.20, at most 1,400,000; the 200,000 default is not enough for 7 or 8 events,
+//!   handover/backend-compute-contract.md).
 #![forbid(unsafe_code)]
 #![deny(clippy::float_arithmetic)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
