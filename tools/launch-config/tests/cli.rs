@@ -75,7 +75,7 @@ fn verify_fails_on_a_hand_edited_output_or_input() {
     assert!(se.contains("config/launch.json differs"), "{se}");
     // an edit of the input that is not regenerated
     let root = scratch("tamper-input");
-    std::fs::write(root.join("config/launch-markets.toml"), toml().replacen("half_spread_e6 = 50", "half_spread_e6 = 51", 1)).unwrap();
+    std::fs::write(root.join("config/launch-markets.toml"), toml().replacen("half_spread_e6 = 100", "half_spread_e6 = 101", 1)).unwrap();
     let (code, _, se) = out(&run(&root, &["verify"]));
     assert_eq!(code, 1);
     assert!(se.contains("config/launch.json differs") && se.contains("config/launch.md differs"), "{se}");

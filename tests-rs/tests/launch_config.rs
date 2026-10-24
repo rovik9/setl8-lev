@@ -426,7 +426,7 @@ fn an_old_account_cannot_open_a_market_created_after_its_rule_set_program_evalua
     verify_segment(&spec, &chain, &r).unwrap_or_else(|e| panic!("{e}"));
     // (the forged fill, published, is FillNotAllowed: trust_matrix row "a market fill in a market the account's rule set does not price",
     // BOTH, and `walk.rs refusal_tests` for the reason text)
-    // for contrast, a launch market pays its half-spread: BTC at 150 e6 is 1.5 bp above the mid
+    // for contrast, a launch market pays its half-spread: BTC at 100 e6 is 1 bp above the mid
     assert!(ruleset.spread_e6[usize::from(BTC)] > 0);
 }
 

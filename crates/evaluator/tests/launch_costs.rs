@@ -1,5 +1,5 @@
 //! P24a (decision 72) - the event-count check of the owner's fixed costs. Until now the crypto and FX classes carried no commission, so their
-//! Fills and Closes were single events; now EVERY Fill and Close carries a `Fee{Commission}` (0.03 % per side). This file measures what that
+//! Fills and Closes were single events; now EVERY Fill and Close carries a `Fee{Commission}` (0.02 % per side). This file measures what that
 //! does to the batch limits (8 events, 3 proofs, 1,232 bytes, the compute limit): the events of a Fill and of a Close, and the close-all
 //! failures for N = 1 to 8 open positions, with and without commission, for the static-floor failure (every close carries its fee) and the
 //! quick-limit failure (decision 69: the crossing slice and the forced closes carry none). Run with `--nocapture` for the tables.

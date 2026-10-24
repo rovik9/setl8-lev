@@ -448,9 +448,9 @@ pub fn leverage_of(class: u8) -> i64 {
     [50, 20, 20, 20, 10, 5, 5, 2].get(usize::from(class)).copied().unwrap_or(1)
 }
 
-/// P24a (decision 72): the owner's launch costs: 0.03 % commission per side on every class (300 e6) and the half-spread base of 50 e6.
-pub const LAUNCH_COMMISSION_E6: u32 = 300;
-pub const LAUNCH_HALF_SPREAD_E6: u32 = 50;
+/// P24a (decision 72): the owner's launch costs: 0.02 % commission per side on every class (200 e6) and the half-spread base of 100 e6 (1 bp of price per side; revised the same day).
+pub const LAUNCH_COMMISSION_E6: u32 = 200;
+pub const LAUNCH_HALF_SPREAD_E6: u32 = 100;
 
 /// Whether the campaigns run with the owner's launch costs on every path (`SETL8_LAUNCH_COSTS` set) instead of the random per-path costs.
 /// The `Edge` story (exact arithmetic, no commission by design) keeps its own numbers.
@@ -571,7 +571,7 @@ fn build_path(seed: u64, scenario: Scenario, tier: usize, size: i64, phase: u8, 
 /// so margin never limits), opened together. `quick = false`: they slide together through the static floor and the account fails with all `n`
 /// positions closed, each with its commission (`Close, Fee` x n, `Fail`, `Meta`); `quick = true`: the first gains a little, the others a lot,
 /// the second close crosses the quick limit and the other `n - 2` positions are closed with it (decision 69, no commission on them).
-/// `launch` = the owner's costs (300 e6, 50 e6), otherwise no commission and a half-spread of 30 e6.
+/// `launch` = the owner's costs (200 e6, 100 e6), otherwise no commission and a half-spread of 30 e6.
 pub fn close_all_story(seed: u64, n: usize, quick: bool, launch: bool, source: u8) -> PathSpec {
     let tier = 9;
     let size = TIER_SIZES_DOLLARS[tier] * USD;

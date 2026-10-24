@@ -196,7 +196,7 @@ program takes it as data (`create_market`), nothing market-specific is hardcoded
 - **`SectorConfig`** (singleton, PDA `["config"]`): admin keys, **evaluator key**, vault program id, SL8 wallet, `current_ruleset`, `market_count`, `paused`,
   `pass_delay_secs`, `max_payout_per_window`, `window_secs` and the running window counters (section 10.6).
 - **`RuleSet`** (PDA `["ruleset", version u16]`, **immutable once created**): leverage per class, half-spread per market,
-  commission per class (0.03 % per side on every class, decision 72), holding-fee rate per class, tier price table, reset ladder, fee rate. A `TradingAccount`
+  commission per class (0.02 % per side on every class, decision 72 as revised), holding-fee rate per class, tier price table, reset ladder, fee rate. A `TradingAccount`
   stores its `ruleset_version` at purchase. This is the "per-account parameter snapshot": publishing version N+1 never changes an
   account created under version N. The evaluator reads the rule set of each account's version; the chain does not use most of it (it uses the tier table, ladder, fee rate, the half-spread of the market of a `Fill` and the constants of section 2).
   **Unpriced markets are untradable (decision 64).** `spread_e6` is indexed by market id and the rule set is immutable, so a market created after version N has a half-spread of 0 in version N and in every older version. A market whose half-spread in the ACCOUNT'S OWN rule set is 0 takes no new exposure: an exposure-increasing `Fill` there is refused by the program (`MarketUnpriced`, 6109), the evaluator and the public verifier (`FillNotAllowed`, "unpriced market"); closes are never refused by this rule. Accounts of an older rule set version therefore cannot trade a later-added market; they keep trading every market their rule set prices. Adding a market after launch = a new rule set version that prices it, for NEW accounts.
@@ -425,7 +425,7 @@ Graduated or Abandoned. `next_challenge_id` hands out unused vault challenge ids
 `pass_delay_secs u32` (default 172,800), `max_payout_per_window u64` (micro-USD, value open), `window_secs u32` (default 86,400), `window_start i64`, `window_total u64`, `reserved [u8;64]`.
 
 ### 5.4 `RuleSet` (552 bytes, Borsh, immutable after creation)
-`version u16`, `fee_bps u16` (swap-cost fee, 40), `tier_count u8` (10), `ladder_len u8` (5), `leverage_x [u16;8]` (per class), `holding_fee_e6 [u32;8]` (per class), `commission_e6 [u32;8]` (per class; 300 e6 = 0.03 % on every class, decision 72),
+`version u16`, `fee_bps u16` (swap-cost fee, 40), `tier_count u8` (10), `ladder_len u8` (5), `leverage_x [u16;8]` (per class), `holding_fee_e6 [u32;8]` (per class), `commission_e6 [u32;8]` (per class; 200 e6 = 0.02 % on every class, decision 72 as revised),
 `tier_size [u64;10]` (micro-USD), `tier_cost [u64;10]` (micro-USD), `reset_ladder_bps [u16;5]`, `spread_e6 [u16;128]` (half-spread per market id, up to 128 markets; PENDING), `bump u8`, `reserved [u8;31]`.
 8 + 2+2+1+1 + 16 + 32 + 32 + 80 + 80 + 10 + 256 + 1 + 31 = 552. (The 904 in the first draft was an estimate before the layout existed.)
 Launch values (decisions 13, 15, 17, 26): `leverage_x` = 50, 20, 20, 20, 10, 5, 5, 2; `holding_fee_e6` = 100, 200, 400, 200, 400, 400, 1000, 1600; `tier_size` $2.5K, 5K, 10K, 15K, 20K, 25K, 50K, 75K, 100K, 200K; `tier_cost` $30, 55, 99, 145, 189, 235, 489, 689, 859, 1,599; `reset_ladder_bps` = 10000, 11500, 12000, 12750, 13000.
@@ -610,7 +610,7 @@ Retention depends on RPC/archive providers. Setl8 keeps its own full copy of eve
 
 ### 9.1 Spread (decision 14, numbers PENDING from Rovik's friend)
 Oracles give one price. The program synthesises bid and ask: `ask = mid x (1 + h)`, `bid = mid x (1 - h)`, `h` = per-market half-spread in the rule set (e6 units). Longs are marked at bid, shorts at ask, so a position
-starts slightly negative (see the -$64.80 in 4.9, which is 0.003% half-spread each side on $1.08M). Spread and commission are simulated balance deductions; no tokens move. The owner's costs are fixed (decision 72: commission 0.03 % per side, half-spread base 0.5 bp per side, raised per market by the oracle-noise floor of P24b); the
+starts slightly negative (see the -$64.80 in 4.9, which is 0.003% half-spread each side on $1.08M). Spread and commission are simulated balance deductions; no tokens move. The owner's costs are fixed (decision 72: commission 0.02 % per side, half-spread base 1 bp per side, raised per market by the oracle-noise floor of P24b); the
 test fixtures keep their own small numbers, never production data. A market must have `h > 0` in the rule set an account trades under (decision 64); the test fixtures use the named constant `TEST_HALF_SPREAD_E6 = 1` where they need the smallest priced market.
 
 ### 9.2 Purchase price and the 0.4% fee (decisions 15, 16)
@@ -649,7 +649,7 @@ Mechanics (engine, section 16): each position stores `fee_day` (index of the las
 price move in the gap, and tested. Each application becomes a `Fee{HoldingFee}` journal event; the program only checks that `b` is debited by exactly that amount (I-6). The rates are broker-derived (IG formulas) and doubled; benchmark rates for October 2026 were not verified.
 
 ### 9.4 Commission
-Fixed by the owner (decision 72, 2026-10-23: 0.03 % per side, 300 e6 on every class; was PENDING, decision 14). The rule set has a per-class `commission_e6` charged on notional at open and at close (ceil). The estimated closing commission is included in `E`, so a floor decision never ignores a cost the trader will pay on closing.
+Fixed by the owner (decision 72, 2026-10-23, revised the same day: 0.02 % per side, 200 e6 on every class; was PENDING, decision 14). The rule set has a per-class `commission_e6` charged on notional at open and at close (ceil). The estimated closing commission is included in `E`, so a floor decision never ignores a cost the trader will pay on closing.
 
 ### 9.5 Reset price (decisions 17, 18, 51)
 `reset price = ceil(CURRENT tier cost x ladder[failed_phase_idx] / 10000)` through the shared `setl8_shared_interfaces::reset_price` (u128, rounded up), ladder (phase 1 to 5, index 0 to 4) = 10000, 11500, 12000, 12750, 13000 bps. The tier is the registered `challenge_sizes` entry whose size equals the failed account's size, read as it is NOW: a tier repriced or removed by `update_product_config` changes or blocks every pending reset of that size (never reprice or remove a tier while Failed records exist), and tier sizes must be unique. The program computes the amount with `reset_price::reset_amount_micro`. The 0.4% fee applies on top (assumption A-FEE-1, confirm). The account resumes in the same phase it failed. The table below is for the launch tier costs.
