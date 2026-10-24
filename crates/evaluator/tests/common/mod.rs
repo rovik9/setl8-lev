@@ -239,6 +239,7 @@ pub fn describe(r: &setl8_verify::Report) -> String {
     r.findings.iter().map(|f| format!("{:?} seq={:?} expected={} found={} ({})", f.class, f.seq, f.expected, f.found, f.message)).collect::<Vec<_>>().join("\n")
 }
 
+pub mod bytes_gate;
 pub mod runner;
 pub mod reference;
 

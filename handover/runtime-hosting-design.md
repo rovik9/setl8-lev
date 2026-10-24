@@ -417,6 +417,8 @@ Cost of making it `Send`: `Rc<RulesCfg>` is never cloned (`grep`: constructed at
 
 ### 10.1 The byte-equality gate (C1), run by every implementation prompt
 
+Run it with `scripts/p29-bytes-gate.sh` (baseline: `handover/audit/p29-baseline.json`, harness: P29b).
+
 1. **Baseline first, from the unchanged code.** Prompt P29b adds a test-only harness (`crates/evaluator/tests/p29_bytes_gate.rs`, no `src` change) that runs the campaigns and, for every path, hashes in a fixed order: each `Batch` (the `JournalBatch` bytes, `kind`, `markets`, `meta_time`, `samples_committed`, `intents_committed_bytes`, `account_after`, `tx_bytes`, `cu`, `cu_limit`, `tx_format`), the final `archive_bytes()`, the final `intents_bytes()`, `seq()`, `head()`, `state()`, `positions()` and `pending()`. It writes one SHA-256 per path and per 1,000 paths into `handover/audit/p29-baseline.json`, produced at 2c70883 (engine-only 100,000 paths seed 1; engine-only 10,000 paths with `SETL8_LAUNCH_COSTS`; the differential's 10,000 paths via `tests-rs`, which already executes every batch on the real program).
 2. **Every later prompt** re-runs the harness and requires EVERY hash to equal the baseline. A difference is a STOP for that prompt.
 3. **Golden vectors** (`crates/evaluator/tests/golden/*.json`, `check.py` 0 mismatches) unchanged and byte-identical (`git diff` on the directory is empty).
