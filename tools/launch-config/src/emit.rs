@@ -164,27 +164,27 @@ fn owner_costs(i: &Input, r: &RuleSetOut) -> String {
     let (cmin, cmax) = (r.commission_e6.iter().min().copied().unwrap_or(0), r.commission_e6.iter().max().copied().unwrap_or(0));
     let (smin, smax) = (i.market.iter().map(|m| m.half_spread_e6).min().unwrap_or(0), i.market.iter().map(|m| m.half_spread_e6).max().unwrap_or(0));
     let comm = if cmin == cmax { format!("{cmin} e6 of notional ({} %) on every class", pct_e6(u64::from(cmin))) } else { format!("{cmin} to {cmax} e6 of notional by class") };
-    let spr = if smin == smax { format!("{smin} e6 ({} bp of price, full) on every market", bp_e6(smin)) } else { format!("{smin} to {smax} e6 by market") };
+    let spr = if smin == smax { format!("{smin} e6 ({} bp of price per side, {} bp full) on every market", bp_e6_half(smin), bp_e6(smin)) } else { format!("{smin} to {smax} e6 by market") };
     let mut t = String::new();
-    let _ = write!(t, "**Owner costs (decision 72, Rovik, 2026-10-23).** Commission per side, charged at open and at close: {comm}. Half-spread: the owner's base is {spr}, a base read from \"1 pip on all markets\" as a FULL spread of 1 basis point of price (1 pip of EURUSD is about 0.93 bp), so half {} bp per side; if 1 pip per side or a per-class pip size was meant, it is one number per market to change (and a new rule set version if the rule set was already created). The rule is half-spread = max(owner base, oracle-noise floor): the floor is computed per market from the observer data (P24b) and raises the base where oracle noise is larger, so every spread stays flagged PENDING (note: \"owner base 50 e6 set; oracle-noise floor check pending (P24b)\") and `launch-config verify --production` fails on those flags and on nothing else. News spread: not implemented, decision pending. A rule set is immutable: `create_ruleset` for v{} runs only AFTER P24b has raised the bases where needed.", bp_e6_half(smax), r.version);
+    let _ = write!(t, "**Owner costs (decision 72, Rovik, 2026-10-23, revised the same day before any deploy).** Commission per side, charged at open and at close: {comm}; a round trip pays twice that, and \"once\" is read as one flat rate for every class (if Rovik meant {} % per round trip the number would be {} e6 per side). Half-spread: the owner's base is {spr}, read from \"1 pip each side\" as 1 basis point of price per side, so a round trip pays 2 bp; per-class pip sizes are not used (1 pip of EURUSD is about 0.93 bp). The rule is half-spread = max(owner base, oracle-noise floor): the floor is computed per market from the observer data (P24b) and raises the base where oracle noise is larger, so every spread stays flagged PENDING (note: \"owner base {smax} e6 set; oracle-noise floor check pending (P24b)\") and `launch-config verify --production` fails on those flags and on nothing else. News spread: not implemented, decision pending. A rule set is immutable: `create_ruleset` for v{} runs only AFTER P24b has raised the bases where needed.", pct_e6(u64::from(cmax)), cmax / 2, r.version);
     t
 }
 
-/// `e6` parts per million of notional as a percentage with `places` decimals (3 e6 = 0.0003 %): 300 e6 -> "0.03".
+/// `e6` parts per million of notional as a percentage with `places` decimals (3 e6 = 0.0003 %): 200 e6 -> "0.02".
 fn pct_e6(e6: u64) -> String {
     // e6 / 1e6 * 100 = e6 / 10_000 percent
     let hundredths = e6 * 100 / 10_000;
     format!("{}.{:02}", hundredths / 100, hundredths % 100)
 }
 
-/// A half-spread of `e6` per million is `e6 / 100` basis points for the FULL spread when doubled: 50 e6 half -> 1.00 bp full.
+/// A half-spread of `e6` per million is `e6 / 100` basis points for the FULL spread when doubled: 100 e6 half -> 2.00 bp full.
 fn bp_e6(half_e6: u16) -> String {
-    let hundredths = u64::from(half_e6) * 2; // full spread in 1/100 bp: 2 x 50 e6 = 100 hundredths = 1.00 bp
+    let hundredths = u64::from(half_e6) * 2; // full spread in 1/100 bp: 2 x 100 e6 = 200 hundredths = 2.00 bp
     format!("{}.{:02}", hundredths / 100, hundredths % 100)
 }
 
 fn bp_e6_half(half_e6: u16) -> String {
-    let hundredths = u64::from(half_e6); // 50 e6 = 0.50 bp
+    let hundredths = u64::from(half_e6); // 100 e6 = 1.00 bp
     format!("{}.{:02}", hundredths / 100, hundredths % 100)
 }
 
