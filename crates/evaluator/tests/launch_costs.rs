@@ -177,3 +177,19 @@ fn the_single_batch_shape_of_a_close_all_for_one_to_eight_positions() {
         }
     }
 }
+
+/// P24a-r1: the rounding corner at 200 e6. The commission is `ceil(notional x 200 / 1e6)`, so any positive notional pays at least 1 micro-USD and
+/// the evaluator (which emits the `Fee` only when the amount is above zero) never drops one. The smallest minimum order of config/launch.md is SOL,
+/// 100,000 units at 103.312365 = $10.331236 -> 2,067 micro-USD; the next two are MSFT 2,106 and AMD 2,137. Hand numbers, ceil edges included.
+#[test]
+fn the_smallest_legal_order_still_pays_a_commission_of_at_least_one_micro_usd() {
+    let rate = LAUNCH_COMMISSION_E6;
+    assert_eq!(rate, 200);
+    for (notional_micro, fee) in [(10_331_236, 2_067), (10_526_800, 2_106), (10_684_800, 2_137), (10_000_000, 2_000), (5_000, 1), (5_001, 2), (1, 1)] {
+        assert_eq!(engine::fee_ceil_micro(notional_micro, rate), Ok(fee), "notional {notional_micro}");
+    }
+    // zero only for a zero notional, which no order has (the minimum quantity is positive)
+    assert_eq!(engine::fee_ceil_micro(0, rate), Ok(0));
+    // a price 4 orders of magnitude below the launch price of SOL would still pay: 10_331_236 / 10_000 = 1,033 micro-USD notional -> 1 micro-USD
+    assert_eq!(engine::fee_ceil_micro(1_034, rate), Ok(1));
+}
