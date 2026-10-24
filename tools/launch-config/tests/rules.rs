@@ -591,14 +591,14 @@ fn the_markdown_states_the_owner_costs_the_pip_reading_and_the_cost_table() {
     assert!(md.contains("* BTC: owner base 100 e6 set; oracle-noise floor check pending (P24b)"));
     // the cost table, class by class: leverage, round-trip commission, round-trip spread, trips to the 8 % floor, USD per 100,000 notional
     for row in [
-        "| 0 | FX majors | 50 | 200 | 2.00 | 1.00 | 4.00 | 20.00 |",
-        "| 1 | FX minors | 20 | 200 | 0.80 | 0.40 | 10.00 | 20.00 |",
-        "| 2 | Metals | 20 | 200 | 0.80 | 0.40 | 10.00 | - |",
-        "| 3 | Indices | 20 | 200 | 0.80 | 0.40 | 10.00 | - |",
-        "| 4 | Energy | 10 | 200 | 0.40 | 0.20 | 20.00 | - |",
-        "| 5 | Stocks | 5 | 200 | 0.20 | 0.10 | 40.00 | - |",
-        "| 6 | Crypto majors | 5 | 200 | 0.20 | 0.10 | 40.00 | - |",
-        "| 7 | Crypto alts | 2 | 200 | 0.08 | 0.04 | 100.00 | - |",
+        "| 0 | FX majors | 50 | 200 | 2.00 | 1.00 | 3.00 | 2.66 | 4.00 | 20.00 |",
+        "| 1 | FX minors | 20 | 200 | 0.80 | 0.40 | 1.20 | 6.66 | 10.00 | 20.00 |",
+        "| 2 | Metals | 20 | 200 | 0.80 | 0.40 | 1.20 | 6.66 | 10.00 | - |",
+        "| 3 | Indices | 20 | 200 | 0.80 | 0.40 | 1.20 | 6.66 | 10.00 | - |",
+        "| 4 | Energy | 10 | 200 | 0.40 | 0.20 | 0.60 | 13.33 | 20.00 | - |",
+        "| 5 | Stocks | 5 | 200 | 0.20 | 0.10 | 0.30 | 26.66 | 40.00 | - |",
+        "| 6 | Crypto majors | 5 | 200 | 0.20 | 0.10 | 0.30 | 26.66 | 40.00 | - |",
+        "| 7 | Crypto alts | 2 | 200 | 0.08 | 0.04 | 0.12 | 66.66 | 100.00 | - |",
     ] {
         assert!(md.contains(row), "{row}");
     }
@@ -613,12 +613,12 @@ fn the_cost_table_is_computed_from_the_rule_set() {
     i.market.iter_mut().for_each(|m| m.half_spread_e6 = 100);
     let l = launch(&i);
     let t = emit::cost_table(&i, &l.ruleset);
-    assert!(t.contains("| 0 | FX majors | 50 | 100 | 1.00 | 1.00 | 8.00 | 10.00 |"), "{t}");
-    assert!(t.contains("| 7 | Crypto alts | 2 | 100 | 0.04 | 0.04 | 200.00 | - |"), "{t}");
+    assert!(t.contains("| 0 | FX majors | 50 | 100 | 1.00 | 1.00 | 2.00 | 4.00 | 8.00 | 10.00 |"), "{t}");
+    assert!(t.contains("| 7 | Crypto alts | 2 | 100 | 0.04 | 0.04 | 0.08 | 100.00 | 200.00 | - |"), "{t}");
     // a class without a market takes the largest half-spread of the file
     let mut j = base();
     j.market.retain(|m| m.class != 1);
     j.market[0].half_spread_e6 = 150;
     let t = emit::cost_table(&j, &launch(&j).ruleset);
-    assert!(t.contains("| 1 | FX minors | 20 | 200 | 0.80 | 0.60 | 10.00 | 20.00 |"), "{t}");
+    assert!(t.contains("| 1 | FX minors | 20 | 200 | 0.80 | 0.60 | 1.40 | 5.71 | 10.00 | 20.00 |"), "{t}");
 }

@@ -194,8 +194,8 @@ fn bp_e6_half(half_e6: u16) -> String {
 pub fn cost_table(i: &Input, r: &RuleSetOut) -> String {
     let mut s = String::new();
     let _ = writeln!(s, "Round trip = one side at open and one at close. Percentages are of the account at FULL leverage (leverage x notional share), truncated to two decimals. A full spread is twice the half-spread; the spread cost uses the largest half-spread of the class's markets (the owner base where the class has no market). The static floor is 8 % of the account size.\n");
-    let _ = writeln!(s, "| class | name | leverage 1: | commission / side (e6) | round-trip commission (% of account) | round-trip spread (% of account) | full-leverage round trips of commission alone to the 8 % floor | commission per 100,000 notional per side (USD) |");
-    let _ = writeln!(s, "|---|---|---|---|---|---|---|---|");
+    let _ = writeln!(s, "| class | name | leverage 1: | commission / side (e6) | round-trip commission (% of account) | round-trip spread (% of account) | round-trip total (% of account) | full-leverage round trips (commission + spread) to the 8 % floor | full-leverage round trips of commission alone to the 8 % floor | commission per 100,000 notional per side (USD) |");
+    let _ = writeln!(s, "|---|---|---|---|---|---|---|---|---|---|");
     let base = i.market.iter().map(|m| m.half_spread_e6).max().unwrap_or(0);
     for (k, name) in CLASS_NAMES.iter().enumerate() {
         let lev = u64::from(r.leverage_x[k]);
@@ -204,9 +204,10 @@ pub fn cost_table(i: &Input, r: &RuleSetOut) -> String {
         // ppm of the account: leverage x e6 per side, two sides
         let comm_ppm = 2 * lev * c;
         let spread_ppm = 2 * lev * u64::from(half);
-        let trips = if comm_ppm == 0 { "-".to_string() } else { let h = 80_000u64 * 100 / comm_ppm; format!("{}.{:02}", h / 100, h % 100) };
+        let trips_of = |ppm: u64| if ppm == 0 { "-".to_string() } else { let h = 80_000u64 * 100 / ppm; format!("{}.{:02}", h / 100, h % 100) };
+        let (trips, trips_total) = (trips_of(comm_ppm), trips_of(comm_ppm + spread_ppm));
         let usd = if k < 2 { format!("{}.{:02}", 100_000 * c / 1_000_000, 100_000 * c % 1_000_000 / 10_000) } else { "-".to_string() };
-        let _ = writeln!(s, "| {k} | {name} | {lev} | {c} | {} | {} | {trips} | {usd} |", pct_ppm(comm_ppm), pct_ppm(spread_ppm));
+        let _ = writeln!(s, "| {k} | {name} | {lev} | {c} | {} | {} | {} | {trips_total} | {trips} | {usd} |", pct_ppm(comm_ppm), pct_ppm(spread_ppm), pct_ppm(comm_ppm + spread_ppm));
     }
     let _ = writeln!(s, "\nReference for the FX classes: Pepperstone Razor, $3.50 per standard lot (100,000) per side. Here: ${} per 100,000 of notional per side at {} e6.", { let c = u64::from(r.commission_e6[0]); format!("{}.{:02}", 100_000 * c / 1_000_000, 100_000 * c % 1_000_000 / 10_000) }, r.commission_e6[0]);
     let _ = writeln!(s, "\nNews spread: not implemented, decision pending.");

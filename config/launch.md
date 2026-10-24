@@ -227,16 +227,16 @@ Fee 40 bps. Tiers (size / price, USD): 2500 / 30, 5000 / 55, 10000 / 99, 15000 /
 
 Round trip = one side at open and one at close. Percentages are of the account at FULL leverage (leverage x notional share), truncated to two decimals. A full spread is twice the half-spread; the spread cost uses the largest half-spread of the class's markets (the owner base where the class has no market). The static floor is 8 % of the account size.
 
-| class | name | leverage 1: | commission / side (e6) | round-trip commission (% of account) | round-trip spread (% of account) | full-leverage round trips of commission alone to the 8 % floor | commission per 100,000 notional per side (USD) |
-|---|---|---|---|---|---|---|---|
-| 0 | FX majors | 50 | 200 | 2.00 | 1.00 | 4.00 | 20.00 |
-| 1 | FX minors | 20 | 200 | 0.80 | 0.40 | 10.00 | 20.00 |
-| 2 | Metals | 20 | 200 | 0.80 | 0.40 | 10.00 | - |
-| 3 | Indices | 20 | 200 | 0.80 | 0.40 | 10.00 | - |
-| 4 | Energy | 10 | 200 | 0.40 | 0.20 | 20.00 | - |
-| 5 | Stocks | 5 | 200 | 0.20 | 0.10 | 40.00 | - |
-| 6 | Crypto majors | 5 | 200 | 0.20 | 0.10 | 40.00 | - |
-| 7 | Crypto alts | 2 | 200 | 0.08 | 0.04 | 100.00 | - |
+| class | name | leverage 1: | commission / side (e6) | round-trip commission (% of account) | round-trip spread (% of account) | round-trip total (% of account) | full-leverage round trips (commission + spread) to the 8 % floor | full-leverage round trips of commission alone to the 8 % floor | commission per 100,000 notional per side (USD) |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | FX majors | 50 | 200 | 2.00 | 1.00 | 3.00 | 2.66 | 4.00 | 20.00 |
+| 1 | FX minors | 20 | 200 | 0.80 | 0.40 | 1.20 | 6.66 | 10.00 | 20.00 |
+| 2 | Metals | 20 | 200 | 0.80 | 0.40 | 1.20 | 6.66 | 10.00 | - |
+| 3 | Indices | 20 | 200 | 0.80 | 0.40 | 1.20 | 6.66 | 10.00 | - |
+| 4 | Energy | 10 | 200 | 0.40 | 0.20 | 0.60 | 13.33 | 20.00 | - |
+| 5 | Stocks | 5 | 200 | 0.20 | 0.10 | 0.30 | 26.66 | 40.00 | - |
+| 6 | Crypto majors | 5 | 200 | 0.20 | 0.10 | 0.30 | 26.66 | 40.00 | - |
+| 7 | Crypto alts | 2 | 200 | 0.08 | 0.04 | 0.12 | 66.66 | 100.00 | - |
 
 Reference for the FX classes: Pepperstone Razor, $3.50 per standard lot (100,000) per side. Here: $20.00 per 100,000 of notional per side at 200 e6.
 
