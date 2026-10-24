@@ -57,6 +57,7 @@ impl Enc {
 
 /// An item of the file order, cloneable (the runner's `Item` is not).
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum GateItem {
     Batch(Batch),
     Line(String),
@@ -80,11 +81,14 @@ pub struct StateView {
     /// latch, tight_on, flat
     pub st_bool: [bool; 3],
     /// market, qty, avg_entry_e12, timer_start, opened_at, fee_day, sl, tp
-    pub positions: Vec<(u16, i64, u64, i64, i64, i64, u64, u64)>,
+    pub positions: Vec<PositionRow>,
     pub pending: Vec<(u32, [u8; 48])>,
     pub stats: Vec<u32>,
     pub refusals: Vec<(i64, u32, String)>,
 }
+
+/// market, qty, avg_entry_e12, timer_start, opened_at, fee_day, sl, tp
+pub type PositionRow = (u16, i64, u64, i64, i64, i64, u64, u64);
 
 pub fn stats_vec(s: &Stats) -> Vec<u32> {
     vec![
