@@ -305,9 +305,26 @@ impl Evaluator {
             room.saturating_sub(1)
         }
     }
-    /// Marks the account held for review (DESIGN 2.9): exposure-increasing orders are refused until released.
-    pub fn set_held(&mut self, held: bool) {
+    /// `AccountHeld` (`held = true`) or `HoldReleased` (`held = false`): exposure-increasing orders are refused while held (DESIGN 2.9).
+    /// The program lets `hold_account` act on an Active account only and `release_hold` on any status. Preconditions: not faulted or
+    /// ended (`Ended`); to hold, status Active (`NotActive`) and not held (`AlreadyHeld`); to release, held (`NotHeld`). On any error
+    /// NOTHING is changed.
+    pub fn set_held(&mut self, held: bool) -> Result<(), LifecycleError> {
+        if self.fault.is_some() || self.ended_externally {
+            return Err(LifecycleError::Ended);
+        }
+        if held {
+            if !matches!(self.status, Status::Active) {
+                return Err(LifecycleError::NotActive);
+            }
+            if self.held {
+                return Err(LifecycleError::AlreadyHeld);
+            }
+        } else if !self.held {
+            return Err(LifecycleError::NotHeld);
+        }
         self.held = held;
+        Ok(())
     }
     pub fn is_ended(&self) -> bool {
         self.fault.is_some() || self.ended_externally || !matches!(self.status, Status::Active)
@@ -471,21 +488,108 @@ impl Evaluator {
     }
 
     // ------------------------------------------------------------------ lifecycle
+    //
+    // The host contract (handover/runtime-hosting-design.md 7.3, handover/runtime-api.md): each call below follows ONE finalized chain
+    // event, in chain order, and is checked against what the evaluator can verify itself. A violated precondition returns a
+    // `LifecycleError` and changes nothing. What only the host can authenticate (that the event is finalized, not reorged, in order) stays
+    // the host's duty.
+    //
+    //   PassRequested{phase}                      -> `request_pass(now, chain, replay)`   (freezes the account)
+    //   PassRejected / PassCancelled / PassVetoed -> `pass_resolved()`
+    //   PhaseAdvanced{1 -> 2} (from confirm_pass, no delay)
+    //   PassFinalized{p -> p+1} + PhaseAdvanced   -> `phase_started(p + 1, chain)` once, with the chain's view AFTER the transition
+    //   PassFinalized{5 -> 0} (graduation)        -> `end_externally()`
+    //   AccountAbandoned / ViolationFail          -> `end_externally()` (also on a Failed account)
+    //   AccountHeld / HoldReleased                -> `set_held(true / false)`
 
-    /// A new phase starts (phase 1 at `confirm_pass`, phases 2 to 5 at `finalize_pass`): the engine's fresh state, keeping
-    /// an active breach lock; the account unfreezes. Positions and pending orders must be gone (the pass check guarantees it).
-    pub fn phase_started(&mut self, phase: u8) {
+    fn live(&self) -> Result<(), LifecycleError> {
+        if self.fault.is_some() || self.ended_externally {
+            return Err(LifecycleError::Ended);
+        }
+        if !matches!(self.status, Status::Active) {
+            return Err(LifecycleError::NotActive);
+        }
+        Ok(())
+    }
+
+    /// Whether an accepted order is still waiting in a second's bucket (market, close, cancel and set_sl_tp orders execute when their
+    /// second closes).
+    fn has_queued_orders(&self) -> bool {
+        self.buckets.values().any(|b| !b.orders.is_empty())
+    }
+
+    /// A new phase starts: phase 2 at `confirm_pass` of phase 1, phases 3 to 5 at `finalize_pass` of phases 2 to 4. Call it once per
+    /// transition (the program emits `PassFinalized` and `PhaseAdvanced` for one `finalize_pass`). `chain` is the chain's account AFTER
+    /// the transition: `seq` and `journal_hash` are the journal head (a phase change does not touch the journal), `b` is S (a fresh
+    /// phase), `flat` is true, `phase` is the new phase.
+    ///
+    /// The engine state becomes `reset_phase_state(S)` with an active 12 h breach lock KEPT (the program's `start_phase` and the
+    /// verifier's `on_phase_change` keep it too); the phase advances; the account unfreezes. `seq`, `head`, the archive, the intents
+    /// file, both hash states, the nonces and `trades_closed` continue untouched.
+    ///
+    /// Preconditions, checked in this order (the first violated one is returned): not faulted or ended (`Ended`), status Active
+    /// (`NotActive`), a pass is pending (`NotFrozen`), `phase` is the next phase after the current one (`WrongPhase`; after phase 5 the
+    /// expected phase is 0: call `end_externally`), no position (`NotFlat`), no pending order (`PendingOrders`), no queued journal event
+    /// (`QueuedEvents`), no accepted order waiting for its second (`OrdersQueued`), and the chain view agrees (`ChainMismatch`: `phase`,
+    /// `seq`, `journal_hash`, `b`, `flat`). On any error NOTHING is changed.
+    pub fn phase_started(&mut self, phase: u8, chain: &ChainView) -> Result<(), LifecycleError> {
+        self.live()?;
+        if !self.frozen {
+            return Err(LifecycleError::NotFrozen);
+        }
+        let want = match engine::next_phase(self.phase) {
+            Ok(engine::NextPhase::Next { phase: p, .. }) => p,
+            _ => 0,
+        };
+        if phase == 0 || phase != want {
+            return Err(LifecycleError::WrongPhase { have: phase, want });
+        }
+        if !self.positions.is_empty() {
+            return Err(LifecycleError::NotFlat);
+        }
+        if !self.pending.is_empty() {
+            return Err(LifecycleError::PendingOrders);
+        }
+        if self.queued_events() > 0 {
+            return Err(LifecycleError::QueuedEvents);
+        }
+        if self.has_queued_orders() {
+            return Err(LifecycleError::OrdersQueued);
+        }
+        if chain.phase != phase {
+            return Err(LifecycleError::ChainMismatch { what: "phase" });
+        }
+        if chain.seq != self.seq {
+            return Err(LifecycleError::ChainMismatch { what: "seq" });
+        }
+        if chain.journal_hash != self.head {
+            return Err(LifecycleError::ChainMismatch { what: "journal_hash" });
+        }
+        if chain.b != self.acct.size_micro {
+            return Err(LifecycleError::ChainMismatch { what: "b" });
+        }
+        if !chain.flat {
+            return Err(LifecycleError::ChainMismatch { what: "flat" });
+        }
         let lock = self.st.lock_until;
         let mut fresh = engine::reset_phase_state(self.acct.size_micro);
         fresh.lock_until = lock;
         self.st = fresh;
         self.phase = phase;
         self.frozen = false;
+        Ok(())
     }
 
-    /// The pass was rejected, cancelled or vetoed: trading resumes in the same phase.
-    pub fn pass_resolved(&mut self) {
+    /// The pass was rejected (`PassRejected`), cancelled (`PassCancelled`) or vetoed (`PassVetoed`): trading resumes in the same phase.
+    /// Preconditions: not faulted or ended (`Ended`), status Active (`NotActive`), a pass is pending (`NotFrozen`). On any error NOTHING
+    /// is changed.
+    pub fn pass_resolved(&mut self) -> Result<(), LifecycleError> {
+        self.live()?;
+        if !self.frozen {
+            return Err(LifecycleError::NotFrozen);
+        }
         self.frozen = false;
+        Ok(())
     }
 
     /// Whether the account is frozen for trading (a pass is requested or waiting out its delay).
@@ -493,10 +597,17 @@ impl Evaluator {
         self.frozen
     }
 
-    /// The account became terminal outside the journal (a vault abandonment, a violation fail): the evaluator stops.
-    pub fn end_externally(&mut self) {
+    /// The account became terminal outside the journal (`AccountAbandoned`, `ViolationFail`, or `PassFinalized` to phase 0 after
+    /// phase 5): the evaluator stops. Allowed on a Failed account (`fail_for_violation` ends a Failed + held account) and on a faulted
+    /// evaluator; refused only when it was ended this way already (`AlreadyEnded`, nothing changed). Queued events and pending orders
+    /// are left as they are (the host drains what the chain still accepts).
+    pub fn end_externally(&mut self) -> Result<(), LifecycleError> {
+        if self.ended_externally {
+            return Err(LifecycleError::AlreadyEnded);
+        }
         self.frozen = true;
         self.ended_externally = true;
+        Ok(())
     }
 }
 
@@ -555,5 +666,238 @@ mod tests {
         }
         assert_eq!(ev.refusals().len(), 256);
         assert_eq!(ev.stats().exec_refused, 300);
+    }
+
+    // ---------------------------------------------------------------------------------------------- P29c: the typed lifecycle
+
+    use crate::codec::{IntentKind, OrderIntent};
+    use engine::Position;
+
+    const T0: i64 = 1_700_000_100;
+
+    /// Every private field, in a fixed order, as text: two equal fingerprints mean nothing changed.
+    fn fingerprint(e: &Evaluator) -> String {
+        format!(
+            "{:?}|{:?}|{:?}|{:?}|{}|{:?}|{:?}|{}|{:?}|{}|{}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{}|{:?}|{:?}|{}|{:?}|{}|{:?}|{:?}|{:?}|{}|{:?}|{}|{:?}|{:?}",
+            e.rules, e.acct, e.erules, e.st, e.phase, e.positions, e.pending, e.trades_closed, e.status, e.frozen, e.held, e.fault, e.ended_externally,
+            e.samples, e.archive, e.tracks, e.marks, e.last_archive_day, e.clock, e.processed_through, e.roll_cursor, e.buckets, e.queue, e.seq, e.head,
+            e.last_meta_time, e.nonces, e.intents, e.samples_hasher, e.samples_hashed, e.intents_hasher, e.intents_hashed, e.stats, e.refusals
+        )
+    }
+
+    fn chain_of(e: &Evaluator, phase: u8) -> ChainView {
+        ChainView { seq: e.seq(), journal_hash: e.head(), b: e.acct.size_micro, flat: true, phase }
+    }
+
+    fn pos() -> Pos {
+        Pos { p: Position { qty: 1_000, avg_entry_e12: 1_000_000_000_000, timer_start: T0, opened_at: T0, fee_day: 0 }, sl: 0, tp: 0 }
+    }
+
+    fn intent(kind: IntentKind, t: i64) -> OrderIntent {
+        OrderIntent { kind, market: 0, side: 0, qty: 1_000, price_e12: 0, sl_e12: 0, tp_e12: 0, target_nonce: 0, client_time: t }
+    }
+
+    fn signed(nonce: u32, it: &OrderIntent) -> SignedIntent {
+        SignedIntent { nonce, order: it.to_bytes(), sig: [0; 64] }
+    }
+
+    /// A frozen, flat, idle account of phase 2: the state a pass leaves behind (what `phase_started` expects).
+    fn frozen_idle() -> Evaluator {
+        let mut e = ev_for_unit_tests();
+        e.frozen = true;
+        e
+    }
+
+    #[test]
+    fn phase_started_accepts_the_transition_and_keeps_what_must_continue() {
+        let mut e = ev_for_unit_tests();
+        e.on_sample_mid(0, T0, 1_000_000_000_000).unwrap();
+        e.on_order(&signed(7, &intent(IntentKind::Market, T0))).unwrap();
+        e.tick(T0 + 2);
+        // close it again so the account is flat but has history: a Fill and a Close in the queue, then drained
+        e.frozen = false;
+        e.on_order(&signed(8, &intent(IntentKind::Close, T0 + 2))).unwrap();
+        e.on_sample_mid(0, T0 + 3, 1_000_000_000_000).unwrap();
+        e.tick(T0 + 4);
+        let _ = e.drain_batches(&BatchPolicy::MAX);
+        assert!(e.positions().is_empty() && e.queued_events() == 0);
+        e.st.lock_until = T0 + 40_000; // an active breach lock
+        e.st.b += 10_000_000; // a phase that was won
+        e.frozen = true;
+        let (seq, head, archive, intents, nonces, trades, sh, ih) =
+            (e.seq, e.head, e.archive.clone(), e.intents.clone(), e.nonces.clone(), e.trades_closed, e.samples_hasher.clone().finalize(), e.intents_hasher.clone().finalize());
+        let c = chain_of(&e, 3);
+        assert_eq!(e.phase_started(3, &c), Ok(()));
+        assert_eq!((e.phase(), e.is_frozen()), (3, false));
+        assert_eq!((e.st.b, e.st.q_tally, e.st.latch, e.st.tight_on, e.st.flat), (e.acct.size_micro, 0, false, false, true));
+        assert_eq!(e.st.lock_until, T0 + 40_000, "the 12 h breach lock is kept across a phase change (start_phase keeps lock_until on chain)");
+        assert_eq!((e.seq, e.head, &e.archive, &e.intents, &e.nonces, e.trades_closed), (seq, head, &archive, &intents, &nonces, trades));
+        assert_eq!((e.samples_hasher.clone().finalize(), e.intents_hasher.clone().finalize()), (sh, ih));
+    }
+
+    #[test]
+    fn phase_started_accepts_1_to_2_2_to_3_3_to_4_4_to_5_and_nothing_else() {
+        for have in 1..=5u8 {
+            for want in 0..=7u8 {
+                let mut e = frozen_idle();
+                e.phase = have;
+                let c = chain_of(&e, want);
+                let ok = matches!((have, want), (1, 2) | (2, 3) | (3, 4) | (4, 5));
+                let r = e.phase_started(want, &c);
+                if ok {
+                    assert_eq!(r, Ok(()), "{have} -> {want}");
+                    assert_eq!(e.phase(), want);
+                } else {
+                    let expected = if have == 5 { 0 } else { have + 1 };
+                    assert_eq!(r, Err(LifecycleError::WrongPhase { have: want, want: expected }), "{have} -> {want}");
+                    assert_eq!(e.phase(), have, "a refused call changes nothing");
+                }
+            }
+        }
+    }
+
+    /// One refused call: the error, and a full fingerprint before and after.
+    fn refused<F: FnOnce(&mut Evaluator) -> Result<(), LifecycleError>>(mut e: Evaluator, expected: LifecycleError, call: F) {
+        let before = fingerprint(&e);
+        assert_eq!(call(&mut e), Err(expected));
+        assert_eq!(fingerprint(&e), before, "{expected:?} must change nothing");
+    }
+
+    #[test]
+    fn phase_started_refuses_every_violated_precondition_and_changes_nothing() {
+        let go = |e: &mut Evaluator| {
+            let c = chain_of(e, 3);
+            e.phase_started(3, &c)
+        };
+        // Ended: a fault, and an external end
+        let mut e = frozen_idle();
+        e.fail_internal(EvalError::Overflow);
+        refused(e, LifecycleError::Ended, go);
+        let mut e = frozen_idle();
+        e.ended_externally = true;
+        refused(e, LifecycleError::Ended, go);
+        // NotActive: the journal ended with a Fail
+        let mut e = frozen_idle();
+        e.status = Status::Failed(engine::FailReason::StaticFloor);
+        refused(e, LifecycleError::NotActive, go);
+        // NotFrozen: no pass was requested
+        refused(ev_for_unit_tests(), LifecycleError::NotFrozen, go);
+        // WrongPhase
+        refused(frozen_idle(), LifecycleError::WrongPhase { have: 4, want: 3 }, |e| {
+            let c = chain_of(e, 4);
+            e.phase_started(4, &c)
+        });
+        // NotFlat
+        let mut e = frozen_idle();
+        e.positions.insert(0, pos());
+        refused(e, LifecycleError::NotFlat, go);
+        // PendingOrders
+        let mut e = frozen_idle();
+        e.pending.push(Pending { nonce: 5, intent: intent(IntentKind::Limit, T0) });
+        refused(e, LifecycleError::PendingOrders, go);
+        // QueuedEvents
+        let mut e = ev_for_unit_tests();
+        e.on_sample_mid(0, T0, 1_000_000_000_000).unwrap();
+        e.on_order(&signed(7, &intent(IntentKind::Market, T0))).unwrap();
+        e.tick(T0 + 2);
+        e.positions.clear();
+        e.frozen = true;
+        assert!(e.queued_events() > 0);
+        refused(e, LifecycleError::QueuedEvents, go);
+        // OrdersQueued: accepted in the second of the pass request, not executed yet (the hazard of design 7.4)
+        let mut e = ev_for_unit_tests();
+        e.on_sample_mid(0, T0, 1_000_000_000_000).unwrap();
+        e.on_order(&signed(7, &intent(IntentKind::Market, T0))).unwrap();
+        e.frozen = true;
+        refused(e, LifecycleError::OrdersQueued, go);
+        // ChainMismatch, one field at a time
+        for (what, edit) in [
+            ("seq", (|c: &mut ChainView| c.seq += 1) as fn(&mut ChainView)),
+            ("journal_hash", |c| c.journal_hash[0] ^= 1),
+            ("b", |c| c.b += 1),
+            ("flat", |c| c.flat = false),
+            ("phase", |c| c.phase = 2),
+        ] {
+            refused(frozen_idle(), LifecycleError::ChainMismatch { what }, |e| {
+                let mut c = chain_of(e, 3);
+                edit(&mut c);
+                e.phase_started(3, &c)
+            });
+        }
+    }
+
+    #[test]
+    fn pass_resolved_accepts_a_frozen_account_and_refuses_the_rest_without_a_change() {
+        let mut e = frozen_idle();
+        assert_eq!(e.pass_resolved(), Ok(()));
+        assert!(!e.is_frozen() && e.phase() == 2);
+        refused(ev_for_unit_tests(), LifecycleError::NotFrozen, |e| e.pass_resolved());
+        let mut f = frozen_idle();
+        f.fail_internal(EvalError::Overflow);
+        refused(f, LifecycleError::Ended, |e| e.pass_resolved());
+        let mut f = frozen_idle();
+        f.ended_externally = true;
+        refused(f, LifecycleError::Ended, |e| e.pass_resolved());
+        let mut f = frozen_idle();
+        f.status = Status::Failed(engine::FailReason::PhaseQuick);
+        refused(f, LifecycleError::NotActive, |e| e.pass_resolved());
+    }
+
+    #[test]
+    fn set_held_follows_the_programs_hold_rules() {
+        let mut e = ev_for_unit_tests();
+        assert_eq!(e.set_held(true), Ok(()));
+        assert!(e.held);
+        refused(e, LifecycleError::AlreadyHeld, |e| e.set_held(true));
+        let mut e = ev_for_unit_tests();
+        e.held = true;
+        assert_eq!(e.set_held(false), Ok(()));
+        assert!(!e.held);
+        refused(ev_for_unit_tests(), LifecycleError::NotHeld, |e| e.set_held(false));
+        // hold_account needs an Active account; release_hold works on any status (a Failed + held account is released or failed for violation)
+        let mut f = ev_for_unit_tests();
+        f.status = Status::Failed(engine::FailReason::StaticFloor);
+        refused(f, LifecycleError::NotActive, |e| e.set_held(true));
+        let mut f = ev_for_unit_tests();
+        f.status = Status::Failed(engine::FailReason::StaticFloor);
+        f.held = true;
+        assert_eq!(f.set_held(false), Ok(()), "release_hold works on a failed account");
+        // nothing after an end
+        let mut f = ev_for_unit_tests();
+        f.ended_externally = true;
+        refused(f, LifecycleError::Ended, |e| e.set_held(true));
+        let mut f = ev_for_unit_tests();
+        f.fail_internal(EvalError::Overflow);
+        refused(f, LifecycleError::Ended, |e| e.set_held(true));
+    }
+
+    #[test]
+    fn end_externally_ends_once_and_also_a_failed_account() {
+        let mut e = ev_for_unit_tests();
+        assert_eq!(e.end_externally(), Ok(()));
+        assert!(e.is_ended() && e.is_frozen());
+        refused(e, LifecycleError::AlreadyEnded, |e| e.end_externally());
+        // fail_for_violation on a Failed + held account: the evaluator is Failed already and is still ended externally
+        let mut f = ev_for_unit_tests();
+        f.status = Status::Failed(engine::FailReason::StaticFloor);
+        assert_eq!(f.end_externally(), Ok(()));
+        assert!(f.ended_externally);
+        // a faulted evaluator can still be ended
+        let mut g = ev_for_unit_tests();
+        g.fail_internal(EvalError::Overflow);
+        assert_eq!(g.end_externally(), Ok(()));
+    }
+
+    #[test]
+    fn the_error_type_is_a_std_error_with_a_text() {
+        let all = [
+            LifecycleError::Ended, LifecycleError::NotFrozen, LifecycleError::NotActive, LifecycleError::NotFlat, LifecycleError::PendingOrders,
+            LifecycleError::QueuedEvents, LifecycleError::OrdersQueued, LifecycleError::WrongPhase { have: 4, want: 3 },
+            LifecycleError::ChainMismatch { what: "seq" }, LifecycleError::AlreadyHeld, LifecycleError::NotHeld, LifecycleError::AlreadyEnded,
+        ];
+        let texts: std::collections::BTreeSet<String> = all.iter().map(|e| e.to_string()).collect();
+        assert_eq!(texts.len(), all.len(), "every variant has its own text");
+        let boxed: Box<dyn std::error::Error> = Box::new(LifecycleError::WrongPhase { have: 4, want: 3 });
+        assert!(boxed.to_string().contains('4') && boxed.to_string().contains('3'));
     }
 }

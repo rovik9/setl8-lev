@@ -7,7 +7,7 @@
 //!   E1  the forced close-all after a quick-limit overshoot (decision 69)
 //!   F1  a breach (12 h lock) traded with MOCK proofs; day 2: trades again once the lock has run out
 use anchor_lang::solana_program::pubkey::Pubkey;
-use evaluator::PassDecision;
+use evaluator::{ChainView, PassDecision};
 use journal_types::{CloseReason, FailReason, JournalEvent};
 
 use crate::events::{self, Ev};
@@ -514,7 +514,8 @@ impl Rehearsal {
         self.check(after_tally.0 == before_tally.0 + 1 && after_tally.1 == before_tally.1 + amount, "A1: the payout tally grew by one payout of 0.08 S");
         self.check(events::decode(&self.ids.lev, &sent.info).iter().any(|e| matches!(e, Ev::Finalized(f) if f.to_phase == 3)), "A1: PassFinalized (to phase 3) is emitted");
         // phase 3: the evaluator starts it, then the account fails on the static floor
-        l.ev.phase_started(3);
+        let fresh = ChainView { b: SIZE, flat: true, phase: 3, ..l.local_view() };
+        l.ev.phase_started(3, &fresh).map_err(|e| format!("A1: the evaluator refused phase_started(3): {e}"))?;
         let now = self.c.refresh_clock().map_err(|e| e.to_string())?;
         l.t = l.t.max(now);
         l.ev.tick(l.t);

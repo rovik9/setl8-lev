@@ -21,6 +21,7 @@ fn segments_of_spec(spec: &PathSpec) -> Vec<SegmentView> {
     let mut chain = SimChain::default();
     let r = run_path(spec, world_for(spec), &mut chain);
     assert!(r.world.ev.fault().is_none(), "evaluator fault in seed path {:?}", spec.scenario);
+    assert!(r.notes.is_empty(), "runner notes (a refused lifecycle call?) in {:?}: {:?}", spec.scenario, r.notes);
     let mut out = vec![SegmentView::of(&r)];
     if reset_story(spec) && matches!(r.world.ev.status(), Status::Failed(_)) {
         let failed_phase = r.world.ev.phase();
@@ -31,6 +32,7 @@ fn segments_of_spec(spec: &PathSpec) -> Vec<SegmentView> {
         let mut chain2 = SimChain::default();
         let r2 = run_path(&spec2, world2, &mut chain2);
         assert!(r2.world.ev.fault().is_none(), "evaluator fault in the second segment");
+        assert!(r2.notes.is_empty(), "runner notes in the second segment: {:?}", r2.notes);
         out.push(SegmentView::of(&r2));
     }
     out

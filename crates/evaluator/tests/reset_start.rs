@@ -63,12 +63,18 @@ fn a_phase_p_start_trades_passes_and_the_verifier_agrees_for_every_p() {
         assert!(rep.verdict == setl8_verify::Verdict::Valid, "phase {p}:\n{}", describe(&rep));
         // the evaluator confirms in phase p (and only a request carrying phase p)
         assert_eq!(w.ev.request_pass(t, &ChainView { phase: if p == 1 { 2 } else { p - 1 }, ..v }, ReplayCheck::Valid), PassDecision::Reject(PassReject::Other), "a request in another phase");
-        w.ev.pass_resolved();
+        w.ev.pass_resolved().unwrap();
         assert_eq!(w.ev.request_pass(t, &v, ReplayCheck::Valid), PassDecision::Confirm, "phase {p}");
-        // the next phase starts fresh; phase 5 would graduate (the runner ends the evaluator there)
-        let next = if p == 5 { 5 } else { p + 1 };
-        w.ev.phase_started(next);
-        assert_eq!((w.ev.phase(), w.ev.state().b), (next, S100K));
+        if p == 5 {
+            // phase 5 graduates: `phase_started` has no phase to start (it names 0 as the expected one), the host ends the evaluator
+            assert_eq!(w.ev.phase_started(5, &ChainView { b: S100K, ..v }), Err(LifecycleError::WrongPhase { have: 5, want: 0 }));
+            assert_eq!(w.ev.end_externally(), Ok(()));
+            assert!(w.ev.is_ended());
+        } else {
+            // the next phase starts fresh
+            assert_eq!(w.ev.phase_started(p + 1, &ChainView { b: S100K, phase: p + 1, ..v }), Ok(()));
+            assert_eq!((w.ev.phase(), w.ev.state().b), (p + 1, S100K));
+        }
     }
 }
 

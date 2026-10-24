@@ -197,7 +197,7 @@ fn an_ended_evaluator_still_archives() {
 fn external_end_stops_the_evaluator() {
     let mut w = fx_world(TEST_HALF_SPREAD_E6);
     w.sample(0, T_1400, p4(10_000));
-    w.ev.end_externally();
+    w.ev.end_externally().unwrap();
     assert!(w.ev.is_ended() && w.ev.is_frozen());
     assert_eq!(w.order(market_order(0, true, MEUR, T_1400)), Err(OrderReject::AccountEnded));
     w.sample(0, T_1400 + 5, p4(10_000));

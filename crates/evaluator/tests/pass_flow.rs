@@ -36,7 +36,8 @@ fn confirm_when_everything_agrees() {
     assert!(w.ev.is_frozen(), "the account is frozen from the request on");
     assert_eq!(w.order(market_order(0, true, MEUR, t + 1)), Err(OrderReject::AccountFrozen));
     // the pass is confirmed; phase 2 -> 3 starts fresh at the finalization and unfreezes
-    w.ev.phase_started(3);
+    let after = ChainView { seq: w.ev.seq(), journal_hash: w.ev.head(), b: S100K, flat: true, phase: 3 };
+    assert_eq!(w.ev.phase_started(3, &after), Ok(()));
     assert!(!w.ev.is_frozen());
     let st = w.ev.state();
     assert_eq!((w.ev.phase(), st.b, st.q_tally, st.latch, st.tight_on, st.flat), (3, S100K, 0, false, false, true));
@@ -60,7 +61,12 @@ fn a_new_phase_keeps_the_breach_lock() {
     w.ev.tick(t + 151);
     let lock = w.ev.state().lock_until;
     assert!(lock > 0);
-    w.ev.phase_started(3);
+    // the account pressed the button after the breach (the pass is refused: the target is not reached, but the account is frozen), then the
+    // journal is posted and the chain moves to phase 3
+    let _ = w.ev.drain_batches(&BatchPolicy::MAX);
+    let v = ChainView { seq: w.ev.seq(), journal_hash: w.ev.head(), b: w.ev.state().b, flat: true, phase: 2 };
+    assert!(matches!(w.ev.request_pass(t + 151, &v, ReplayCheck::Skipped), PassDecision::Reject(_)));
+    assert_eq!(w.ev.phase_started(3, &ChainView { b: S100K, phase: 3, ..v }), Ok(()));
     assert_eq!(w.ev.state().lock_until, lock);
     assert_eq!(w.ev.state().b, S100K);
 }
@@ -74,23 +80,23 @@ fn every_rejection() {
     // ... or the chain is at another sequence / hash than the evaluator
     let bs = w.ev.drain_batches(&BatchPolicy::MAX);
     let good = view(&w, &bs);
-    w.ev.pass_resolved();
+    w.ev.pass_resolved().unwrap();
     assert_eq!(w.ev.request_pass(t, &ChainView { seq: good.seq - 1, ..good }, ReplayCheck::Valid), PassDecision::Reject(PassReject::JournalBehind));
-    w.ev.pass_resolved();
+    w.ev.pass_resolved().unwrap();
     assert_eq!(w.ev.request_pass(t, &ChainView { journal_hash: [7; 32], ..good }, ReplayCheck::Valid), PassDecision::Reject(PassReject::JournalBehind));
     // NotFlat: the chain says so
-    w.ev.pass_resolved();
+    w.ev.pass_resolved().unwrap();
     assert_eq!(w.ev.request_pass(t, &ChainView { flat: false, ..good }, ReplayCheck::Valid), PassDecision::Reject(PassReject::NotFlat));
     // Other: a pending order, a balance that differs, another phase, a watchdog mismatch
-    w.ev.pass_resolved();
+    w.ev.pass_resolved().unwrap();
     assert_eq!(w.ev.request_pass(t, &ChainView { b: good.b + 1, ..good }, ReplayCheck::Valid), PassDecision::Reject(PassReject::Other));
-    w.ev.pass_resolved();
+    w.ev.pass_resolved().unwrap();
     assert_eq!(w.ev.request_pass(t, &ChainView { phase: 3, ..good }, ReplayCheck::Valid), PassDecision::Reject(PassReject::Other));
-    w.ev.pass_resolved();
+    w.ev.pass_resolved().unwrap();
     assert_eq!(w.ev.request_pass(t, &good, ReplayCheck::Mismatch), PassDecision::Reject(PassReject::Other));
-    w.ev.pass_resolved();
+    w.ev.pass_resolved().unwrap();
     assert_eq!(w.ev.request_pass(t, &good, ReplayCheck::Skipped), PassDecision::Confirm);
-    w.ev.pass_resolved();
+    w.ev.pass_resolved().unwrap();
     w.order(order(evaluator::codec::IntentKind::Limit, 0, 0, MEUR, p4(9_000), 0, 0, 0, t)).unwrap();
     assert_eq!(w.ev.request_pass(t, &good, ReplayCheck::Valid), PassDecision::Reject(PassReject::Other));
     // the reject codes are the program's

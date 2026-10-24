@@ -183,6 +183,60 @@ pub enum PassReject {
     Other = 3,
 }
 
+/// Why a lifecycle call was refused (`phase_started`, `pass_resolved`, `set_held`, `end_externally`). A refused call changes NOTHING:
+/// no field, no counter, no queue. The host maps it to a refused lifecycle input; it never means the chain event did not happen, only that
+/// this evaluator is not in the state in which that event is possible (the host's ordering or its own state is wrong).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LifecycleError {
+    /// The evaluator faulted or was ended outside the journal: it accepts no more lifecycle input (except `end_externally`).
+    Ended,
+    /// No pass is pending: `phase_started` and `pass_resolved` follow a `request_pass`, which freezes the account.
+    NotFrozen,
+    /// The journal ended with a `Fail` (`phase_started`, `pass_resolved`, `set_held(true)`).
+    NotActive,
+    /// A position is open.
+    NotFlat,
+    /// A limit or stop order is still pending.
+    PendingOrders,
+    /// Journal events are still queued (`drain_batches` first, and post them).
+    QueuedEvents,
+    /// An accepted order has not executed yet (it sits in its second's bucket): it would execute after the lifecycle change.
+    OrdersQueued,
+    /// `phase_started` was called with the wrong phase: `have` is the phase the host passed, `want` the phase the evaluator expects
+    /// after its current one (2 after 1 ... 5 after 4; 0 after 5, the account graduates: call `end_externally`).
+    WrongPhase { have: u8, want: u8 },
+    /// The `ChainView` of the fresh phase disagrees with the evaluator: `what` is `seq`, `journal_hash`, `b` (a fresh phase has B = S),
+    /// `flat` (a fresh phase is flat) or `phase`.
+    ChainMismatch { what: &'static str },
+    /// `set_held(true)` on a held account (the verifier's `StateMismatch` for a second `account_held` line).
+    AlreadyHeld,
+    /// `set_held(false)` on an account that is not held.
+    NotHeld,
+    /// `end_externally` on an account that was ended outside the journal already.
+    AlreadyEnded,
+}
+
+impl std::fmt::Display for LifecycleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LifecycleError::Ended => write!(f, "the evaluator faulted or was ended outside the journal"),
+            LifecycleError::NotFrozen => write!(f, "no pass is pending (the account is not frozen)"),
+            LifecycleError::NotActive => write!(f, "the account is not active (its journal ended with a Fail)"),
+            LifecycleError::NotFlat => write!(f, "a position is open"),
+            LifecycleError::PendingOrders => write!(f, "a pending order is still live"),
+            LifecycleError::QueuedEvents => write!(f, "journal events are still queued"),
+            LifecycleError::OrdersQueued => write!(f, "an accepted order has not executed yet"),
+            LifecycleError::WrongPhase { have, want } => write!(f, "phase {have} passed, phase {want} expected (0 = graduation)"),
+            LifecycleError::ChainMismatch { what } => write!(f, "the chain view disagrees with the evaluator: {what}"),
+            LifecycleError::AlreadyHeld => write!(f, "the account is already held"),
+            LifecycleError::NotHeld => write!(f, "the account is not held"),
+            LifecycleError::AlreadyEnded => write!(f, "the account was already ended outside the journal"),
+        }
+    }
+}
+
+impl std::error::Error for LifecycleError {}
+
 /// Internal failures (a bug or an impossible configuration), never a trader error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvalError {

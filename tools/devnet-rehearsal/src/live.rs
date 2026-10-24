@@ -211,7 +211,7 @@ impl Live {
         let t = self.t;
         let replay = net.pass_done(a, t);
         if !net.request_advance(a, t)? {
-            self.ev.pass_resolved();
+            // the evaluator was not asked yet (`request_pass` freezes it), so there is nothing to resolve
             return Err("the program refused request_advance".into());
         }
         let view = if replay { self.local_view() } else { net.view(a)? };
@@ -220,13 +220,14 @@ impl Live {
             PassDecision::Confirm => {
                 net.confirm_pass(a, t + 1)?;
                 if self.ev.phase() == 1 {
-                    self.ev.phase_started(2);
+                    let fresh = ChainView { b: self.ev.account().size_micro, flat: true, phase: 2, ..view };
+                    self.ev.phase_started(2, &fresh).map_err(|e| format!("the evaluator refused phase_started(2): {e}"))?;
                 }
                 self.t = t + 2;
             }
             PassDecision::Reject(r) => {
                 net.reject_pass(a, t + 1, r as u8)?;
-                self.ev.pass_resolved();
+                self.ev.pass_resolved().map_err(|e| format!("the evaluator refused pass_resolved: {e}"))?;
                 self.t = t + 2;
             }
         }
@@ -237,7 +238,7 @@ impl Live {
     pub fn hold(&mut self, net: &mut dyn Net, a: &AcctRef) -> Result<(), String> {
         self.flush(net, a)?;
         net.hold(a, self.t)?;
-        self.ev.set_held(true);
+        self.ev.set_held(true).map_err(|e| format!("the evaluator refused set_held(true): {e}"))?;
         self.t += 1;
         Ok(())
     }

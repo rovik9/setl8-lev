@@ -147,13 +147,13 @@ fn freezing_and_ending() {
     assert_eq!(d, evaluator::PassDecision::Reject(evaluator::PassReject::TargetNotReached));
     assert!(w.ev.is_frozen());
     assert_eq!(w.order(market_order(0, true, MEUR, T_1400 + 2)), Err(R::AccountFrozen));
-    w.ev.pass_resolved();
+    w.ev.pass_resolved().unwrap();
     assert!(w.order(market_order(0, true, MEUR, T_1400 + 2)).is_ok());
     w.sample(0, T_1400 + 3, p4(10_000));
     w.ev.tick(T_1400 + 4);
     assert_eq!(w.ev.positions().len(), 1);
     // a held account refuses limit orders up front and opening market orders at execution
-    w.ev.set_held(true);
+    w.ev.set_held(true).unwrap();
     assert_eq!(w.order(order(IntentKind::Limit, 0, 0, MEUR, p4(9_000), 0, 0, 0, T_1400 + 4)), Err(R::AccountHeld));
     assert_eq!(w.ev.refusals().len(), 0);
     assert!(w.order(market_order(0, true, MEUR, T_1400 + 4)).is_ok());
@@ -165,7 +165,7 @@ fn freezing_and_ending() {
     w.sample(0, T_1400 + 9, p4(10_000));
     w.ev.tick(T_1400 + 10);
     assert!(w.ev.positions().is_empty());
-    w.ev.set_held(false);
+    w.ev.set_held(false).unwrap();
     // an account that failed refuses everything
     w.order(market_order(0, true, 45_000_000_000_000 / 10, T_1400 + 10)).unwrap();
     w.sample(0, T_1400 + 11, p4(10_000));
@@ -556,9 +556,9 @@ fn an_unpriced_market_is_refused_after_the_quantity_the_price_and_the_market_sta
     // a limit order with no level at all and an unpriced market: unpriced answers before the level
     assert_eq!(w.order(order(IntentKind::Limit, 1, 0, MEUR, 0, 0, 0, 0, T_1400)), Err(R::MarketUnpriced));
     // a held account answers first for a pending kind
-    w.ev.set_held(true);
+    w.ev.set_held(true).unwrap();
     assert_eq!(w.order(order(IntentKind::Limit, 1, 0, MEUR, p4(9_900), 0, 0, 0, T_1400)), Err(R::AccountHeld));
-    w.ev.set_held(false);
+    w.ev.set_held(false).unwrap();
     // a disabled market answers first for a pending kind
     let mut m = market(1, 0, "UNPRICED", 0);
     m.max_age_secs = 3_600;

@@ -328,7 +328,7 @@ fn an_account_that_ended_on_the_chain_gets_no_heartbeat() {
     w.sample(0, T_1400, p4(10_000));
     w.ev.tick(T_1400 + 30);
     let policy = evaluator::BatchPolicy::MAX.with_heartbeat(true);
-    w.ev.end_externally();
+    w.ev.end_externally().unwrap();
     assert!(w.ev.drain_batches(&policy).is_empty());
     let mut live = world(0, 1_000_000_000_000_000, 1);
     live.sample(0, T_1400, p4(10_000));

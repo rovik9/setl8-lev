@@ -694,7 +694,7 @@ mod unpriced_tests {
     fn the_unpriced_refusal_comes_after_hold_lock_and_status_and_before_the_flip_remainder() {
         // held first
         let mut e = ev(0);
-        e.set_held(true);
+        e.set_held(true).unwrap();
         assert_eq!(run(&mut e, &intent(0, 10_000), OrderKind::Market), Err(OrderReject::AccountHeld));
         // status next
         let mut e = ev_with(0, |m| m.status = STATUS_REDUCE_ONLY);

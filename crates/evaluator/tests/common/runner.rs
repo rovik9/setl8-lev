@@ -195,7 +195,9 @@ pub fn run_path<C: Chain>(spec: &PathSpec, w0: World, chain: &mut C) -> RunResul
                 post_all(&mut w, chain, &mut r, &policy_for(spec, false));
                 chain.hold(&w, *sec, *held);
                 r.items.push(Item::Line(setl8_verify::log::hold_line(&account, *sec, *held)));
-                w.ev.set_held(*held);
+                if let Err(e) = w.ev.set_held(*held) {
+                    r.notes.push(format!("set_held({held}) refused: {e:?}"));
+                }
             }
             Step::Pass { sec, plan } => {
                 let t = *sec;
@@ -229,7 +231,7 @@ pub fn run_path<C: Chain>(spec: &PathSpec, w0: World, chain: &mut C) -> RunResul
                 match (plan, dec) {
                     (PassPlan::JournalBehind, PassDecision::Reject(reason)) | (PassPlan::PendingLeft, PassDecision::Reject(reason)) => {
                         chain.reject_pass(&w, t + 1, reason);
-                        w.ev.pass_resolved();
+                        note_err(&mut r, "pass_resolved", w.ev.pass_resolved());
                         r.pass.rejected += 1;
                         w.ev.tick(t + 3);
                         post_all(&mut w, chain, &mut r, &policy_for(spec, false));
@@ -239,13 +241,13 @@ pub fn run_path<C: Chain>(spec: &PathSpec, w0: World, chain: &mut C) -> RunResul
                         r.pass.confirmed += 1;
                         if phase_now == 1 {
                             r.items.push(Item::Line(phase_advanced_line(&account, 1, 2, t + 1)));
-                            w.ev.phase_started(2);
+                            note_err(&mut r, "phase_started(2)", w.ev.phase_started(2, &ChainView { b: size, flat: true, phase: 2, ..v }));
                             phase_now = 2;
                         } else {
                             r.items.push(Item::Line(pass_confirmed_line(&account, phase_now, amount, &v, t + 1 + PASS_DELAY_SECS)));
                             if *plan == PassPlan::Veto {
                                 chain.veto_pass(&w, t + 60);
-                                w.ev.pass_resolved();
+                                note_err(&mut r, "pass_resolved", w.ev.pass_resolved());
                                 r.pass.vetoed += 1;
                                 w.ev.tick(t + 62);
                             } else {
@@ -261,9 +263,9 @@ pub fn run_path<C: Chain>(spec: &PathSpec, w0: World, chain: &mut C) -> RunResul
                                 }
                                 if next == 0 {
                                     r.pass.graduated = true;
-                                    w.ev.end_externally();
+                                    note_err(&mut r, "end_externally", w.ev.end_externally());
                                 } else {
-                                    w.ev.phase_started(next);
+                                    note_err(&mut r, &format!("phase_started({next})"), w.ev.phase_started(next, &ChainView { b: size, flat: true, phase: next, ..v }));
                                     phase_now = next;
                                 }
                                 w.ev.tick(tf + 1);
@@ -273,7 +275,7 @@ pub fn run_path<C: Chain>(spec: &PathSpec, w0: World, chain: &mut C) -> RunResul
                     (p, d) => {
                         r.notes.push(format!("pass plan {p:?} met decision {d:?}"));
                         chain.reject_pass(&w, t + 1, PassReject::Other);
-                        w.ev.pass_resolved();
+                        note_err(&mut r, "pass_resolved", w.ev.pass_resolved());
                     }
                 }
             }
@@ -281,6 +283,13 @@ pub fn run_path<C: Chain>(spec: &PathSpec, w0: World, chain: &mut C) -> RunResul
     }
     r.world = w;
     r
+}
+
+/// A refused lifecycle call is a note: an honest campaign path never violates a precondition (the byte gate and the campaigns fail on notes).
+fn note_err(r: &mut RunResult, what: &str, res: Result<(), LifecycleError>) {
+    if let Err(e) = res {
+        r.notes.push(format!("{what} refused: {e:?}"));
+    }
 }
 
 fn post_all<C: Chain>(w: &mut World, chain: &mut C, r: &mut RunResult, policy: &BatchPolicy) {
