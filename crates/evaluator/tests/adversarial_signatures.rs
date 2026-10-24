@@ -88,7 +88,7 @@ fn honest(account: &[u8; 32], nonce: u32) -> SignedIntent {
 }
 
 /// A world whose evaluator uses `v`, with one fresh sample so an order can be validated against a priced market.
-fn world_with(v: Box<dyn IntentVerifier>, trader: [u8; 32]) -> World {
+fn world_with(v: Box<dyn IntentVerifier + Send>, trader: [u8; 32]) -> World {
     let mut p = params(S100K, 2, T_1400 - HOUR);
     p.trader = trader;
     let mut w = World::from_params(base_rules(vec![fx_market()]), p.clone());
@@ -104,11 +104,11 @@ fn fx_market() -> evaluator::MarketCfg {
     m
 }
 
-fn honest_world(v: Box<dyn IntentVerifier>) -> World {
+fn honest_world(v: Box<dyn IntentVerifier + Send>) -> World {
     world_with(v, trader_keypair().public.to_bytes())
 }
 
-type MakeVerifier = fn() -> Box<dyn IntentVerifier>;
+type MakeVerifier = fn() -> Box<dyn IntentVerifier + Send>;
 
 fn both() -> Vec<(&'static str, MakeVerifier)> {
     vec![("Ed25519Check (plain verify)", || Box::new(Ed25519Check)), ("StrictEd25519 (verify_strict)", || Box::new(StrictEd25519))]

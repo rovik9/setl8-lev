@@ -1,7 +1,7 @@
 //! The evaluator: state, inputs and clock. The rules that act on a second of samples live in `decide.rs`, orders in
 //! `exec.rs`, batching in `drain.rs`, the pass flow in `pass.rs`.
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use engine::{AccountState, Rules as EngineRules};
 use journal_types::genesis_hash;
@@ -109,9 +109,9 @@ pub(crate) struct Bucket {
 
 /// The reference evaluator of one account. See the crate documentation for the model.
 pub struct Evaluator {
-    pub(crate) rules: Rc<RulesCfg>,
+    pub(crate) rules: Arc<RulesCfg>,
     pub(crate) acct: AccountParams,
-    pub(crate) verifier: Box<dyn IntentVerifier>,
+    pub(crate) verifier: Box<dyn IntentVerifier + Send>,
     pub(crate) erules: EngineRules,
     pub(crate) st: AccountState,
     pub(crate) phase: u8,
@@ -155,7 +155,7 @@ pub struct Evaluator {
 impl Evaluator {
     /// A new evaluator for a freshly opened account: balance S, phase `acct.phase`, nothing open, the hash chain at
     /// its genesis, an archive with its first segment header and an intents file with its header line.
-    pub fn new(rules: RulesCfg, acct: AccountParams, verifier: Box<dyn IntentVerifier>) -> Result<Self, ConfigError> {
+    pub fn new(rules: RulesCfg, acct: AccountParams, verifier: Box<dyn IntentVerifier + Send>) -> Result<Self, ConfigError> {
         if acct.size_micro <= 0 || engine::frac_exact(acct.size_micro, engine::consts::BPS).is_err() {
             return Err(ConfigError::BadSize);
         }
@@ -184,7 +184,7 @@ impl Evaluator {
         Ok(Evaluator {
             st: engine::reset_phase_state(acct.size_micro),
             phase: acct.phase,
-            rules: Rc::new(rules),
+            rules: Arc::new(rules),
             acct,
             verifier,
             erules: EngineRules::default(),
