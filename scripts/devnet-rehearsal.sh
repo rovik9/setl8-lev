@@ -120,6 +120,11 @@ cmd_build() {
   echo "== vault scratch build (vault HEAD $(git -C "$VAULT_REPO" rev-parse --short HEAD), throwaway id, throwaway admin keys)"
   rm -rf "$BV"; mkdir -p "$BV"
   (cd "$VAULT_REPO" && rsync -a --exclude target programs Cargo.toml Cargo.lock Anchor.toml "$BV/")
+  # cargo's automatic cache cleaning removes old .crate files while the extracted sources stay, and `cargo build-sbf` (cargo metadata) then fails
+  # offline ("failed to download"): give the scratch tree a directory source made of the extracted crates (checksums from its own Cargo.lock)
+  python3 "$REPO/scripts/vendor-from-registry-src.py" "$BV/Cargo.lock" "$BV/vendor-local" || die "the vault's crates are not all in ~/.cargo/registry/src"
+  mkdir -p "$BV/.cargo"
+  printf '[source.crates-io]\nreplace-with = "vendored-local"\n\n[source.vendored-local]\ndirectory = "vendor-local"\n' > "$BV/.cargo/config.toml"
   local old_id; old_id=$(grep -o 'declare_id!("[A-Za-z0-9]*")' "$VAULT_REPO/programs/core-vault/src/lib.rs" | sed 's/declare_id!("\(.*\)")/\1/')
   local old_sl8 old_rov
   old_sl8=$(localnet_const "$VAULT_REPO/programs/core-vault/src/constants/admin.rs" SL8_ADMIN_PUBKEY)
@@ -157,8 +162,16 @@ cmd_build() {
   echo "lev .so ($(pub program-lev)) sha256: $(shasum -a 256 "$LEV_SO" | cut -d' ' -f1)  size $(wc -c <"$LEV_SO" | tr -d ' ')  (frozen candidate re-keyed; plain size $(wc -c <"$BL/out-plain/setl8_lev_trading.so" | tr -d ' '))"
 
   echo "== the driver and the public verifier"
-  cargo build --release --offline --manifest-path "$TOOL_DIR/Cargo.toml"
-  cargo build --release --offline --locked -p setl8-lev-verifier
+  # if cargo's cache cleaning removed old .crate files, build from the extracted sources (a directory source outside the repo; no network)
+  local cfg=()
+  if ! cargo build --release --offline --manifest-path "$TOOL_DIR/Cargo.toml" 2>/dev/null; then
+    echo "(the crate cache is incomplete: using the extracted registry sources as a directory source)"
+    python3 "$REPO/scripts/vendor-from-registry-src.py" "$TOOL_DIR/Cargo.lock" "$D/vendor-tools" || die "missing extracted crates for the driver"
+    python3 "$REPO/scripts/vendor-from-registry-src.py" "$REPO/Cargo.lock" "$D/vendor-tools" || die "missing extracted crates for the verifier"
+    cfg=(--config 'source.crates-io.replace-with="vendored-local"' --config "source.vendored-local.directory=\"$D/vendor-tools\"")
+  fi
+  cargo build "${cfg[@]}" --release --offline --manifest-path "$TOOL_DIR/Cargo.toml"
+  cargo build "${cfg[@]}" --release --offline --locked -p setl8-lev-verifier
   echo "driver sha256: $(shasum -a 256 "$TOOL" | cut -d' ' -f1)"
 }
 

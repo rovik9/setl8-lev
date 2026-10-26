@@ -26,7 +26,8 @@ impl Rehearsal {
     fn restate_heavy(&mut self, label: &str, what: &str, limit_text: &str) {
         let rec = self.st.sigs.iter().rev().find(|s| s.label == label).cloned();
         if let Some(r) = rec {
-            let ok = r.ok && r.cu <= 200_000;
+            // a heavy batch carries the limit of the evaluator's model (P27); landing means it stayed inside it
+            let ok = r.ok && r.cu <= 1_400_000;
             self.check(ok, &format!("{what}: {} CU, {} bytes [{}]{} {limit_text}", r.cu, r.size, r.sig, if r.ok { String::new() } else { format!(" FAILED on the cluster: {}", r.err) }));
         }
     }
@@ -71,10 +72,12 @@ impl Rehearsal {
         let batch = journal_types::JournalBatch { first_seq: acct.seq + 1, prev_hash: acct.journal_hash, events, proofs };
         let ixn = crate::ix::post_journal(&self.ids, &self.keys.pubkey("evaluator"), &g2.trader, g2.challenge_id, acct.ruleset_version, batch.to_bytes().map_err(|e| format!("{e:?}"))?, &[0, 1, 2]);
         self.c.wait_until(now).map_err(|e| e.to_string())?;
-        match self.send("post_journal ev=8 pr=3 heavy G2", &[ixn], "evaluator", &[], true) {
+        // P27 (decision 71): a batch of this size carries the compute limit of the evaluator's model, never the 200,000 default
+        let limit = u32::try_from(evaluator::compute::recommended_cu_limit(evaluator::BatchKind::PostJournal, 8, 3)).unwrap_or(1_400_000);
+        match self.send("post_journal ev=8 pr=3 heavy G2", &[crate::ix::compute_budget_limit(limit), ixn], "evaluator", &[], true) {
             Ok(s) => {
                 self.say(&format!("  heavy batch (8 events, 3 proofs): {} CU, {} bytes [{}]", s.info.cu, s.size, s.info.signature));
-                self.check(s.info.cu <= 200_000, &format!("the heaviest legal post_journal (8 events, 3 proofs) fits the 200,000-unit limit on the cluster: {} CU (LiteSVM heaviest mix 125,290)", s.info.cu));
+                self.check(s.info.cu <= u64::from(limit), &format!("the heaviest legal post_journal (8 events, 3 proofs) fits the limit the evaluator's model requests ({limit}) on the cluster: {} CU (LiteSVM heaviest mix 125,290; the 200,000 default is not enough for 7 to 8 events, P27)", s.info.cu));
             }
             Err(e) => {
                 let sig = e.sent.as_ref().map(|s| s.info.signature.clone()).unwrap_or_default();
@@ -154,10 +157,11 @@ impl Rehearsal {
         let b2 = journal_types::JournalBatch { first_seq: acct.seq + 1, prev_hash: acct.journal_hash, events, proofs };
         let ixn = crate::ix::report_fail(&self.ids, &evaluator, &h1.trader, h1.challenge_id, acct.ruleset_version, b2.to_bytes().map_err(|e| format!("{e:?}"))?, 0, &[0, 1, 2]);
         self.c.wait_until(t2).map_err(|e| e.to_string())?;
-        match self.send(&label, &[ixn], "evaluator", &[], true) {
+        let limit = u32::try_from(evaluator::compute::recommended_cu_limit(evaluator::BatchKind::ReportFail(engine::FailReason::StaticFloor), events_n, 3)).unwrap_or(1_400_000);
+        match self.send(&label, &[crate::ix::compute_budget_limit(limit), ixn], "evaluator", &[], true) {
             Ok(s) => {
                 self.say(&format!("  report_fail of {events_n} events, 3 proofs: {} CU, {} bytes [{}]", s.info.cu, s.size, s.info.signature));
-                self.check(s.info.cu <= 200_000, &format!("a legal report_fail of {events_n} events and 3 proofs fits the 200,000-unit limit on the cluster: {} CU ({lite})", s.info.cu));
+                self.check(s.info.cu <= u64::from(limit), &format!("a legal report_fail of {events_n} events and 3 proofs fits the limit the evaluator's model requests ({limit}) on the cluster: {} CU ({lite}; the 200,000 default is not enough, P27)", s.info.cu));
             }
             Err(e) => {
                 let sig = e.sent.as_ref().map(|s| s.info.signature.clone()).unwrap_or_default();
@@ -196,9 +200,11 @@ impl Rehearsal {
                 l.ceiling_bytes.map(|x| x.to_string()).unwrap_or_else(|| "-".into())
             ));
         }
-        // the hard limits of the runtime: 200,000 units per instruction (no budget instruction is sent) and 1,232 bytes per transaction
-        let beyond: Vec<String> = lines.iter().filter(|l| l.max_cu > 200_000 || l.max_bytes > 1_232).map(|l| format!("{} ({} CU, {} bytes)", l.name, l.max_cu, l.max_bytes)).collect();
-        self.check(beyond.is_empty(), &format!("every measured instruction is inside the runtime's limits (200,000 CU, 1,232 bytes); {} instructions measured{}", lines.len(), if beyond.is_empty() { String::new() } else { format!(", BEYOND: {}", beyond.join(", ")) }));
+        // the hard limits of the runtime: 200,000 units per instruction unless the transaction requests more (the heavy batches request the
+        // evaluator's model limit, P27, at most 1,400,000) and 1,232 bytes per transaction
+        let cap = |name: &str| if name.contains("heavy") || name == "post_journal" || name == "report_fail" { 1_400_000 } else { 200_000 };
+        let beyond: Vec<String> = lines.iter().filter(|l| l.max_cu > cap(&l.name) || l.max_bytes > 1_232).map(|l| format!("{} ({} CU, {} bytes)", l.name, l.max_cu, l.max_bytes)).collect();
+        self.check(beyond.is_empty(), &format!("every measured instruction is inside the runtime's limits (200,000 CU, or the requested limit of a post_journal / report_fail batch, P27; 1,232 bytes); {} instructions measured{}", lines.len(), if beyond.is_empty() { String::new() } else { format!(", BEYOND: {}", beyond.join(", ")) }));
         // the ceilings of budget.rs were calibrated on LiteSVM: a line above one is a finding, not a failure of the scenario
         let over: Vec<&measure::Line> = lines.iter().filter(|l| l.over_ceiling).collect();
         if over.is_empty() {
