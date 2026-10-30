@@ -26,5 +26,9 @@ Task: handover/prompts/P24a-owner-fixed-costs.md (decision 72) and handover/prom
 
 ## P30 state (devnet run; resume = re-paste handover/prompts/P30-devnet-run.md; it starts at the first step not DONE)
 * step 1 REBUILD AND OFFLINE REGRESSION: DONE. `build` reproduces the frozen localnet hash 43fdd935...; vault .so ef6bbe719c46...0f15c (535,712 B) and lev .so 03b0333240a5...343ee (862,704 B) are identical to P23's. Cargo's cache cleaning had removed the .crate files: the script now builds from the extracted registry sources (scripts/vendor-from-registry-src.py, a directory source outside the repo, no network). Driver fix: the heavy S4 batches carry the P27 compute limit. `selftest all`: S0..S5 PASS, 168 checks, 0 FAIL. Keys kept (public addresses match handover/devnet-rehearsal.md section 2).
-* step 2 FUNDING CHECK: NEXT.
+* step 2 FUNDING CHECK: `needs` run against devnet: every key holds 0 SOL (total 13.07 SOL for a full run). `fund` (airdrop) tried once: the devnet RPC answers error 410 "The RPC faucet is closed on this cluster", so only the browser faucet (https://faucet.solana.com, 5 SOL per request) works. `distribute` implemented (driver + script; the keeper pays the small keys in one transaction; clippy -D warnings clean, 42 unit tests pass). STOPPED AT FUNDING (expected first stop). HUMAN ACTION: fund exactly two PUBLIC addresses in the browser faucet, devnet:
+  - upgrade-authority GxDJcsyKDk7iS3eAhDGigsTWmuBvzY5z8WkNhVPP2a9p : needs 11.5908 SOL, ask for at least 11.7 SOL (e.g. 5 + 5 + 2 SOL)
+  - keeper 98j1TXdxt77vsDVcLmABWyMP2bWXVoYqRg85nGVGvcth : needs 0.75 own + 0.73 for the small keys = 1.48 SOL, ask for at least 1.6 SOL (e.g. 2 SOL)
+  RESUME: after both are funded, re-paste handover/prompts/P30-devnet-run.md (it resumes at step 3), or by hand: `export RUSTUP_TOOLCHAIN=stable; scripts/devnet-rehearsal.sh --cluster devnet needs; scripts/devnet-rehearsal.sh --cluster devnet distribute; scripts/devnet-rehearsal.sh --cluster devnet deploy; scripts/devnet-rehearsal.sh --cluster devnet run`.
+* step 3 DEPLOY AND DAY 1: NEXT (blocked on funding). Steps 4 to 7 and 5b (payout leg + demo script) are NOT started.
 

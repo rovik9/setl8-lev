@@ -180,6 +180,7 @@ fn run() -> Result<i32, String> {
     match a.command.as_str() {
         "needs" => needs_command(&r, &a),
         "fund" => fund_command(&r, &a),
+        "distribute" => distribute_command(&mut r, &a),
         "status" => {
             status_command(&r);
             Ok(0)
@@ -209,6 +210,44 @@ fn needs_command(r: &Rehearsal, a: &Args) -> Result<i32, String> {
     let total: u64 = needs(peak).iter().map(|n| n.1).sum();
     println!("total SOL for a full run: {}", sol(total));
     Ok(if short { 3 } else { 0 })
+}
+
+/// P30: when only the upgrade authority and the keeper were funded (in the browser faucet), the keeper pays the small keys: one transaction of
+/// system transfers from the keeper to every key (not the upgrade authority, not the keeper) that holds less than `needs()` asks. Public data only.
+fn distribute_command(r: &mut Rehearsal, a: &Args) -> Result<i32, String> {
+    let peak = deploy_peak(&r.c, file_len(&a.vault_so).max(1), file_len(&a.lev_so).max(1));
+    let keeper = r.keys.pubkey("keeper");
+    let mut ixs = Vec::new();
+    let mut total = 0u64;
+    let mut keeper_want = 0u64;
+    for (name, want, _) in needs(peak) {
+        if name == "keeper" {
+            keeper_want = want;
+            continue;
+        }
+        if name == "upgrade-authority" {
+            continue;
+        }
+        let have = r.sol(name);
+        if have < want {
+            let give = want - have;
+            println!("distribute: keeper -> {name} {} : {} SOL", r.keys.pubkey(name), sol(give));
+            ixs.push(anchor_lang::solana_program::system_instruction::transfer(&keeper, &r.keys.pubkey(name), give));
+            total += give;
+        }
+    }
+    if ixs.is_empty() {
+        println!("distribute: every small key already has what it needs");
+        return needs_command(r, a);
+    }
+    let have = r.sol("keeper");
+    if have < total + keeper_want {
+        println!("distribute: the keeper holds {} SOL, the transfers need {} SOL and its own work {} SOL: fund the keeper with at least {} SOL more", sol(have), sol(total), sol(keeper_want), sol(total + keeper_want - have));
+        return Ok(3);
+    }
+    let sent = r.send("distribute", &ixs, "keeper", &[], false).map_err(|e| e.text)?;
+    println!("distribute: {} transfers in one transaction [{}]", ixs.len(), sent.info.signature);
+    needs_command(r, a)
 }
 
 fn fund_command(r: &Rehearsal, a: &Args) -> Result<i32, String> {
