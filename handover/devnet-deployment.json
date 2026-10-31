@@ -1,0 +1,445 @@
+{
+  "admins_throwaway": {
+    "keeper": "98j1TXdxt77vsDVcLmABWyMP2bWXVoYqRg85nGVGvcth",
+    "lev_admin_rov": "BFbW5FYZTkUcJdxcxCDW4XM9rz4kgb4VatYEKR1bfitJ",
+    "lev_admin_sl8": "AbJ7iwVVrZHjkVgHmuKgUVdYW3qVRjLZNKnKECYR6Shf",
+    "upgrade_authority": "GxDJcsyKDk7iS3eAhDGigsTWmuBvzY5z8WkNhVPP2a9p",
+    "vault_admin_rov": "2hdsCzasnWDo96STaZYNWaFUoHWt5qLQGrMTwGqU5HtH",
+    "vault_admin_sl8": "HiB78C1x7TMsHzkAzvxwaVGvkFCPFdxy4WzcV2NmE9i2"
+  },
+  "cluster": "devnet",
+  "evaluator": {
+    "key_file_path_for_local_devnet_use": "~/.setl8-devnet-lev/evaluator.json",
+    "public_key": "9kSc8VXbUgRKwxcVaqBPnraZzE5eLT2cGP8bcqy7Kpb7"
+  },
+  "example_accounts": [
+    {
+      "address": "A3ncHBKQRrRNKVaeH9WuhMmwZ22BNoKyeCFsxK6ZwpvU",
+      "challenge_id": 0,
+      "created_at": 1793449038,
+      "mock_price_proofs": false,
+      "name": "A1",
+      "phase_at_open": 1,
+      "role": "honest challenge: passes phase 1 and phase 2, the pass is finalized after the delay and the payout is paid",
+      "tier": 0,
+      "trader": "7urBRSkXz6jAoz7j4QnVjgWWVLUxV6nzjZxNEWhxkLeF"
+    },
+    {
+      "address": "cNZUjvHMLoMacyyDjXSMvg5m8ZoEhvuPy8r3bRnNdze",
+      "challenge_id": 0,
+      "created_at": 1793449247,
+      "mock_price_proofs": false,
+      "name": "B1",
+      "phase_at_open": 1,
+      "role": "fails the static floor in phase 1; reset (ladder step 1) opens B2",
+      "tier": 0,
+      "trader": "748HMeryS2sPS91vE5QNwfFNxWp8X7aHd1EK9w5sqjPB"
+    },
+    {
+      "address": "bJ6Dd7RoBcNAt8LBh3JsJV8iuBSAMTV8GUW9YvuACwh",
+      "challenge_id": 1,
+      "created_at": 1793449315,
+      "mock_price_proofs": false,
+      "name": "B2",
+      "phase_at_open": 1,
+      "role": "passes phase 1, fails in phase 2; reset (ladder step 2) opens B3",
+      "tier": 0,
+      "trader": "748HMeryS2sPS91vE5QNwfFNxWp8X7aHd1EK9w5sqjPB"
+    },
+    {
+      "address": "3EVjgKZzirtGWTYJxZcqx97z4NNTjEhLBpjKjgiQhZHn",
+      "challenge_id": 2,
+      "created_at": 1793449480,
+      "mock_price_proofs": false,
+      "name": "B3",
+      "phase_at_open": 2,
+      "role": "the account opened by the second reset, in phase 2",
+      "tier": 0,
+      "trader": "748HMeryS2sPS91vE5QNwfFNxWp8X7aHd1EK9w5sqjPB"
+    },
+    {
+      "address": "CTwfWjHq8h4rWz2JtwTZdRyW417cuzWynbtRPXnVuZJ4",
+      "challenge_id": 0,
+      "created_at": 1793449483,
+      "mock_price_proofs": false,
+      "name": "C1",
+      "phase_at_open": 1,
+      "role": "a hold and then a failure while held (review, then no reset)",
+      "tier": 0,
+      "trader": "hrCZYN74Qg4LKraXUgwz8dB18A4j7LasJkp1GJLWHLx"
+    },
+    {
+      "address": "6nUiF9Xza78cn6x3UermVTfNYeyS4Y1itpw7DJW54PHV",
+      "challenge_id": 0,
+      "created_at": 1793449574,
+      "mock_price_proofs": false,
+      "name": "D1",
+      "phase_at_open": 1,
+      "role": "a confirmed phase 2 pass that both admins veto",
+      "tier": 0,
+      "trader": "9ic6XQamxpQrJTi6yevbPbF4s4kdstdvWTYm6LQjgTyP"
+    },
+    {
+      "address": "FKUpNp5enNSCoCCwSLRjWNCinhrW4SUGi2vJUBTUWzdB",
+      "challenge_id": 0,
+      "created_at": 1793449774,
+      "mock_price_proofs": false,
+      "name": "E1",
+      "phase_at_open": 1,
+      "role": "the forced close-all after a quick-limit overshoot",
+      "tier": 0,
+      "trader": "9GJb6mKGFGBfQwGEwmbz8cALbGNoeWeDAkwndnBnG681"
+    },
+    {
+      "address": "jogP7GpWChMkfAiDxzcafXtPnXBoGHkfmFXgPd6nKKL",
+      "challenge_id": 0,
+      "created_at": 1793449837,
+      "mock_price_proofs": true,
+      "name": "F1",
+      "phase_at_open": 1,
+      "role": "a breach with the 12 hour lock (rehearsal price proofs)",
+      "tier": 0,
+      "trader": "DtjS6Jq58h3mfGBFP2pUoNGaTfLVysPkMFKjBWvpDuT5"
+    },
+    {
+      "address": "CnBivPHhFAvr6r5DXxihvBrZCHQwphp5fv5GPSwjK64u",
+      "challenge_id": 0,
+      "created_at": 1793449924,
+      "mock_price_proofs": true,
+      "name": "G1",
+      "phase_at_open": 1,
+      "role": "helper account of the refusal and measurement checks (rehearsal price proofs)",
+      "tier": 0,
+      "trader": "3MZeT3DxtzEcHD87hF9HTCY5z33odDzBHFDGPBBS3pWq"
+    },
+    {
+      "address": "47aY7smgCPdQ3yx7FRPFMp8Fny7jNDYYUrXiQfZ9MR4R",
+      "challenge_id": 1,
+      "created_at": 1793449927,
+      "mock_price_proofs": true,
+      "name": "G2",
+      "phase_at_open": 1,
+      "role": "helper account of the refusal and measurement checks (rehearsal price proofs)",
+      "tier": 0,
+      "trader": "3MZeT3DxtzEcHD87hF9HTCY5z33odDzBHFDGPBBS3pWq"
+    },
+    {
+      "address": "5t9yJio8J2kuvDHMPCadZTvpLYNdjUbyhAb565QbiGcq",
+      "challenge_id": 2,
+      "created_at": 1793449959,
+      "mock_price_proofs": true,
+      "name": "H1",
+      "phase_at_open": 1,
+      "role": "helper account of the refusal and measurement checks (rehearsal price proofs)",
+      "tier": 0,
+      "trader": "3MZeT3DxtzEcHD87hF9HTCY5z33odDzBHFDGPBBS3pWq"
+    },
+    {
+      "address": "7VJcdmBiMNXn3uSc9BeEgMo6D6AZxgsdhESW4UvpYLDz",
+      "challenge_id": 3,
+      "created_at": 1793449972,
+      "mock_price_proofs": true,
+      "name": "H2",
+      "phase_at_open": 1,
+      "role": "helper account of the refusal and measurement checks (rehearsal price proofs)",
+      "tier": 0,
+      "trader": "3MZeT3DxtzEcHD87hF9HTCY5z33odDzBHFDGPBBS3pWq"
+    },
+    {
+      "address": "4vGSmZM2SuhTJcGaoEce8DTVmE4s3cxR1LQQoXtFrkA3",
+      "challenge_id": 1,
+      "created_at": 1793449984,
+      "mock_price_proofs": true,
+      "name": "H3",
+      "phase_at_open": 1,
+      "role": "helper account of the refusal and measurement checks (rehearsal price proofs)",
+      "tier": 0,
+      "trader": "9GJb6mKGFGBfQwGEwmbz8cALbGNoeWeDAkwndnBnG681"
+    },
+    {
+      "address": "Ca9VpxBe4JfFQvWixmw5JW9cAYBWF68eveNxVvaRHie7",
+      "challenge_id": 2,
+      "created_at": 1793449998,
+      "mock_price_proofs": true,
+      "name": "H4",
+      "phase_at_open": 1,
+      "role": "helper account of the refusal and measurement checks (rehearsal price proofs)",
+      "tier": 0,
+      "trader": "9GJb6mKGFGBfQwGEwmbz8cALbGNoeWeDAkwndnBnG681"
+    }
+  ],
+  "example_signatures": {
+    "confirm_pass": "U7H8c65YTkgjhMYfkd1AB7bCfCmD7m2jC7Se2pXEPQ18vCghYDZUczLKZvRJQfPuKvKTJZ45YrZ2wSoYGzR8Rvk",
+    "create_ata": "21R4pY5KLPwyCemZ9mM8cYfGf1E8ProtUPqYnDM6pbnsn1Z2hHqhK66vKuUMMmdAhmZRsJikwWpW37jPcbaY3Zp8",
+    "create_market": "fxEZLqUCF3fQEjgsjKveHBkNzcjATxHWQDGSPaLBnKRxV5J8Mns65ymc9VHUs3FsSMNFzeBdghs62MrpeEokvvZ",
+    "create_mint": "3YZuKSENoBonFTcAEUojJXxbmB1e9B59AfVSAgbSZxxAi4rL4VY3pSRDrsa9h36Vf8Q3QW4voutxAcaw2sMNmAqx",
+    "create_ruleset": "4HiJDGr1EHG5Vcjkxo22tAhWjsRgwtWvbXTevBbirgYQDRYiS821LpECwUkEHEBV5oQug9PvxGfajNwxHPq4bZiz",
+    "distribute": "2gM9fdB99s5p6tUdyUfwcuTCiv4fr9zNVh7mbdTNbW4EAmS5HCk3yr3224pwLSk6bD9B6bGcYgPtZj7amo38vHwJ",
+    "fail_for_violation": "4cKcop1TEBYyJp8h9o8p1k7kTZKdX2wH1NGVw66hu2ruVazvvtvPtBk9n9BCfUHv8ThXoDmazjgXMDzY1u1SRwK7",
+    "hold_account": "33FTxr2LhEjxjRCKGuDkhSKLq7pFhAZ4cjqPivaKjBaXXdS6WqRrboEnfRWJyWC6HGWgTfNdFiEknk3NdEFGpicB",
+    "init_config": "4V33t4BcFXbyPcfBKVsGiPSjdRCVN4ZUeLh9HM74vANnqYmvjGNc7rTCoiNDrRVJrt54wJmDYnmxSizatULFXv4o",
+    "init_vault": "5jx6RA9vai51DuACgQwHjdLe1U1JsYNQb7rDEw99fbtZCk8bBfKSn85HRb2QmY9MgtcrREeGiXma3hpkUvD8w9k4",
+    "mint_to": "5sDsaCyJcVqcrFJkDx3U7BeF9BLK8u3xLYUvQP8J9Lk5fW25Z1WGR5Re33NEfYtKCjzNb22jjvmebuyQT3kzxU44",
+    "open_account": "5FntrpmrjQD3KKrcm8Y9d46ciYzHgjDSph8Gw4bJeGWAS3dgX971B9W2UqwFEm7xfQ7yCkwKxzDzYNM6UJD4zeiv",
+    "post_journal": "4uTUUubVf3Snh6FZqwDM7KRAXTxkAdk45oGRp7D2CFVkvySDz21ikqGcPWRY9fDVJbn21xpHUeKPVPFKz961e5qh",
+    "register_product": "3EPzcB7CBTEMeTFkTWGfrN1vkDfX1LntnPn8y5nNEeLdtNrDniKkDYaULNrGpRbQtmD2buMuNBnphtd8kEZ7wCyz",
+    "report_fail": "5Peyqaqws8tP85guVrsBQyini44Mu3tn6pS2YHwH6DasWgYQQyaRfFges8iy5uXqobYmMtis8SNKYkfAB8Njfken",
+    "request_advance": "2s18LLMijwb7eaQHnT4j6iXf8gzDczowLgBFiPvhJ6tsNCMzQ3i7FC7dx2cXTYUALdvDdiE47NUEr9ErgZLtpdY7",
+    "reset_account": "5U6ggm114cdRDNZ9CCEHgEpw7RQAhoakW3J7BJUL6FwioZfSpbYz8tcuZ9WC3WNYeXNe6JqxGXHAeZZtVgPk3rfC",
+    "touch_activity": "36XAYJGeFpmRpjeU4Lbhw49wbiUBJ52b7ZQHCBJizB4hgVeoo8VWFR6CJkxiuDFKN5TUzGuuDSr5E28MQT8g24xv",
+    "unban_wallet": "N1KSoTZqJXBfSpTd3L5EVhfg1EWvy4THnvqLQbX9ecEw6Mm3pmCDMeEtFoFtmAZZUBwWQDSMr1i1SB6XRXohYuB",
+    "veto_pass": "Rn8dUgJUzJQuwvkKcYVVcGe6T9QBXZ9psz9LhPMZmhzWuNwamRSB1ZqFQUe6Asq9iqGRRgnFzbP8jBdutR97PN1"
+  },
+  "fee_wallet": "98j1TXdxt77vsDVcLmABWyMP2bWXVoYqRg85nGVGvcth",
+  "format": "setl8-lev-trading-devnet-deployment",
+  "genesis_hash": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+  "lev": {
+    "challenge_fee_bps": 40,
+    "config": "BySmg4NH3BJfBgZcPFSGJP3acRmqySGE2LvNk8GUF8xn",
+    "current_rule_set_version": 1,
+    "event_authority": "6VHXUR9bt5VL9kx913utojQXXsmthiiWj3T1USvjQCZy",
+    "markets": [
+      {
+        "address": "8VeHbnGd9jShAcj6MuxAWj1jrKZDKAnTTjNyU2138YNg",
+        "class": 6,
+        "id": 0,
+        "symbol": "BTC"
+      },
+      {
+        "address": "3q5MQJMRwCMAE4KaLojZ1nWBFQnq6VJYUmRzP68XSxf2",
+        "class": 6,
+        "id": 1,
+        "symbol": "ETH"
+      },
+      {
+        "address": "8rnkqBa87twdKZ7spwzWUF1NaDL7RYJhnntaFdieWZyD",
+        "class": 6,
+        "id": 2,
+        "symbol": "SOL"
+      },
+      {
+        "address": "EkugSYv2wLWbXaMVgAWbpHMK4jcFEYaZJCWwQAxvoBT1",
+        "class": 2,
+        "id": 3,
+        "symbol": "GOLD"
+      },
+      {
+        "address": "5rf8mAch1znDv7csmsiw4yidYmQzdhHsGT4QSMXbqjQN",
+        "class": 2,
+        "id": 4,
+        "symbol": "SILVER"
+      },
+      {
+        "address": "AGxPViza3FbnwWmMohhuaABKrf7FzJEfEwvzdUkXFcsc",
+        "class": 4,
+        "id": 5,
+        "symbol": "WTIOIL"
+      },
+      {
+        "address": "Gdzy6EVLoXyri6mTs6YtFqqqDhj2qn5Qe7XAkhdqn2dE",
+        "class": 4,
+        "id": 6,
+        "symbol": "BRENTOIL"
+      },
+      {
+        "address": "HWiRpqAQYE4WdZcxgVmU948mYRBRxFZts6Q9w6B6LB7e",
+        "class": 3,
+        "id": 7,
+        "symbol": "SPY"
+      },
+      {
+        "address": "DPWD7Tv6GZ876kEsjppABcBmLCRNUnMoMk3wd2QFgy2K",
+        "class": 3,
+        "id": 8,
+        "symbol": "QQQ"
+      },
+      {
+        "address": "3uLjVvMJi9aNGL4SKuRUpo5C5aTTSmzbYYXbyvhnww35",
+        "class": 3,
+        "id": 9,
+        "symbol": "xyz:JP225"
+      },
+      {
+        "address": "CQUUTU3Ao5RWXhJNpWxqBG2FkiW3fxeAzF8pCGrUUPRx",
+        "class": 3,
+        "id": 10,
+        "symbol": "xyz:KR200"
+      },
+      {
+        "address": "6VrDPvUjEFNjMS2w5naDSVhUZ9hp145nkT6FKapNQd1c",
+        "class": 5,
+        "id": 11,
+        "symbol": "xyz:AAPL"
+      },
+      {
+        "address": "EFifmVQJWF6QsKXDcUHsKaypA1TUWbC5P5PqaXdwDTnY",
+        "class": 5,
+        "id": 12,
+        "symbol": "xyz:AMD"
+      },
+      {
+        "address": "HQGRqdhsCkYQb9Z1BBStCCzPD3J4qidwmk4qb68Ax9fc",
+        "class": 5,
+        "id": 13,
+        "symbol": "xyz:AMZN"
+      },
+      {
+        "address": "Cp8HUQbGuKJ7azeBaGvJdZ4GwG6DYrGwb1oSFJFkqEuV",
+        "class": 5,
+        "id": 14,
+        "symbol": "xyz:GOOGL"
+      },
+      {
+        "address": "TtE2HxLyUKMveU2LEPCqB5JgWWmYaLwirhUtBVbLwvX",
+        "class": 5,
+        "id": 15,
+        "symbol": "xyz:META"
+      },
+      {
+        "address": "BmcgUfsxPQQCybWhjoDwg4dA2NbhWQKZGkaNmP78vp6y",
+        "class": 5,
+        "id": 16,
+        "symbol": "xyz:MSFT"
+      },
+      {
+        "address": "EQvrAyoe9FRjFe5xmfW7UrSJ6UWEdvFkewYHh4qZtUQh",
+        "class": 5,
+        "id": 17,
+        "symbol": "xyz:NFLX"
+      },
+      {
+        "address": "C1CNTJBXwdGr6L7mGV8oWkiHwMbQPXC4Yrimf9tQZxBn",
+        "class": 5,
+        "id": 18,
+        "symbol": "xyz:NVDA"
+      },
+      {
+        "address": "ACUeLGdQtriZ1agUoJUokhxWWLzLtomCA6SjSsKGXdcz",
+        "class": 5,
+        "id": 19,
+        "symbol": "xyz:PLTR"
+      },
+      {
+        "address": "GURS3oX7DcCo1D9EsQ15b1a1bvxokfiGWFYrQUUxVQuw",
+        "class": 5,
+        "id": 20,
+        "symbol": "xyz:TSLA"
+      }
+    ],
+    "pass_delay_secs": 86400,
+    "program_authority": "4RFsP8wDuZee6LbaSjShA8eqgt8oEfcRUW1bQKCgjSKe",
+    "reset_ladder_bps": [
+      10000,
+      11500,
+      12000,
+      12750,
+      13000
+    ],
+    "rule_set": "NFByy5LbVEvHCuEcuC1WVpZ5ModpNQb4nEXYdNhBTmj",
+    "tiers": [
+      {
+        "account_size_usd": 2500,
+        "price_usd": 30,
+        "tier": 0
+      },
+      {
+        "account_size_usd": 5000,
+        "price_usd": 55,
+        "tier": 1
+      },
+      {
+        "account_size_usd": 10000,
+        "price_usd": 99,
+        "tier": 2
+      },
+      {
+        "account_size_usd": 15000,
+        "price_usd": 145,
+        "tier": 3
+      },
+      {
+        "account_size_usd": 20000,
+        "price_usd": 189,
+        "tier": 4
+      },
+      {
+        "account_size_usd": 25000,
+        "price_usd": 235,
+        "tier": 5
+      },
+      {
+        "account_size_usd": 50000,
+        "price_usd": 489,
+        "tier": 6
+      },
+      {
+        "account_size_usd": 75000,
+        "price_usd": 689,
+        "tier": 7
+      },
+      {
+        "account_size_usd": 100000,
+        "price_usd": 859,
+        "tier": 8
+      },
+      {
+        "account_size_usd": 200000,
+        "price_usd": 1599,
+        "tier": 9
+      }
+    ]
+  },
+  "lookup_table": null,
+  "note": "The vault is the core vault with a product registry; one product is registered: lev trading. The admin keys of this deployment are throwaway keys of a rehearsal and must never be reused anywhere.",
+  "payout": {
+    "claim": null,
+    "pool_funding": null,
+    "trader_balance_after_micro_usdc": null,
+    "trader_balance_before_micro_usdc": null
+  },
+  "programs": {
+    "lev": {
+      "default_build_sha256": "ebbd0786d2d1a58a9ef11e539baed4c9057fc3eab59ed8e62a5506bcba6f2c3b",
+      "derived_from_localnet_build_sha256": "43fdd9356c774ea343686e5f6bf781b998a01670664c2af6b8233bf97f22bc1b",
+      "id": "HmkvQfgCMnihGzdZE1FTKVacZN76JS9bfEu2QBJBAdvY",
+      "sha256": "03b0333240a531af718f297d803d512efaf2cb5cd1edf21712e0734e179343ee",
+      "size_bytes": 862704
+    },
+    "vault": {
+      "id": "qmeDsSeK7eFSU8aNoqLFJxZstoMA3EgMrcsuMFjsF2Z",
+      "sha256": "ef6bbe719c466006795c43eb1cf708a9e1fec42c92b4e29e7c66a9bf61a0f15c",
+      "size_bytes": 535712,
+      "source_commit": "4ca958c"
+    }
+  },
+  "test_mints": {
+    "decimals": 6,
+    "mint_authority": "98j1TXdxt77vsDVcLmABWyMP2bWXVoYqRg85nGVGvcth",
+    "note": "test stablecoins created for this rehearsal",
+    "usdc": "2kBKxj3TYz2UbQfVcJ5xBbWscC5hrALq7MLzJi3c1fTx",
+    "usdt": "9qfVj2AgFpWVM4jowh2nNkQHcjKECPhJnWbkW9y71BVo"
+  },
+  "vault": {
+    "payout_tally": "8MNMVmXC2zDyrfuy2ABAya4mrNHFsCeXNhf6VQ8paaBK",
+    "product_registry": "FUVukP8gz8kpxXXt3UbE4C3UCAcp31gRMqEacQvUP9pv",
+    "registered_products": [
+      {
+        "fee_split_bps": 6500,
+        "max_payout_count": 4,
+        "product": "lev trading",
+        "program": "HmkvQfgCMnihGzdZE1FTKVacZN76JS9bfEu2QBJBAdvY",
+        "reset_price_bps": [
+          10000,
+          11500,
+          12000,
+          12750,
+          13000
+        ]
+      }
+    ],
+    "usdc_pool": "UjqJZRCALei1whzfLJbX3J5p22hRyYrVF7v3xNPiKPi",
+    "usdt_pool": "HEhuquTgApHjVcAxtJ1HoURfru9WU8T9fUqhVGTRsuvF",
+    "vault_state": "G7qpP8L2kXGP7VYuvhioEQLEuWxUngxDmxqxEqnpUCbT"
+  },
+  "version": 1
+}
