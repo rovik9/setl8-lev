@@ -4,13 +4,11 @@ The real program (the frozen candidate, re-keyed in a scratch copy), the real co
 
 ## 0. Status: read this first
 
-**The run on devnet itself has NOT happened.** The public faucet refused every request (`airdrop request failed ... rate limit`, for 2 SOL, 1 SOL and through the driver's `fund` command); all fourteen throwaway keys hold 0 SOL. The two deployments alone need about 11.6 SOL on devnet. Everything else is built, committed and tested, so the run is a handful of commands once the keys are funded (section 3). Rovik funds the PUBLIC keys of section 2 in the browser (https://faucet.solana.com, or any wallet that holds devnet SOL); nobody has to give the tool a key or a login.
+**The run on devnet HAS happened (day 1: 2026-10-31).** The public RPC faucet is closed (error 410, "The RPC faucet is closed on this cluster"), so the `upgrade-authority` and the `keeper` were funded by hand in the browser faucet (10 SOL each) and `distribute` (the keeper pays the small keys and tops up the upgrade authority) did the rest. Then: `deploy` of the frozen programs (vault `qmeDsSeK7eFSU8aNoqLFJxZstoMA3EgMrcsuMFjsF2Z`, sha256 `ef6bbe719c466006795c43eb1cf708a9e1fec42c92b4e29e7c66a9bf61a0f15c`, 535,712 bytes; lev trading `HmkvQfgCMnihGzdZE1FTKVacZN76JS9bfEu2QBJBAdvY`, sha256 `03b0333240a531af718f297d803d512efaf2cb5cd1edf21712e0734e179343ee`, 862,704 bytes; about 7.11 SOL of rent and fees) and `run` (S0 to S5: all PASS, 154 checks, 135 transactions).
 
-What was done instead, and what the tables below are:
+**Day 2 is pending** and exists only after the real 1-day pass delay: from unix second **1793535634 (2026-11-01 12:20:34 UTC)** `run` again finalizes A1's pass (the vault queues the payout claim), starts phase 3, runs the third reset, and then the payout leg (S2-payout: `reconcile_product`, `begin_heartbeat`, `settle_claims`, `finalize_heartbeat`, the trader's balance before and after). The 12-hour breach lock of F1 expires at unix second 1793493107 (2026-11-01 00:31:47 UTC), so one `run` after 12:20 UTC covers both. Until then the day-2 rows of this file and `handover/devnet-demo.md` steps 5 to 7 say PENDING.
 
-* the whole driver (S0 to S5, both days) was run against a **local `solana-test-validator`** (Agave 4.0.2, `--limit-ledger-size` large): a real bank, real fees, the real runtime and compute metering, the real SPL token, associated-token and system programs, a private cluster. The scenario results of section 4 and the compute numbers of section 5 are from that run. They are **not devnet results**; the compute numbers in particular depend on the runtime version, and devnet runs whatever Agave version it runs today (re-measure on devnet, section 5).
-* the day-2 part (the pass delay) ran on a **selftest-only scratch build whose minimum pass delay is 60 s** (the program's minimum is 1 day; this build was never and never will be deployed to devnet). The devnet run uses the real minimum, 86,400 s, and takes two days.
-* the 12 h breach lock of account F1 cannot be waited out in a selftest; it is the one day-2 item that has not run anywhere.
+The selftest numbers (a local validator with a scratch build whose minimum delay is 60 s) are kept in their own column in section 4 and are NOT devnet results. The payout leg and the S5 verifier ran in the selftest as well: S2-payout PASS (10 checks: the claim of 200 USDC paid in full, the trader's balance +200, the claim closed, the vault's books equal the program's tally).
 
 ## 1. What the rehearsal does and does not cover
 
@@ -68,11 +66,15 @@ scripts/devnet-rehearsal.sh --cluster devnet keys      # once; prints public key
 scripts/devnet-rehearsal.sh --cluster devnet build     # ~50 s: vault and program in scratch trees, the driver, the verifier
 scripts/devnet-rehearsal.sh --cluster devnet needs     # which key needs how much SOL; exit 3 while any is short
 scripts/devnet-rehearsal.sh --cluster devnet fund      # faucet with backoff; or fund the public keys in the browser, then run needs again
+scripts/devnet-rehearsal.sh --cluster devnet distribute # the keeper pays the small keys and tops up the upgrade authority (fund only those two in the browser)
 scripts/devnet-rehearsal.sh --cluster devnet deploy    # solana program deploy of both programs (skips a deployed one)
 scripts/devnet-rehearsal.sh --cluster devnet run       # day 1: S0..S5, about 20 minutes (real time: histories unfold at the cluster's pace)
 scripts/devnet-rehearsal.sh --cluster devnet status    # the state (public data only)
 # one day later (state.json says the unix second; `run` prints it):
 scripts/devnet-rehearsal.sh --cluster devnet run       # day 2: touch_activity, finalize_pass, phase 3, the third reset, S4 and S5 again
+scripts/devnet-rehearsal.sh --cluster devnet payout    # (also done by `run` on day 2) the payout leg for A1's claim
+scripts/devnet-rehearsal.sh --cluster devnet manifest  # handover/devnet-deployment.json and .md
+scripts/devnet-rehearsal.sh --cluster devnet demo      # the A1 story with Explorer links (--markdown for handover/devnet-demo.md)
 # twelve hours after the breach of F1 the same command trades F1 again (scenario S2-lock)
 ```
 
@@ -82,18 +84,38 @@ scripts/devnet-rehearsal.sh --cluster devnet run       # day 2: touch_activity, 
 * **Faucet notes.** The public faucet is rate limited per IP and per day; the first request of the day from this machine failed. `fund` asks for at most 5 SOL per request, retries with a growing pause and says what is still missing. If `needs` still exits 3, STOP and fund the printed PUBLIC keys in the browser.
 * **The selftest** (no SOL): `scripts/devnet-rehearsal.sh selftest all` starts a local validator, funds, deploys the selftest build and runs everything (about 12 minutes); `selftest start`, `selftest run [--only S4,S5]`, `selftest stop` do the steps one by one. It needs `--cluster devnet build` first.
 
-## 4. Results (selftest: local validator, Agave 4.0.2, vault `4ca958c`)
+## 4. Results (selftest: local validator, Agave 4.0.2, vault `4ca958c`; devnet: the real run)
 
-| scenario | selftest result | devnet |
+The two result columns are separate runs. The selftest column is the P23/P30 run on a local validator with a scratch build whose minimum pass delay is 60 s. The devnet column is the deployed frozen program with the real 1-day pass delay.
+
+| scenario | selftest (local validator) | devnet (real run, 2026-10-31) | first devnet signature |
+|---|---|---|---|
+| S0 deploy, vault, product registration | PASS (7 checks, 15 transactions) | PASS day 1 (7 checks) | `3YZuKSENoBonFTcAEUojJXxbmB1e9B59AfVSAgbSZxxAi4rL4VY3pSRDrsa9h36Vf8Q3QW4voutxAcaw2sMNmAqx` |
+| S1 config, 21 markets, rule set v1 | PASS (7 checks, 23 transactions) | PASS day 1 (7 checks) | `4V33t4BcFXbyPcfBKVsGiPSjdRCVN4ZUeLh9HM74vANnqYmvjGNc7rTCoiNDrRVJrt54wJmDYnmxSizatULFXv4o` |
+| S2 trader lifecycle, day 1 | PASS (66 checks, 72 transactions) | PASS day 1 (66 checks) | `5FntrpmrjQD3KKrcm8Y9d46ciYzHgjDSph8Gw4bJeGWAS3dgX971B9W2UqwFEm7xfQ7yCkwKxzDzYNM6UJD4zeiv` |
+| S2 day 2 (finalize, phase 3, third reset) | PASS (12 checks, 4 transactions; delay 60 s on the selftest build) | PENDING: from unix second 1793535634 (2026-11-01 12:20:34 UTC) |  |
+| S2 payout (heartbeat, settlement, balance) | PASS (10 checks, 6 transactions; selftest build) | PENDING: after S2 day 2 |  |
+| S2 lock (F1 after 12 h) | PENDING (cannot run in a selftest) | PENDING: from unix second 1793493107 (2026-11-01 00:31:47 UTC) |  |
+| S3 attacks | PASS (25 checks, 11 refused transactions) | PASS day 1 (25 checks, 7 refusals) | `4jWbWZDdfnviA2cpaV7y7HBmVMiiu9GM3FZcoaMZzE9pQwJZwA2yBQGH4fVcwpzvg7r8GJYB3MT4MYTjX1hYgE1r` |
+| S4 measure | PASS (30 checks; D-01 is resolved by P27) | PASS day 1 (30 checks; day-2 shapes added by the day-2 run) | `4Ycacmw2qjAHcUxV8KnH4YMP6XB3BBAjkR4tAFhcTNnzns3nxPGgQToAsuQSHs94YJDyZ7ibw3TqaAgxY8Dw2KYq` |
+| S5 verifier on the chain's events | PASS: 8 honest accounts VALID with a chain snapshot, 4 tamper cases flagged (21 checks) | PASS day 1 (19 checks; 7 honest accounts VALID, 4 tamper cases flagged) |  |
+
+The devnet run (day 1) sent 135 transactions and spent about 7.11 SOL (rent of the two programs plus fees, from the `upgrade-authority`, the `keeper` and the small keys). All 154 checks of day 1 passed; the table of signatures is in `~/.setl8-devnet-lev/work-devnet/state.json` (public data) and the A1 story with Explorer links is `handover/devnet-demo.md`.
+
+The devnet refusals (S2 and S3), each with the exact error code of the LiteSVM suite:
+
+| refusal | error | devnet signature |
 |---|---|---|
-| S0 deploy, vault, product registration | PASS (7 checks, 15 transactions) | PENDING (faucet) |
-| S1 config, 21 markets, rule set v1 | PASS (7 checks, 23 transactions) | PENDING |
-| S2 trader lifecycle, day 1 | PASS (66 checks, 72 transactions) | PENDING |
-| S2 day 2 (finalize, phase 3, third reset) | PASS (12 checks, 4 transactions; delay 60 s on the selftest build) | PENDING |
-| S2 lock (F1 after 12 h) | PENDING (cannot run in a selftest) | PENDING |
-| S3 attacks | PASS (25 checks, 11 refused transactions) | PENDING |
-| S4 measure | **FAIL**: a legal `report_fail` of 8 events and 3 proofs exhausts 200,000 CU (finding D-01); the other checks pass | PENDING |
-| S5 verifier on the chain's events | PASS: 8 honest accounts VALID with a chain snapshot (library and the `setl8-verify account` command, exit 0), 4 tamper cases flagged | PENDING |
+| a batch of G1 posted to G2 | BadPrevHash 6043 | `5KUU5VTQB86EEVkELAhqqyy9RXShMG4ApLbGcdJaLLMqw3dVTzn6DocJqCPmz37ovfY59tAQcCF8D1EUmiG92WS1` |
+| the same batch posted twice | BadSequence 6007 | `5bSe3afpLZZoqTL4k2nYw1SxSwbUQdEP8iYzWzETiHaHLepiKWEoptEBHyvFqqJAm4q3wAoqVBxVMJoKXy3pSrPA` |
+| a post signed by the trader | Unauthorized 6000 | `4tXdhQwGYJpAYgrbjAkPnHwAPdPncnTiejZUVnqJVWwna5EjVGWfTohXkyT7DE1BQxdUCrmNo7a6HQH6yjiG6AgQ` |
+| a Fill in an unpriced market | 6109 | `2GxppkC1VU1JMsrPYushGbN9MDFYJ3K2JfxRWs1aaZfHTXRXRvSrWL3VQyJuqCuF2FrvQtQcLk7cWABowRAZR8oy` |
+| wrong PDA seeds (request_advance) | ConstraintSeeds 2006 | `2t2tRYE34oJf3Y13JdmrQMbiacPRwwhBk7dRVj9zw38LpSfKhzUVhooWr4XPDrJZFMamYsSBAJBm9gdTX25XHMPV` |
+| a 7-day pass delay (set_limits) | 6034 | `chFZixvY2FxXYTrjidkdUHtiMdhCzfFvagNWAeCHSsDYNg6FookWG2KiW9DbaCWbFvsWjX3Zv4uEXVMW88NAcbC` |
+| a duplicate tier at the vault | 6044 | `39jc8LY64Zif9AqTaAjqxfjz3tNKsQHuLwKggSCQqhiNPr57huoF2Ezom9UpMj4hnu4GxLd1bt6TdqwE3MLqm39o` |
+| reset of a held account (C1) | ReviewPending 6110 | `2SE8wpkh91AvGe3LzxKoF28m7g6Zxt3oHyoNw51GMr41WtVruQNqTo9TczQTJZBs4aKrTwdFTuTcGVd92Uz9vJ9k` |
+| reset of a banned wallet (C1) | WalletBanned 6035 | `UMUnMBYXPYhD7GuQwsjcQeP6BPgcC2aRkcriTiKN5UbzGQWYbYgLjjASjk6KRbjKCRgDJgMg69LZtVSg8Rzj9xF` |
+| reset after the violation (C1) | ViolationNoReset 6108 | `36kfsYc2xHedhP4MoWPe6q873ophnfdqjVKafJLm2YohEmMsu1Zuh83b4A4PR4TLXdgKdzkETtSr1SQTgcUrpZ5N` |
 
 Signatures of the selftest (local validator; they mean nothing on devnet) are in `state.json`; examples: the refusals `ReviewPending` `4vtWr2fe...`, `WalletBanned` `3LKAbUM8...`, `ViolationNoReset` `FpiuRU9R...`, `PassDelayNotElapsed` `3KsEd5ka...`, `BadPrevHash` `UvxgQAzm...`, `BadSequence` `4QvH452q...`, `Unauthorized` `4tmZk6VE...`, `MarketUnpriced` `4UhLFjWg...`, `ConstraintSeeds` `3ZyCue5f...`, `InvalidLimits` `ocwzMQCJ...`, `DuplicateChallengeSize` `4XCU3d7R...`.
 
@@ -126,6 +148,29 @@ LiteSVM numbers are those of today's `budget.rs` run (the table of module-11.md 
 
 Not exercised by the run (no scenario needs them): `ban_wallet`, `cancel_pass`, `close_account`, `reject_pass`, `release_account`, `release_hold`, `set_evaluator`, `set_limits` (only refused), `set_paused`, `update_market`.
 
+### Devnet against `handover/cu-runtime.json` (the runtime-measured model, P27)
+
+Largest transaction of each instruction of the devnet run (day 1), against the largest shape of the same instruction in `cu-runtime.json`. Instructions with no row in `cu-runtime.json` (vault and token helpers) are omitted.
+
+| instruction | devnet CU (max) | model CU (max) | ratio | verdict |
+|---|---:|---:|---:|---|
+| confirm_pass | 35,652 | 35,652 | 1.00 | equal |
+| hold_account | 36,578 | 36,578 | 1.00 | equal |
+| request_advance | 51,565 | 51,565 | 1.00 | equal |
+| veto_pass | 34,589 | 34,589 | 1.00 | equal |
+| init_config | 14,442 | 14,442 | 1.00 | equal |
+| unban_wallet | 32,537 | 32,687 | 1.00 | equal |
+| post_journal | 186,294 | 188,799 | 0.99 | within the model |
+| report_fail | 214,226 | 224,440 | 0.95 | within the model (8 events, 3 proofs: passes with the P27 compute limit) |
+| create_market | 45,102 | 42,247 | 1.07 | **+7 %, above the model by more than 5 %** (not above x1.20) |
+| create_ruleset | 55,297 | 58,447 | 0.95 | -5 % |
+| open_account | 92,486 | 103,181 | 0.90 | below (the model's worst key) |
+| fail_for_violation | 39,902 | 49,938 | 0.80 | below |
+| reset_account | 117,890 | 154,289 | 0.76 | below |
+| touch_activity | 24,992 | 38,590 | 0.65 | below (the day-1 call was the throttled-then-vault shape) |
+
+No instruction is above its measured model x 1.20, so there is no new compute finding. The eight instructions that S4 prints as "OVER CEILING" are over the old LiteSVM-calibrated `budget.rs` ceilings, the same eight as in the selftest (finding D-02, resolved by P27: the absolute ceilings are the runtime ones). Transaction sizes on devnet are equal to or 12 to 46 bytes smaller than the model's `tx_bytes` (a different lookup of the same shapes; I did not investigate the cause), never larger. Day-2 shapes (`finalize_pass`, the settlement and heartbeat instructions of the payout leg) are added by the day-2 run.
+
 **D-01 (high; RESOLVED off-program by P27, decision 71 - see handover/backend-compute-contract.md and cu-runtime.md): the event-heavy batches are much closer to the 200,000-unit limit than the model says.** Every event the program emits through `emit_cpi!` is a self-invocation of the program; on this runtime it costs 12,539 CU INSIDE the inner call (the same number every time, for every instruction) plus the invoke itself, about 17,300 CU per additional event in total, against 10,000 to 12,000 in LiteSVM. Measured on the cluster, a `report_fail` with 3 proofs: 5 events 162,284 CU, 6 events 179,548, 7 events 196,812 (3,188 below the limit), **8 events fail with `ComputationalBudgetExceeded`** (signature in `state.json`, label `report_fail ev=8 pr=3 heavy H1`; LiteSVM: 151,284). A `post_journal` of 8 events and 3 proofs uses 186,144 CU (LiteSVM 125,290; 7% below the limit). The evaluator's `cu_estimate` (30,000 + 12,500 per event + 8,000 per proof + 40,000 for a fail) says 194,000 for the 8-event `report_fail` and lets the batch go. A batch the model accepts and the chain refuses cannot be posted unless the transaction asks for more compute: the account is stuck. Where it bites: a failing batch with commission fees (classes 2 to 5 have a commission in the launch rule set): three positions closed, three fees, the `Fail`, the `Meta` = 8 events; a forced close-all (decision 69) with three closes is 5 events and fits (162,284). **Fixes outside the program** (this prompt does not touch it): the evaluator adds `SetComputeUnitLimit(400_000)` (40 bytes: the heaviest transaction becomes 1,221 of 1,232) when its model says more than about 120,000, or limits batches to 6 events; and `cu_estimate` and the `budget.rs` ceilings are re-fitted on the cluster's runtime. A fix in the program (fewer or cheaper events) is a program change and is not planned.
 
 **D-02 (medium; RESOLVED by P27): the ceilings of `budget.rs`.** Eight instructions exceed their LiteSVM-calibrated ceilings on the cluster: the six cheap ones above by 5,000 to 14,000 CU (each emits one event), and the two batch instructions in their heaviest shapes. The ceilings are LiteSVM's, not the runtime's: re-run `budget.rs` against the runtime that will host the program (the test validator is the same software as devnet's nodes).
@@ -135,6 +180,8 @@ Not exercised by the run (no scenario needs them): `ban_wallet`, `cancel_pass`, 
 ## 6. Verifier on the chain's events (S5): the decode gap
 
 The chain's events DO decode into the verifier's format (every `emit_cpi!` event of the program is an inner instruction of its transaction; none of the events of S2 was lost; the log built from the chain alone gives VALID for all eight honest accounts, including a Failed + held account (C1), a violation, a veto, the forced close-all (E1), resets (B2, B3, A3) and a phase 3 account (A1)). Nothing in the verifier's formats needed to change.
+
+**Devnet result (day 1).** For each of the seven honest accounts (A1, B1, B2, B3, C1, D1, E1) the chain delivered every journal event (A1 43, B1 6, B2 28, B3 0, C1 7, D1 43, E1 51), each decoded into the verifier's format with no loss, and the account's own sequence equals the number of events; the verifier answered `VALID` against a snapshot of the chain account, both as a library and through the `setl8-verify account` command (exit 0). Four tampered copies of A1's archive were flagged: a sample dropped (`SamplesHashMismatch`), a price changed (`SamplesHashMismatch`), a signed intent submitted twice (`IntentsHashMismatch`), the last chain event left out (`SequenceGap`). F1 (mock proofs) is flagged `ProofShape` as in D-03. No decode gap on devnet.
 
 **D-03 (low): the verifier does not know the mock proof source 255.** The `localnet` build accepts source-255 proofs; the verifier's archive and proof checks do not, so an account traded with mock proofs is never VALID (`ProofShape`). The first run of the driver used mock proofs everywhere (as the prompt said) and S5 failed for that reason alone. The rehearsal therefore trades the accounts it verifies with each market's real source format (source 2, unsigned GMX tickers: the program checks only their shape, on the `localnet` build exactly as on a production build) and keeps source 255 for F1 and the junk accounts. F1's verdict is recorded: `ProofShape`.
 
@@ -157,6 +204,8 @@ The chain's events DO decode into the verifier's format (every `emit_cpi!` event
 | D-02 | medium | **RESOLVED by P27:** the complete runtime measurement (cu-runtime.md) has fifteen instructions above their `budget.rs` ceilings; the LiteSVM ceilings stay (regression), the absolute ceilings are in `budget_runtime.rs`. Was: eight instructions above their `budget.rs` ceilings on the runtime | section 5 |
 | D-03 | low | the verifier flags source-255 proofs (`ProofShape`) | `work-*/verify/F1/chain/` |
 | D-04 | info | the decision-69 group (crossing close, forced closes, `Fail`, `Meta`) with three closes is 5 events and costs 162,284 CU: it fits; with fees it can reach 8 events | section 5 |
+| P30-1 | info | the RPC faucet of devnet is closed (error 410); `fund` used to retry for 41 minutes before giving up (fixed: it now stops at once and prints the browser-faucet instruction); funding by hand and `distribute` worked | `needs` output, `distribute` transaction `2gM9fdB99s5p...` |
+| P30-2 | info | the devnet CU of `create_market` is 7 % above the runtime model (45,102 against 42,247); every other instruction is at or below it; nothing above x1.20 | section 5 |
 
 None is a program bug that stops a scenario: D-01 is a cost the program is not designed around; the evaluator or the program must make room for it before mainnet.
 
@@ -166,9 +215,9 @@ None is a program bug that stops a scenario: D-01 is a cost the program is not d
 * **Mainnet RPC behaviour:** rate limits, commitment levels, priority fees, transaction landing under load, dropped transactions (the driver re-sends after 20 s and retries `TimeInFuture`, nothing more).
 * **The evaluator's hot-key signer:** here the evaluator is a key file.
 * **A second price recorder** and **real oracle sources:** the prices are the mock oracle's; the proofs are unsigned source-2 proofs with the markets' real feed ids.
-* **The vault's heartbeat payout** (5-day cycle): the claim is queued and checked, never paid out.
+* **The vault's heartbeat payout on devnet:** the payout leg (`payout`, scenario S2-payout) is implemented and passed in the selftest; on devnet it runs after the real 1-day delay (day 2). The vault's 5-day minimum gap between cycles and a pool that is short of the queue (pro-rata payment) are not exercised: one cycle, one claim, a pool that covers it.
 * **Day 5 and later:** phases 4 and 5, graduation, abandonment (7 idle days), the 7-day account retention (`close_account`).
-* **The 12 h lock expiry:** scenario S2-lock runs 12 h after the breach on the real run.
+* **The 12 h lock expiry:** scenario S2-lock runs on day 2 (the lock ends at unix second 1793493107); not yet run on devnet.
 * **Real spreads and commissions:** placeholders.
 
 ## 10. Files
