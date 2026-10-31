@@ -30,5 +30,6 @@ Task: handover/prompts/P24a-owner-fixed-costs.md (decision 72) and handover/prom
   - upgrade-authority GxDJcsyKDk7iS3eAhDGigsTWmuBvzY5z8WkNhVPP2a9p : needs 11.5908 SOL, ask for at least 11.7 SOL (e.g. 5 + 5 + 2 SOL)
   - keeper 98j1TXdxt77vsDVcLmABWyMP2bWXVoYqRg85nGVGvcth : needs 0.75 own + 0.73 for the small keys = 1.48 SOL, ask for at least 1.6 SOL (e.g. 2 SOL)
   RESUME: after both are funded, re-paste handover/prompts/P30-devnet-run.md (it resumes at step 3), or by hand: `export RUSTUP_TOOLCHAIN=stable; scripts/devnet-rehearsal.sh --cluster devnet needs; scripts/devnet-rehearsal.sh --cluster devnet distribute; scripts/devnet-rehearsal.sh --cluster devnet deploy; scripts/devnet-rehearsal.sh --cluster devnet run`.
-* step 3 DEPLOY AND DAY 1: NEXT (blocked on funding). Steps 4 to 7 and 5b (payout leg + demo script) are NOT started.
+* step 2b (re-run, rovik funded 10 SOL each to the upgrade-authority and the keeper): `distribute` extended: after the small keys it tops up the upgrade-authority from the keeper to needs() + 0.2 SOL, only if the keeper keeps its own need + the small keys' need (pure `distribution_plan`, 5 unit tests incl. the exact boundary; clippy -D warnings clean, 47 tests). DONE.
+* step 3 DEPLOY AND DAY 1: NEXT. Steps 4 to 7 and 5b (payout leg + demo script) are NOT started.
 

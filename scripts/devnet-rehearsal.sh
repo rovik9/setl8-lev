@@ -10,7 +10,7 @@
 #           ADMIN keys), the driver (tools/devnet-rehearsal) and the public verifier; prints the sha256 of everything
 #   needs   print which keys still need how much SOL, and exit 3 if any
 #   fund    airdrop devnet SOL to the throwaway keys (the public faucet is rate limited: it retries, then says how much is missing)
-#   distribute  the keeper pays the small keys (evaluator, admins, traders) from its own balance: fund only the upgrade-authority and the keeper in the browser faucet, then run this
+#   distribute  the keeper pays the small keys (evaluator, admins, traders) from its own balance and tops up the upgrade-authority to its need + 0.2 SOL if the keeper keeps its own need and the small keys': fund only the upgrade-authority and the keeper in the browser faucet, then run this
 #   deploy  deploy both programs with `solana program deploy` (skips a program that is already deployed)
 #   run     run the scenarios S0..S5 (idempotent and resumable: `run` again after the 1-day delay finishes the day-2 part)
 #   status  print the state (public data only)

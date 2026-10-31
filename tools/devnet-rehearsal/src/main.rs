@@ -212,38 +212,75 @@ fn needs_command(r: &Rehearsal, a: &Args) -> Result<i32, String> {
     Ok(if short { 3 } else { 0 })
 }
 
-/// P30: when only the upgrade authority and the keeper were funded (in the browser faucet), the keeper pays the small keys: one transaction of
-/// system transfers from the keeper to every key (not the upgrade authority, not the keeper) that holds less than `needs()` asks. Public data only.
+/// P30: extra SOL the keeper adds on top of `needs()` when it tops up the upgrade authority.
+const UPGRADE_MARGIN: u64 = 200_000_000;
+
+/// One transfer of the keeper's distribution plan.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Transfer {
+    pub name: &'static str,
+    pub lamports: u64,
+}
+
+/// The keeper's distribution plan. `held` gives each key's balance. The small keys (everything but the upgrade authority and the keeper) get
+/// what `needs()` asks; the upgrade authority is topped up to its need plus `UPGRADE_MARGIN`, but only if the keeper keeps its own need plus what
+/// the small keys take (the top-up never eats into those). Returns the transfers and the keeper's shortfall (0 when the plan is payable;
+/// then nothing is to be sent), with the upgrade-authority top-up skipped (and reported) when it does not fit.
+pub fn distribution_plan(needs: &[(&'static str, u64, &'static str)], held: impl Fn(&str) -> u64) -> (Vec<Transfer>, u64, Option<u64>) {
+    let mut small = Vec::new();
+    let mut small_total = 0u64;
+    let mut keeper_want = 0u64;
+    let mut upgrade_want = 0u64;
+    for &(name, want, _) in needs {
+        match name {
+            "keeper" => keeper_want = want,
+            "upgrade-authority" => upgrade_want = want,
+            _ => {
+                let have = held(name);
+                if have < want {
+                    small.push(Transfer { name, lamports: want - have });
+                    small_total += want - have;
+                }
+            }
+        }
+    }
+    let keeper_have = held("keeper");
+    let reserved = small_total + keeper_want;
+    let shortfall = reserved.saturating_sub(keeper_have);
+    let mut skipped = None;
+    let top_up = (upgrade_want + UPGRADE_MARGIN).saturating_sub(held("upgrade-authority"));
+    if shortfall == 0 && top_up > 0 {
+        if keeper_have >= reserved + top_up {
+            small.push(Transfer { name: "upgrade-authority", lamports: top_up });
+        } else {
+            skipped = Some(reserved + top_up - keeper_have);
+        }
+    }
+    (small, shortfall, skipped)
+}
+
+/// P30: when only the upgrade authority and the keeper were funded (in the browser faucet), the keeper pays the small keys and, if it can
+/// afford it, tops up the upgrade authority: one transaction of system transfers from the keeper, explicit keypair and url. Public data only.
 fn distribute_command(r: &mut Rehearsal, a: &Args) -> Result<i32, String> {
     let peak = deploy_peak(&r.c, file_len(&a.vault_so).max(1), file_len(&a.lev_so).max(1));
     let keeper = r.keys.pubkey("keeper");
-    let mut ixs = Vec::new();
-    let mut total = 0u64;
-    let mut keeper_want = 0u64;
-    for (name, want, _) in needs(peak) {
-        if name == "keeper" {
-            keeper_want = want;
-            continue;
-        }
-        if name == "upgrade-authority" {
-            continue;
-        }
-        let have = r.sol(name);
-        if have < want {
-            let give = want - have;
-            println!("distribute: keeper -> {name} {} : {} SOL", r.keys.pubkey(name), sol(give));
-            ixs.push(anchor_lang::solana_program::system_instruction::transfer(&keeper, &r.keys.pubkey(name), give));
-            total += give;
-        }
+    let table = needs(peak);
+    let (plan, shortfall, skipped) = distribution_plan(&table, |n| r.sol(n));
+    if shortfall > 0 {
+        println!("distribute: the keeper holds {} SOL and needs {} SOL more for the small keys and its own work: fund the keeper with at least that much", sol(r.sol("keeper")), sol(shortfall));
+        return Ok(3);
     }
-    if ixs.is_empty() {
-        println!("distribute: every small key already has what it needs");
+    if let Some(missing) = skipped {
+        println!("distribute: the upgrade-authority top-up does not fit (the keeper must keep its own need and the small keys'): {} SOL more in the keeper would allow it", sol(missing));
+    }
+    if plan.is_empty() {
+        println!("distribute: nothing to transfer");
         return needs_command(r, a);
     }
-    let have = r.sol("keeper");
-    if have < total + keeper_want {
-        println!("distribute: the keeper holds {} SOL, the transfers need {} SOL and its own work {} SOL: fund the keeper with at least {} SOL more", sol(have), sol(total), sol(keeper_want), sol(total + keeper_want - have));
-        return Ok(3);
+    let mut ixs = Vec::new();
+    for t in &plan {
+        println!("distribute: keeper -> {} {} : {} SOL", t.name, r.keys.pubkey(t.name), sol(t.lamports));
+        ixs.push(anchor_lang::solana_program::system_instruction::transfer(&keeper, &r.keys.pubkey(t.name), t.lamports));
     }
     let sent = r.send("distribute", &ixs, "keeper", &[], false).map_err(|e| e.text)?;
     println!("distribute: {} transfers in one transaction [{}]", ixs.len(), sent.info.signature);
@@ -456,5 +493,77 @@ mod no_secrets {
         let rehearsal = include_str!("rehearsal.rs");
         assert!(!rehearsal.contains("derive(Debug)]\npub struct Keys"), "Keys must not derive Debug");
         assert!(rehearsal.contains("pub struct Keys"));
+    }
+}
+
+#[cfg(test)]
+mod distribution_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    const L: u64 = 1_000_000_000;
+    const PEAK: u64 = 11_490_751_720;
+
+    fn plan(held: &[(&str, u64)]) -> (Vec<Transfer>, u64, Option<u64>) {
+        let m: HashMap<&str, u64> = held.iter().copied().collect();
+        distribution_plan(&needs(PEAK), |n| m.get(n).copied().unwrap_or(0))
+    }
+
+    fn lamports(p: &[Transfer], name: &str) -> Option<u64> {
+        p.iter().find(|t| t.name == name).map(|t| t.lamports)
+    }
+
+    #[test]
+    fn ten_and_ten_sol_pays_the_small_keys_and_tops_the_upgrade_authority_to_its_need_plus_the_margin() {
+        let (p, shortfall, skipped) = plan(&[("upgrade-authority", 10 * L), ("keeper", 10 * L)]);
+        assert_eq!((shortfall, skipped), (0, None));
+        assert_eq!(lamports(&p, "upgrade-authority"), Some(PEAK + L / 10 + UPGRADE_MARGIN - 10 * L));
+        assert_eq!(lamports(&p, "evaluator"), Some(L / 4));
+        assert_eq!(lamports(&p, "trader7"), Some(L / 20));
+        assert_eq!(lamports(&p, "keeper"), None);
+        let total: u64 = p.iter().map(|t| t.lamports).sum();
+        assert!(10 * L - total >= 3 * L / 4, "the keeper keeps its own need");
+    }
+
+    #[test]
+    fn the_top_up_is_skipped_when_the_keeper_would_not_keep_its_own_need_and_the_small_keys_need() {
+        // small keys 0.73 SOL + keeper 0.75 SOL = 1.48 SOL; top-up of 1.79 SOL does not fit in 3 SOL
+        let (p, shortfall, skipped) = plan(&[("upgrade-authority", 10 * L), ("keeper", 3 * L)]);
+        assert_eq!(shortfall, 0);
+        assert!(lamports(&p, "upgrade-authority").is_none());
+        assert_eq!(lamports(&p, "evaluator"), Some(L / 4));
+        let top_up = PEAK + L / 10 + UPGRADE_MARGIN - 10 * L;
+        assert_eq!(skipped, Some(1_480_000_000 + top_up - 3 * L));
+    }
+
+    #[test]
+    fn the_top_up_fits_exactly_at_the_boundary_and_not_one_lamport_below() {
+        let top_up = PEAK + L / 10 + UPGRADE_MARGIN - 10 * L;
+        let exact = 1_480_000_000 + top_up;
+        let (p, _, skipped) = plan(&[("upgrade-authority", 10 * L), ("keeper", exact)]);
+        assert_eq!((lamports(&p, "upgrade-authority"), skipped), (Some(top_up), None));
+        let (p, _, skipped) = plan(&[("upgrade-authority", 10 * L), ("keeper", exact - 1)]);
+        assert_eq!((lamports(&p, "upgrade-authority"), skipped), (None, Some(1)));
+    }
+
+    #[test]
+    fn a_keeper_too_poor_for_the_small_keys_reports_the_shortfall_and_sends_nothing_to_the_upgrade_authority() {
+        let (p, shortfall, skipped) = plan(&[("upgrade-authority", 10 * L), ("keeper", L)]);
+        assert_eq!(shortfall, 480_000_000);
+        assert_eq!(skipped, None);
+        assert!(lamports(&p, "upgrade-authority").is_none());
+    }
+
+    #[test]
+    fn nothing_is_sent_when_every_key_already_holds_its_need() {
+        let mut held = vec![("upgrade-authority", 12 * L), ("keeper", 10 * L)];
+        for (n, w, _) in needs(PEAK) {
+            if n != "upgrade-authority" && n != "keeper" {
+                held.push((n, w));
+            }
+        }
+        let (p, shortfall, skipped) = plan(&held);
+        assert!(p.is_empty());
+        assert_eq!((shortfall, skipped), (0, None));
     }
 }
