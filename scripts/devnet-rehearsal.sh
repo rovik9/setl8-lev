@@ -13,6 +13,9 @@
 #   distribute  the keeper pays the small keys (evaluator, admins, traders) from its own balance and tops up the upgrade-authority to its need + 0.2 SOL if the keeper keeps its own need and the small keys': fund only the upgrade-authority and the keeper in the browser faucet, then run this
 #   deploy  deploy both programs with `solana program deploy` (skips a program that is already deployed)
 #   run     run the scenarios S0..S5 (idempotent and resumable: `run` again after the 1-day delay finishes the day-2 part)
+#   payout  the payout leg: reconcile, begin_heartbeat, settle_claims, finalize_heartbeat for A1's claim (day 2; `run` calls it too)
+#   demo    read-only: the A1 story with its public signatures and Solana Explorer links (add --markdown for handover/devnet-demo.md)
+#   manifest  write handover/devnet-deployment.json and .md (public data only) for the backend and frontend teams
 #   status  print the state (public data only)
 #   all     keys, build, fund, deploy, run
 #
@@ -198,6 +201,9 @@ if [ "$mode" = "devnet" ]; then
     needs) need_keys; tool needs ;;
     fund) need_keys; tool fund ;;
     distribute) need_keys; tool distribute ;;
+    payout) need_keys; tool payout ;;
+    demo) need_keys; tool demo "$@" ;;
+    manifest) need_keys; tool manifest --out-dir "$REPO/handover" ;;
     deploy) cmd_deploy ;;
     run) need_keys; tool run "$@" ;;
     status) need_keys; tool status ;;

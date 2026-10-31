@@ -396,7 +396,7 @@ impl Rehearsal {
 
     pub fn results_table(&self) -> String {
         let mut s = String::from("| scenario | result | signatures | detail |\n|---|---|---|---|\n");
-        for id in ["S0", "S1", "S2", "S2-day2", "S2-lock", "S3", "S4", "S5"] {
+        for id in ["S0", "S1", "S2", "S2-day2", "S2-payout", "S2-lock", "S3", "S4", "S5"] {
             if let Some(r) = self.st.scenarios.get(id) {
                 let sigs: Vec<String> = r.sigs.iter().take(3).map(|x| format!("{}…", &x[..12.min(x.len())])).collect();
                 s.push_str(&format!("| {id} | {} | {} ({} total) | {} |\n", r.result, sigs.join(" "), r.sigs.len(), r.detail.chars().take(160).collect::<String>()));

@@ -6,11 +6,14 @@
 pub mod accounts;
 pub mod attacks;
 pub mod cluster;
+pub mod demo;
 pub mod events;
 pub mod ix;
 pub mod launch;
 pub mod live;
+pub mod manifest;
 pub mod measure;
+pub mod payout;
 pub mod rehearsal;
 pub mod report;
 pub mod runtime;
@@ -45,6 +48,7 @@ struct Args {
     validator_info: Option<PathBuf>,
     command: String,
     resume: bool,
+    markdown: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -67,6 +71,7 @@ fn parse_args() -> Result<Args, String> {
         validator_info: None,
         command: String::new(),
         resume: false,
+        markdown: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -89,12 +94,13 @@ fn parse_args() -> Result<Args, String> {
             "--out-dir" => a.out_dir = PathBuf::from(val("--out-dir")?),
             "--validator-info" => a.validator_info = Some(PathBuf::from(val("--validator-info")?)),
             "--resume" => a.resume = true,
+            "--markdown" => a.markdown = true,
             c if !c.starts_with("--") && a.command.is_empty() => a.command = c.to_string(),
             other => return Err(format!("unknown argument {other}")),
         }
     }
     if a.command.is_empty() {
-        return Err("usage: devnet-rehearsal --rpc-url U --cluster devnet|localnet --expect-genesis H --keys-dir D --work-dir W --vault-program P --lev-program P [--vault-so F --lev-so F --vault-commit C --verify-bin F --only S0,S1] <keys|pubkeys|needs|fund|run|status>".into());
+        return Err("usage: devnet-rehearsal --rpc-url U --cluster devnet|localnet --expect-genesis H --keys-dir D --work-dir W --vault-program P --lev-program P [--vault-so F --lev-so F --vault-commit C --verify-bin F --only S0,S1] <keys|pubkeys|needs|fund|distribute|run|payout|demo|status>".into());
     }
     Ok(a)
 }
@@ -181,6 +187,22 @@ fn run() -> Result<i32, String> {
         "needs" => needs_command(&r, &a),
         "fund" => fund_command(&r, &a),
         "distribute" => distribute_command(&mut r, &a),
+        "payout" => {
+            r.payout()?;
+            Ok(if r.st.scenarios.get("S2-payout").is_some_and(|s| s.result == "FAIL") { 1 } else { 0 })
+        }
+        "manifest" => {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let shown = a.keys_dir.join("evaluator.json").display().to_string();
+            let shown = if !home.is_empty() && shown.starts_with(&home) { shown.replacen(&home, "~", 1) } else { shown };
+            manifest::write_manifest(&r, &a.out_dir, &shown)?;
+            println!("manifest: devnet-deployment.json and devnet-deployment.md written to {}", a.out_dir.display());
+            Ok(0)
+        }
+        "demo" => {
+            print!("{}", if a.markdown { demo::render_markdown(&r.st) } else { demo::render_text(&r.st) });
+            Ok(0)
+        }
         "status" => {
             status_command(&r);
             Ok(0)
@@ -346,6 +368,9 @@ fn run_command(r: &mut Rehearsal, a: &Args) -> Result<i32, String> {
         r.s2_day1()?;
         r.s2_day2()?;
     }
+    if want("S2") {
+        r.payout()?;
+    }
     if want("S3") {
         r.s3()?;
     }
@@ -443,12 +468,15 @@ mod no_secrets {
         ("accounts.rs", include_str!("accounts.rs")),
         ("attacks.rs", include_str!("attacks.rs")),
         ("cluster.rs", include_str!("cluster.rs")),
+        ("demo.rs", include_str!("demo.rs")),
         ("events.rs", include_str!("events.rs")),
         ("ix.rs", include_str!("ix.rs")),
         ("launch.rs", include_str!("launch.rs")),
         ("live.rs", include_str!("live.rs")),
+        ("manifest.rs", include_str!("manifest.rs")),
         ("main.rs", include_str!("main.rs")),
         ("measure.rs", include_str!("measure.rs")),
+        ("payout.rs", include_str!("payout.rs")),
         ("rehearsal.rs", include_str!("rehearsal.rs")),
         ("report.rs", include_str!("report.rs")),
         ("scenarios.rs", include_str!("scenarios.rs")),

@@ -508,6 +508,10 @@ impl Rehearsal {
         let claim = self.c.account(&self.ids.claim(&vts, acct.next_request_id)).map_err(|e| e.to_string())?.and_then(|c| crate::vaultview::parse_claim(&c.data));
         let amount = (SIZE as u64) * 8 / 100;
         self.check(claim.as_ref().is_some_and(|c| c.owed == amount && c.request_id == acct.next_request_id), &format!("A1: the vault queued a payout claim of {} (0.08 S) for request {}", usd(amount), acct.next_request_id));
+        self.st.addrs.insert("claim-A1".into(), self.ids.claim(&vts, acct.next_request_id).to_string());
+        self.st.addrs.insert("claim-A1-request".into(), acct.next_request_id.to_string());
+        self.st.addrs.insert("finalize-A1-sig".into(), sent.info.signature.clone());
+        self.save()?;
         let ts = self.c.account(&vts).map_err(|e| e.to_string())?.and_then(|c| crate::vaultview::parse_trader_state(&c.data));
         self.check(ts.is_some_and(|v| v.payout_count == 1), "A1: the vault counts one payout");
         let after_tally = self.read_tally();

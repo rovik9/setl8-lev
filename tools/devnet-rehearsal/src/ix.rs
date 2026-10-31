@@ -580,12 +580,87 @@ pub fn fail_for_violation(ids: &Ids, a: &Pubkey, b: &Pubkey, trader: &Pubkey, ch
     }, &[a, b])
 }
 
+// ------------------------------------------------------------------------------------------------ the vault's permissionless payout leg
+// Built by hand, as the vault's own keeper does (read-only reference: setl8-vault/tools/keeper/src/ixs.rs); the vault crate is not a dependency.
+
+/// `reconcile_product`: compares the sector's payout tally with the vault's books and pauses the product on a mismatch.
+pub fn reconcile_product(ids: &Ids, caller: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: ids.vault,
+        accounts: vec![AccountMeta::new_readonly(*caller, true), AccountMeta::new(ids.registry(), false), AccountMeta::new_readonly(ids.tally(), false)],
+        data: [anchor_disc("reconcile_product").to_vec(), ids.lev.to_bytes().to_vec()].concat(),
+    }
+}
+
+/// `begin_heartbeat`: opens the cycle and freezes its inputs.
+pub fn begin_heartbeat(ids: &Ids, caller: &Pubkey, vault_state: &Pubkey, usdc_pool: &Pubkey, usdt_pool: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: ids.vault,
+        accounts: vec![AccountMeta::new_readonly(*caller, true), AccountMeta::new(*vault_state, false), AccountMeta::new_readonly(*usdc_pool, false), AccountMeta::new_readonly(*usdt_pool, false)],
+        data: anchor_disc("begin_heartbeat").to_vec(),
+    }
+}
+
+/// `finalize_heartbeat`: closes the cycle once every eligible claim was processed.
+pub fn finalize_heartbeat(ids: &Ids, caller: &Pubkey, vault_state: &Pubkey, usdc_pool: &Pubkey, usdt_pool: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: ids.vault,
+        accounts: vec![AccountMeta::new_readonly(*caller, true), AccountMeta::new(*vault_state, false), AccountMeta::new_readonly(*usdc_pool, false), AccountMeta::new_readonly(*usdt_pool, false)],
+        data: anchor_disc("finalize_heartbeat").to_vec(),
+    }
+}
+
+/// `settle_claims` over `[claim, trader_usdc_ata, trader_usdt_ata]` triples (at most 6 per call).
+#[allow(clippy::too_many_arguments)]
+pub fn settle_claims(ids: &Ids, caller: &Pubkey, vault_state: &Pubkey, usdc_mint: &Pubkey, usdt_mint: &Pubkey, usdc_pool: &Pubkey, usdt_pool: &Pubkey, triples: &[[Pubkey; 3]]) -> Instruction {
+    let mut accounts = vec![
+        AccountMeta::new(*caller, true),
+        AccountMeta::new(*vault_state, false),
+        AccountMeta::new_readonly(*usdc_mint, false),
+        AccountMeta::new_readonly(*usdt_mint, false),
+        AccountMeta::new(*usdc_pool, false),
+        AccountMeta::new(*usdt_pool, false),
+        AccountMeta::new_readonly(spl_token::ID, false),
+    ];
+    for [claim, usdc, usdt] in triples {
+        accounts.extend([AccountMeta::new(*claim, false), AccountMeta::new(*usdc, false), AccountMeta::new(*usdt, false)]);
+    }
+    Instruction { program_id: ids.vault, accounts, data: anchor_disc("settle_claims").to_vec() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn ids() -> Ids {
         Ids { lev: Pubkey::new_from_array([1; 32]), vault: Pubkey::new_from_array([2; 32]) }
+    }
+
+    #[test]
+    fn the_payout_leg_builders_have_the_vaults_discriminators_and_account_lists() {
+        let ids = ids();
+        let (caller, vs, uc, ut, pc, pt) = (Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique());
+        let b = begin_heartbeat(&ids, &caller, &vs, &pc, &pt);
+        assert_eq!((&b.data[..], b.program_id), (&anchor_disc("begin_heartbeat")[..], ids.vault));
+        assert_eq!(b.accounts.len(), 4);
+        assert!(b.accounts[0].is_signer && !b.accounts[0].is_writable && b.accounts[1].is_writable && !b.accounts[2].is_writable);
+        let f = finalize_heartbeat(&ids, &caller, &vs, &pc, &pt);
+        assert_eq!(&f.data[..], &anchor_disc("finalize_heartbeat")[..]);
+        assert_eq!(f.accounts.len(), 4);
+        let claim = Pubkey::new_unique();
+        let (ta, tb) = (ata(&caller, &uc), ata(&caller, &ut));
+        let s = settle_claims(&ids, &caller, &vs, &uc, &ut, &pc, &pt, &[[claim, ta, tb]]);
+        assert_eq!(&s.data[..], &anchor_disc("settle_claims")[..]);
+        assert_eq!(s.accounts.len(), 7 + 3);
+        assert!(s.accounts[0].is_signer && s.accounts[0].is_writable);
+        assert!(s.accounts[4].is_writable && s.accounts[5].is_writable && !s.accounts[2].is_writable && !s.accounts[6].is_writable);
+        assert_eq!(s.accounts[6].pubkey, spl_token::ID);
+        assert!(s.accounts[7..].iter().all(|m| m.is_writable && !m.is_signer));
+        let r = reconcile_product(&ids, &caller);
+        assert_eq!(&r.data[..8], &anchor_disc("reconcile_product")[..]);
+        assert_eq!(&r.data[8..], &ids.lev.to_bytes()[..]);
+        assert_eq!((r.accounts[1].pubkey, r.accounts[2].pubkey), (ids.registry(), ids.tally()));
+        assert!(r.accounts[1].is_writable && !r.accounts[2].is_writable);
     }
 
     #[test]
