@@ -324,6 +324,10 @@ fn fund_command(r: &Rehearsal, a: &Args) -> Result<i32, String> {
                     println!("{name}: airdrop of {} SOL requested", sol(ask));
                     std::thread::sleep(std::time::Duration::from_secs(3));
                 }
+                Err(e) if e.to_string().contains("faucet is closed") => {
+                    println!("the RPC faucet of this cluster is closed: fund the public addresses of `needs` in the browser faucet (https://faucet.solana.com), then run `distribute`");
+                    return needs_command(r, a);
+                }
                 Err(e) => {
                     println!("{name}: airdrop refused ({e}); attempt {}", attempt + 1);
                     std::thread::sleep(std::time::Duration::from_secs(10 * (attempt + 1)));
